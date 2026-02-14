@@ -1,8 +1,8 @@
 /**
- * File operations: rename & delete
+ * File operations: rename, move & delete
  *
  * - Rename: requires authenticated user (oplevel 1+)
- * - Delete: requires oplevel 2
+ * - Move/Delete: requires oplevel 2
  * - Security: path traversal prevention, block check
  */
 
@@ -143,5 +143,85 @@ export async function handleDelete(
   } catch (err: unknown) {
     console.error("Delete error:", err);
     return jsonResponse(500, { error: "削除に失敗しました: " + getErrorMessage(err) });
+  }
+}
+
+/**
+ * Handle file/folder move.
+ * Body: { sourcePath: string, targetDirPath: string }
+ */
+export async function handleMove(
+  rootReal: string,
+  request: Request,
+  _username: string
+): Promise<Response> {
+  try {
+    const body = await request.json() as { sourcePath?: string; targetDirPath?: string };
+    const sourceRelPath = body.sourcePath ?? "";
+    const targetDirRelPath = body.targetDirPath ?? "";
+
+    if (!sourceRelPath) {
+      return jsonResponse(400, { error: "移動元パスを指定してください" });
+    }
+
+    const sourceResolved = await safePath(rootReal, sourceRelPath);
+    if (!sourceResolved) {
+      return jsonResponse(404, { error: "移動元が見つかりません" });
+    }
+
+    const targetResolved = await safePath(rootReal, targetDirRelPath);
+    if (!targetResolved) {
+      return jsonResponse(404, { error: "移動先フォルダが見つかりません" });
+    }
+
+    if (isPathBlocked(sourceResolved) || isPathBlocked(targetResolved)) {
+      return jsonResponse(403, { error: "このパスはブロックされています" });
+    }
+
+    const sourceStat = await stat(sourceResolved);
+    const targetStat = await stat(targetResolved);
+
+    if (!targetStat.isDirectory()) {
+      return jsonResponse(400, { error: "移動先はフォルダである必要があります" });
+    }
+
+    const sourceNorm = sourceResolved.replace(/\\/g, "/").toLowerCase();
+    const targetNorm = targetResolved.replace(/\\/g, "/").toLowerCase();
+
+    // Can't move into itself when source is a directory.
+    if (sourceStat.isDirectory() && (targetNorm === sourceNorm || targetNorm.startsWith(`${sourceNorm}/`))) {
+      return jsonResponse(400, { error: "フォルダ自身または配下には移動できません" });
+    }
+
+    const targetPath = join(targetResolved, basename(sourceResolved));
+    const targetPathNorm = targetPath.replace(/\\/g, "/").toLowerCase();
+    const rootNorm = rootReal.replace(/\\/g, "/").toLowerCase();
+    if (!targetPathNorm.startsWith(rootNorm)) {
+      return jsonResponse(403, { error: "アクセスが拒否されました" });
+    }
+
+    if (targetPathNorm === sourceNorm) {
+      return jsonResponse(200, { ok: true, message: "移動先が同一のため変更はありません" });
+    }
+
+    try {
+      await stat(targetPath);
+      return jsonResponse(409, { error: "移動先に同名のファイル/フォルダが既に存在します" });
+    } catch {
+      // Good — destination doesn't exist
+    }
+
+    await rename(sourceResolved, targetPath);
+
+    const entryName = basename(sourceResolved);
+    console.log(`📦 Move: "${entryName}" -> "${targetDirRelPath || "/"}" by ${_username}`);
+
+    return jsonResponse(200, {
+      ok: true,
+      message: `「${entryName}」を移動しました`,
+    });
+  } catch (err: unknown) {
+    console.error("Move error:", err);
+    return jsonResponse(500, { error: "移動に失敗しました: " + getErrorMessage(err) });
   }
 }

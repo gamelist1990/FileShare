@@ -12,7 +12,7 @@ import {
   type RequestIpServer,
 } from "./api/auth";
 import { handleUpload, handleMkdir, getDiskInfo, registerUploadSettings } from "./api/upload";
-import { handleRename, handleDelete } from "./api/fileops";
+import { handleRename, handleDelete, handleMove } from "./api/fileops";
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
   recordDownload, recordUpload, connectionStart, connectionEnd,
@@ -712,6 +712,37 @@ async function main() {
             return jsonRes(403, { error: "削除には権限レベル2が必要です" });
           }
           const resp = await handleDelete(rootReal, request, username);
+          const headers = new Headers(resp.headers);
+          for (const [k, v] of Object.entries(corsHeaders())) {
+            headers.set(k, v);
+          }
+          return new Response(resp.body, { status: resp.status, headers });
+        }
+
+        // ── Move (requires login, oplevel 2) ──
+        if (pathname === "/api/move" && request.method === "POST") {
+          const rl = checkIpRateLimit("fileops", clientIp);
+          if (!rl.allowed) {
+            return jsonRes(429, {
+              error: "ファイル操作のレート制限に達しました",
+              target: "fileops",
+              retryAfterSec: rl.retryAfterSec ?? 1,
+            }, {
+              "Retry-After": String(rl.retryAfterSec ?? 1),
+            });
+          }
+
+          const token = request.headers.get("Authorization");
+          const username = verifyToken(token);
+          if (!username) {
+            return jsonRes(401, { error: "移動にはログインが必要です" });
+          }
+          const oplevel = getOpLevel(token);
+          if (oplevel < 2) {
+            return jsonRes(403, { error: "移動には権限レベル2が必要です" });
+          }
+
+          const resp = await handleMove(rootReal, request, username);
           const headers = new Headers(resp.headers);
           for (const [k, v] of Object.entries(corsHeaders())) {
             headers.set(k, v);

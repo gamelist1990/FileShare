@@ -46,6 +46,13 @@ export function App() {
   // Context menu
   const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
 
+  // Drag & move (oplevel 2)
+  const [draggedEntry, setDraggedEntry] = useState<FileEntry | null>(null);
+  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+  const [touchDragPoint, setTouchDragPoint] = useState<{ x: number; y: number } | null>(null);
+  const [moveBusy, setMoveBusy] = useState(false);
+  const [moveMsg, setMoveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
   // Long-press refs
   const longPressTimer = useRef<NodeJS.Timeout | null>(null);
   const touchStartPos = useRef<{ x: number; y: number } | null>(null);
@@ -181,6 +188,59 @@ export function App() {
     setContextMenu({ entry, x, y });
   };
 
+  const canDragMove = Boolean(loggedInUser) && oplevel >= 2;
+
+  const getParentPath = (path: string): string => {
+    const idx = path.lastIndexOf("/");
+    return idx >= 0 ? path.slice(0, idx) : "";
+  };
+
+  const canDropToFolder = (source: FileEntry | null, target: FileEntry): boolean => {
+    if (!source || !target.isDir) return false;
+    if (source.path === target.path) return false;
+    if (getParentPath(source.path) === target.path) return false;
+    if (source.isDir && (target.path === source.path || target.path.startsWith(`${source.path}/`))) {
+      return false;
+    }
+    return true;
+  };
+
+  const moveEntryToFolder = useCallback(async (source: FileEntry, targetDirPath: string) => {
+    if (!canDragMove || moveBusy) return;
+    setMoveBusy(true);
+    setMoveMsg(null);
+    try {
+      const res = await fetch("/api/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ sourcePath: source.path, targetDirPath }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setMoveMsg({ text: data.message || `「${source.name}」を移動しました`, ok: true });
+        await fetchEntries(currentPath);
+      } else {
+        setMoveMsg({ text: data.error || data.message || "移動に失敗しました", ok: false });
+      }
+    } catch {
+      setMoveMsg({ text: "通信エラーで移動できませんでした", ok: false });
+    } finally {
+      setMoveBusy(false);
+    }
+  }, [canDragMove, moveBusy, fetchEntries, currentPath]);
+
+  const detectTouchDropFolder = useCallback((x: number, y: number, source: FileEntry | null): string | null => {
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    const row = hit?.closest("tr[data-entry-path]") as HTMLElement | null;
+    if (!row) return null;
+    const path = row.dataset.entryPath ?? "";
+    const isDir = row.dataset.isDir === "true";
+    if (!path || !isDir || !source) return null;
+    const target = entries.find((e) => e.path === path);
+    if (!target || !canDropToFolder(source, target)) return null;
+    return path;
+  }, [entries]);
+
   const breadcrumbs = currentPath ? currentPath.split("/") : [];
 
   return (
@@ -292,6 +352,12 @@ export function App() {
 
       {/* Content */}
       <main style={styles.main}>
+        {moveMsg && (
+          <div style={moveMsg.ok ? styles.moveMsgOk : styles.moveMsgErr}>
+            <Icon name={moveMsg.ok ? "fa-solid fa-circle-check" : "fa-solid fa-triangle-exclamation"} style={{ marginRight: 8 }} />
+            {moveMsg.text}
+          </div>
+        )}
         {loading && (
           <div style={styles.loading}>
             <Icon name="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />
@@ -325,14 +391,55 @@ export function App() {
               {entries.map((entry) => (
                 <tr
                   key={entry.path || entry.name}
-                  style={styles.row}
+                  data-entry-path={entry.path}
+                  data-is-dir={entry.isDir ? "true" : "false"}
+                  style={{ ...styles.row, ...(dropTargetPath === entry.path ? styles.dropTargetRow : {}) }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f0f4ff"; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ""; }}
+                  draggable={canDragMove}
+                  onDragStart={(e) => {
+                    if (!canDragMove) {
+                      e.preventDefault();
+                      return;
+                    }
+                    setContextMenu(null);
+                    setDraggedEntry(entry);
+                    setDropTargetPath(null);
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", entry.path);
+                  }}
+                  onDragOver={(e) => {
+                    if (!canDropToFolder(draggedEntry, entry)) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setDropTargetPath(entry.path);
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetPath === entry.path) {
+                      setDropTargetPath(null);
+                    }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (!draggedEntry || !canDropToFolder(draggedEntry, entry)) return;
+                    void moveEntryToFolder(draggedEntry, entry.path);
+                    setDraggedEntry(null);
+                    setDropTargetPath(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedEntry(null);
+                    setDropTargetPath(null);
+                  }}
                   onContextMenu={(e) => handleContextMenu(e, entry)}
                   onTouchStart={(e) => {
                     if (!loggedInUser) return;
                     const touch = e.touches[0];
                     touchStartPos.current = { x: touch.clientX, y: touch.clientY };
+                    if (canDragMove) {
+                      setDraggedEntry(entry);
+                      setTouchDragPoint({ x: touch.clientX, y: touch.clientY });
+                      setDropTargetPath(null);
+                    }
                     longPressTimer.current = setTimeout(() => {
                       handleLongPress(entry, touch.clientX, touch.clientY);
                     }, 300);
@@ -342,9 +449,33 @@ export function App() {
                       clearTimeout(longPressTimer.current);
                       longPressTimer.current = null;
                     }
+
+                    if (canDragMove && draggedEntry && dropTargetPath) {
+                      void moveEntryToFolder(draggedEntry, dropTargetPath);
+                    }
+
+                    setDraggedEntry(null);
+                    setDropTargetPath(null);
+                    setTouchDragPoint(null);
                     touchStartPos.current = null;
                   }}
-                  onTouchMove={() => {
+                  onTouchMove={(e) => {
+                    const touch = e.touches[0];
+                    if (touchStartPos.current) {
+                      const dx = touch.clientX - touchStartPos.current.x;
+                      const dy = touch.clientY - touchStartPos.current.y;
+                      if (Math.hypot(dx, dy) > 8 && longPressTimer.current) {
+                        clearTimeout(longPressTimer.current);
+                        longPressTimer.current = null;
+                      }
+                    }
+
+                    if (canDragMove && draggedEntry) {
+                      e.preventDefault();
+                      setTouchDragPoint({ x: touch.clientX, y: touch.clientY });
+                      setDropTargetPath(detectTouchDropFolder(touch.clientX, touch.clientY, draggedEntry));
+                    }
+
                     if (longPressTimer.current) {
                       clearTimeout(longPressTimer.current);
                       longPressTimer.current = null;
@@ -386,6 +517,19 @@ export function App() {
           </table>
         )}
       </main>
+
+      {canDragMove && draggedEntry && touchDragPoint && (
+        <div
+          style={{
+            ...styles.touchDragBadge,
+            left: touchDragPoint.x + 10,
+            top: touchDragPoint.y + 10,
+          }}
+        >
+          <Icon name={draggedEntry.isDir ? "fa-solid fa-folder" : "fa-solid fa-file"} style={{ marginRight: 6 }} />
+          {draggedEntry.name}
+        </div>
+      )}
 
       {/* Context Menu */}
       {contextMenu && (
@@ -471,6 +615,28 @@ const styles: Record<string, React.CSSProperties> = {
   loading: { textAlign: "center", padding: 48, fontSize: 18, color: "#888", display: "flex", alignItems: "center", justifyContent: "center" },
   error: { textAlign: "center", padding: 48, fontSize: 16, color: "#c00", display: "flex", alignItems: "center", justifyContent: "center" },
   empty: { textAlign: "center", padding: 48, fontSize: 16, color: "#888", display: "flex", alignItems: "center", justifyContent: "center" },
+  moveMsgOk: {
+    marginBottom: 10,
+    padding: "8px 10px",
+    border: "1px solid #d2f2df",
+    borderRadius: 8,
+    background: "#f3fcf7",
+    color: "#1f7a45",
+    fontSize: 13,
+    display: "flex",
+    alignItems: "center",
+  },
+  moveMsgErr: {
+    marginBottom: 10,
+    padding: "8px 10px",
+    border: "1px solid #f5d5d5",
+    borderRadius: 8,
+    background: "#fff6f6",
+    color: "#b53a3a",
+    fontSize: 13,
+    display: "flex",
+    alignItems: "center",
+  },
   table: { width: "100%", borderCollapse: "collapse", fontSize: 14 },
   th: {
     padding: "10px 8px",
@@ -481,6 +647,7 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: "nowrap",
   },
   row: { borderBottom: "1px solid #eee", transition: "background 100ms" },
+  dropTargetRow: { backgroundColor: "#e8f2ff" },
   iconCell: { padding: "10px 8px", textAlign: "center", width: 40, fontSize: 18 },
   nameCell: { padding: "10px 8px", wordBreak: "break-all" },
   dirLink: { cursor: "pointer", color: "#3366cc", fontWeight: 500, textDecoration: "none" },
@@ -498,6 +665,21 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16,
     transition: "background 150ms",
     color: "#3366cc",
+  },
+  touchDragBadge: {
+    position: "fixed",
+    zIndex: 12000,
+    pointerEvents: "none",
+    background: "rgba(51, 102, 204, 0.92)",
+    color: "#fff",
+    borderRadius: 8,
+    padding: "6px 10px",
+    fontSize: 12,
+    maxWidth: 220,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
   },
   footer: {
     textAlign: "center",
