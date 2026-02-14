@@ -1,15 +1,26 @@
 # FileShare
 
-FileShare is a simple file sharing and management application.
+FileShare は、シンプルなファイル共有・管理アプリケーションです。
 
-## Overview
+## 概要
 
-This repository contains the source code for the FileShare project, including API endpoints, frontend components, and build scripts.
+このリポジトリには、FileShare の実装一式が含まれます。主な内容は以下のとおりです。
 
-## Development
+- API エンドポイント（バックエンド）
+- フロントエンド（React コンポーネント）
+- ビルド・スクリプト
 
-Use Bun to install dependencies and run the development server.
+## 開発
 
-## License
+開発環境では Bun を使用します。依存関係のインストールと開発サーバーの起動は次のように行ってください（プロジェクトのルートで実行）。
 
-This project is licensed under the terms described in the LICENSE file.
+```bash
+bun install
+bun run start
+```
+
+必要に応じて `tsconfig.json` や `scripts/` 下のビルド設定を確認してください。
+
+## ライセンス
+
+ライセンスは `LICENSE` ファイルを参照してください。
