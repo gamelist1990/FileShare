@@ -34,7 +34,7 @@ const DEFAULT_HAPROXY_SETTINGS: HAProxySettings = {
 };
 
 function asUnknownRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
