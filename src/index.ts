@@ -13,7 +13,15 @@ import {
 } from "./api/auth";
 import { handleUpload, handleMkdir, getDiskInfo, registerUploadSettings } from "./api/upload";
 import { handleRename, handleDelete, handleMove } from "./api/fileops";
-import { handleHlsPlaylist, handleHlsFile, registerStreamSettings, getStreamSettings } from "./api/stream";
+import {
+  handleHlsPlaylist,
+  handleHlsFile,
+  registerStreamSettings,
+  getStreamSettings,
+  getStreamCacheTtlSeconds,
+  startStreamCacheJanitor,
+  setupStreamCacheShutdownCleanup,
+} from "./api/stream";
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
   recordDownload, recordUpload, connectionStart, connectionEnd,
@@ -341,6 +349,8 @@ async function main() {
   registerUploadSettings();
   registerStreamSettings();
   initSettings(rootReal);
+  startStreamCacheJanitor();
+  setupStreamCacheShutdownCleanup();
 
   const haproxyEnabled = isHAProxyProxyProtocolV2Enabled();
   const internalPort = haproxyEnabled ? (port + 1) : port;
@@ -572,6 +582,7 @@ async function main() {
             useFastCopyFirst: settings.useFastCopyFirst,
             ffmpegPreset: settings.ffmpegPreset,
             hlsSegmentSeconds: settings.hlsSegmentSeconds,
+            cacheTtlSeconds: getStreamCacheTtlSeconds(),
           });
         }
 

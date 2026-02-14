@@ -1,5 +1,5 @@
-import { mkdir, readFile, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir, readFile, stat, readdir, rm, utimes } from "node:fs/promises";
+import { existsSync, rmSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -22,6 +22,13 @@ const SUPPORTED_SOURCE_EXTS = new Set([".mp4", ".m4v", ".mov"]);
 const HLS_ROOT = join(tmpdir(), "fileshare-hls-cache");
 const inflight = new Map<string, Promise<void>>();
 const STREAM_SETTINGS_KEY = "stream";
+// Keep generated HLS cache for 30m (user request)
+const HLS_CACHE_TTL_MS = 30 * 60 * 1000;
+const HLS_CACHE_TTL_SECONDS = Math.floor(HLS_CACHE_TTL_MS / 1000);
+const HLS_CACHE_JANITOR_INTERVAL_MS = 60 * 1000;
+
+let janitorTimer: ReturnType<typeof setInterval> | null = null;
+let shutdownHookInstalled = false;
 
 interface StreamSettings {
   alwaysAnalyze: boolean;
@@ -39,6 +46,10 @@ const DEFAULT_STREAM_SETTINGS: StreamSettings = {
 
 export function registerStreamSettings(): void {
   registerSettingsModule<StreamSettings>(STREAM_SETTINGS_KEY, DEFAULT_STREAM_SETTINGS);
+}
+
+export function getStreamCacheTtlSeconds(): number {
+  return HLS_CACHE_TTL_SECONDS;
 }
 
 export function getStreamSettings(): StreamSettings {
@@ -104,7 +115,10 @@ async function resolveSource(rootReal: string, relPath: string): Promise<Resolve
 }
 
 async function ensureHlsGenerated(source: ResolvedSource): Promise<void> {
-  if (existsSync(source.playlistAbsPath)) return;
+  if (existsSync(source.playlistAbsPath)) {
+    await markCacheAccessed(source.cacheDir);
+    return;
+  }
 
   const lockKey = source.cacheDir;
   const pending = inflight.get(lockKey);
@@ -209,6 +223,8 @@ async function ensureHlsGenerated(source: ResolvedSource): Promise<void> {
     if (!existsSync(source.playlistAbsPath)) {
       throw new Error("HLS playlist was not generated");
     }
+
+    await markCacheAccessed(source.cacheDir);
   })();
 
   inflight.set(lockKey, job);
@@ -217,6 +233,96 @@ async function ensureHlsGenerated(source: ResolvedSource): Promise<void> {
   } finally {
     inflight.delete(lockKey);
   }
+}
+
+async function markCacheAccessed(cacheDir: string): Promise<void> {
+  const now = new Date();
+  try {
+    await utimes(cacheDir, now, now);
+  } catch {
+    // ignore touch errors; cache can still be used
+  }
+}
+
+async function removeExpiredCacheDirs(baseDir: string, nowMs: number): Promise<number> {
+  let removed = 0;
+  const entries = await readdir(baseDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sourceDir = join(baseDir, entry.name);
+    try {
+      const st = await stat(sourceDir);
+      if ((nowMs - st.mtimeMs) >= HLS_CACHE_TTL_MS) {
+        await rm(sourceDir, { recursive: true, force: true });
+        removed += 1;
+      }
+    } catch {
+      // ignore per-dir errors
+    }
+  }
+  return removed;
+}
+
+export async function cleanupExpiredStreamCache(): Promise<number> {
+  if (!existsSync(HLS_ROOT)) return 0;
+
+  const nowMs = Date.now();
+  let removed = 0;
+  const roots = await readdir(HLS_ROOT, { withFileTypes: true });
+
+  for (const rootEntry of roots) {
+    if (!rootEntry.isDirectory()) continue;
+    const rootDir = join(HLS_ROOT, rootEntry.name);
+    try {
+      removed += await removeExpiredCacheDirs(rootDir, nowMs);
+      const rest = await readdir(rootDir, { withFileTypes: true });
+      if (rest.length === 0) {
+        await rm(rootDir, { recursive: true, force: true });
+      }
+    } catch {
+      // ignore per-root errors
+    }
+  }
+
+  return removed;
+}
+
+export async function clearAllStreamCache(): Promise<void> {
+  await rm(HLS_ROOT, { recursive: true, force: true });
+}
+
+export function startStreamCacheJanitor(): void {
+  if (janitorTimer) return;
+
+  void cleanupExpiredStreamCache();
+  janitorTimer = setInterval(() => {
+    void cleanupExpiredStreamCache();
+  }, HLS_CACHE_JANITOR_INTERVAL_MS);
+  janitorTimer.unref?.();
+}
+
+export function stopStreamCacheJanitor(): void {
+  if (!janitorTimer) return;
+  clearInterval(janitorTimer);
+  janitorTimer = null;
+}
+
+export function setupStreamCacheShutdownCleanup(): void {
+  if (shutdownHookInstalled) return;
+  shutdownHookInstalled = true;
+
+  const cleanupSync = () => {
+    stopStreamCacheJanitor();
+    try {
+      rmSync(HLS_ROOT, { recursive: true, force: true });
+    } catch {
+      // ignore shutdown cleanup errors
+    }
+  };
+
+  process.once("SIGINT", cleanupSync);
+  process.once("SIGTERM", cleanupSync);
+  process.once("exit", cleanupSync);
 }
 
 function rewritePlaylist(playlistText: string, sourceRelPath: string): string {
