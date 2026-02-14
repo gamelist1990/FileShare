@@ -1,0 +1,505 @@
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { CURRENT_FILESHARE_VERSION } from "../version";
+
+// -- Types
+import type { FileEntry, DiskInfo } from "./types";
+
+// -- Helpers
+import {
+  formatSize, formatDate, getFileIconClass, getFileIconColor,
+  fileUrl, isPreviewable, isMarkdown,
+} from "./helpers/fileHelpers";
+import { getToken, clearToken, authHeaders } from "./helpers/auth";
+
+// -- Components
+import { Icon } from "./components/Icon";
+import { AuthPanel } from "./components/AuthPanel";
+import { DiskQuotaBar } from "./components/DiskQuotaBar";
+import { UploadPanel } from "./components/UploadPanel";
+import { PreviewModal } from "./components/PreviewModal";
+import { MarkdownPreviewModal } from "./components/MarkdownPreviewModal";
+import { StatusModal } from "./components/StatusModal";
+import { ContextMenu } from "./components/ContextMenu";
+import { modalStyles } from "./components/modalStyles";
+
+// -- App Component
+export function App() {
+  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [currentPath, setCurrentPath] = useState("");
+  const [pathHistory, setPathHistory] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null);
+
+  // Auth state
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
+
+  // Status modal
+  const [showStatusModal, setShowStatusModal] = useState(false);
+
+  // Context menu
+  const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
+
+  // Long-press refs
+  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+  const touchStartPos = useRef<{ x: number; y: number } | null>(null);
+
+  // User op level
+  const [oplevel, setOplevel] = useState(0);
+
+  // Disk info
+  const [disk, setDisk] = useState<DiskInfo | null>(null);
+
+  // Check auth status on mount
+  useEffect(() => {
+    (async () => {
+      const t = getToken();
+      if (t) {
+        try {
+          const res = await fetch("/api/auth/status", { headers: { Authorization: `Bearer ${t}` } });
+          const data = await res.json();
+          if (data.authenticated) {
+            setLoggedInUser(data.username);
+            setOplevel(data.oplevel ?? 1);
+          }
+          else clearToken();
+        } catch { clearToken(); }
+      }
+      setAuthChecked(true);
+    })();
+  }, []);
+
+  // Fetch disk info periodically
+  const fetchDisk = useCallback(async () => {
+    try {
+      const res = await fetch("/api/disk");
+      if (res.ok) setDisk(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    fetchDisk();
+    const iv = setInterval(fetchDisk, 30000);
+    return () => clearInterval(iv);
+  }, [fetchDisk]);
+
+  useEffect(() => {
+    if (loggedInUser) fetchDisk();
+  }, [loggedInUser, fetchDisk]);
+
+  const updateUrlPath = (path: string) => {
+    try {
+      const url = new URL(window.location.href);
+      if (path) url.searchParams.set("path", path);
+      else url.searchParams.delete("path");
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      // ignore (e.g. non-browser env)
+    }
+  };
+
+  const fetchEntries = useCallback(async (path: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to fetch");
+      }
+      const data: FileEntry[] = await res.json();
+      setEntries(data);
+      setCurrentPath(path);
+      updateUrlPath(path);
+    } catch (e: any) {
+      setError(e.message);
+      setEntries([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // On mount: respect ?path=... URL so shared folder links open correctly
+  useEffect(() => {
+    const params = new URL(window.location.href).searchParams;
+    const startPath = params.get("path") ?? "";
+    fetchEntries(startPath);
+    // keep auth check independent
+  }, [fetchEntries]);
+
+  const navigateTo = (entry: FileEntry) => {
+    if (entry.isDir) {
+      setPathHistory((prev) => [...prev, currentPath]);
+      fetchEntries(entry.path);
+    }
+  };
+
+  const goBack = () => {
+    const prev = pathHistory[pathHistory.length - 1] ?? "";
+    setPathHistory((h) => h.slice(0, -1));
+    fetchEntries(prev);
+  };
+
+  const goHome = () => {
+    setPathHistory([]);
+    fetchEntries("");
+  };
+
+  const downloadFile = (entry: FileEntry) => {
+    const a = document.createElement("a");
+    a.href = fileUrl(entry);
+    a.download = entry.name;
+    a.click();
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: authHeaders(),
+      });
+    } catch { /* ignore */ }
+    clearToken();
+    setLoggedInUser(null);
+    setOplevel(0);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, entry: FileEntry) => {
+    if (!loggedInUser) return; // Only for logged-in users
+    e.preventDefault();
+    setContextMenu({ entry, x: e.clientX, y: e.clientY });
+  };
+
+  const handleLongPress = (entry: FileEntry, x: number, y: number) => {
+    if (!loggedInUser) return; // Only for logged-in users
+    setContextMenu({ entry, x, y });
+  };
+
+  const breadcrumbs = currentPath ? currentPath.split("/") : [];
+
+  return (
+    <div style={styles.container}>
+      {/* Header */}
+      <header style={styles.header}>
+        <div className="fs-header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <h1 className="fs-title" style={styles.title}>
+              <Icon name="fa-solid fa-folder-open" style={{ marginRight: 10, color: "#3366cc" }} />
+              FileShare
+            </h1>
+            <p style={styles.subtitle}>ファイル共有サービス</p>
+          </div>
+          <div className="fs-header-right" style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            {/* Status button */}
+            <button style={styles.navBtn} onClick={() => setShowStatusModal(true)} title="サーバーステータス">
+              <Icon name="fa-solid fa-chart-line" style={{ marginRight: 6 }} />
+              Status
+            </button>
+            {authChecked && loggedInUser ? (
+              <>
+                <span style={{ fontSize: 14, color: "#333", display: "inline-flex", alignItems: "center" }}>
+                  <Icon name="fa-solid fa-user" style={{ marginRight: 6, color: "#3366cc" }} />
+                  {loggedInUser}
+                </span>
+                <button style={styles.navBtn} onClick={handleLogout}>
+                  <Icon name="fa-solid fa-right-from-bracket" style={{ marginRight: 6 }} />
+                  ログアウト
+                </button>
+              </>
+            ) : authChecked ? (
+              <button style={styles.navBtn} onClick={() => setShowAuthPanel(true)}>
+                <Icon name="fa-solid fa-key" style={{ marginRight: 6 }} />
+                ログイン
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </header>
+
+      {/* Disk quota */}
+      <DiskQuotaBar disk={disk} onRetry={fetchDisk} />
+
+      {/* Auth modal */}
+      {showAuthPanel && !loggedInUser && (
+        <div style={modalStyles.overlay} onClick={() => setShowAuthPanel(false)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <AuthPanel onLogin={(u) => {
+              setLoggedInUser(u);
+              setShowAuthPanel(false);
+              // Fetch oplevel after login
+              const t = getToken();
+              if (t) {
+                fetch("/api/auth/status", { headers: { Authorization: `Bearer ${t}` } })
+                  .then(r => r.json())
+                  .then(d => { if (d.oplevel) setOplevel(d.oplevel); })
+                  .catch(() => {});
+              }
+            }} />
+          </div>
+        </div>
+      )}
+
+      {/* Status modal */}
+      {showStatusModal && (
+        <StatusModal onClose={() => setShowStatusModal(false)} />
+      )}
+
+      {/* Breadcrumb / Navigation */}
+      <nav className="fs-nav" style={styles.nav}>
+        <button onClick={goHome} style={styles.navBtn} title="ルートへ">
+          <Icon name="fa-solid fa-house" style={{ marginRight: 6 }} />
+          ルート
+        </button>
+        {currentPath && (
+          <button onClick={goBack} style={styles.navBtn} title="戻る">
+            <Icon name="fa-solid fa-arrow-left" style={{ marginRight: 6 }} />
+            戻る
+          </button>
+        )}
+        <span className="fs-breadcrumb" style={styles.breadcrumb}>
+          <span style={styles.breadcrumbItem} onClick={goHome}>/</span>
+          {breadcrumbs.map((segment, i) => {
+            const path = breadcrumbs.slice(0, i + 1).join("/");
+            return (
+              <span key={path}>
+                <span
+                  style={styles.breadcrumbItem}
+                  onClick={() => { setPathHistory((prev) => [...prev, currentPath]); fetchEntries(path); }}
+                >
+                  {segment}
+                </span>
+                {i < breadcrumbs.length - 1 && " / "}
+              </span>
+            );
+          })}
+        </span>
+      </nav>
+
+      {/* Upload area (logged-in only) */}
+      {loggedInUser && (
+        <UploadPanel
+          currentPath={currentPath}
+          disk={disk}
+          onUploaded={() => { fetchEntries(currentPath); fetchDisk(); }}
+        />
+      )}
+
+      {/* Content */}
+      <main style={styles.main}>
+        {loading && (
+          <div style={styles.loading}>
+            <Icon name="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />
+            読み込み中...
+          </div>
+        )}
+        {error && (
+          <div style={styles.error}>
+            <Icon name="fa-solid fa-circle-exclamation" style={{ marginRight: 8 }} />
+            {error}
+          </div>
+        )}
+        {!loading && !error && entries.length === 0 && (
+          <div style={styles.empty}>
+            <Icon name="fa-regular fa-folder-open" style={{ marginRight: 8, fontSize: 20 }} />
+            このフォルダは空です
+          </div>
+        )}
+        {!loading && !error && entries.length > 0 && (
+          <table className="fs-file-table" style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}></th>
+                <th style={{ ...styles.th, textAlign: "left" as const }}>名前</th>
+                <th style={styles.th}>サイズ</th>
+                <th style={styles.th}>更新日時</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => (
+                <tr
+                  key={entry.path || entry.name}
+                  style={styles.row}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f0f4ff"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ""; }}
+                  onContextMenu={(e) => handleContextMenu(e, entry)}
+                  onTouchStart={(e) => {
+                    if (!loggedInUser) return;
+                    const touch = e.touches[0];
+                    touchStartPos.current = { x: touch.clientX, y: touch.clientY };
+                    longPressTimer.current = setTimeout(() => {
+                      handleLongPress(entry, touch.clientX, touch.clientY);
+                    }, 300);
+                  }}
+                  onTouchEnd={() => {
+                    if (longPressTimer.current) {
+                      clearTimeout(longPressTimer.current);
+                      longPressTimer.current = null;
+                    }
+                    touchStartPos.current = null;
+                  }}
+                  onTouchMove={() => {
+                    if (longPressTimer.current) {
+                      clearTimeout(longPressTimer.current);
+                      longPressTimer.current = null;
+                    }
+                  }}
+                >
+                  <td className="fs-icon-cell" style={styles.iconCell}>
+                    <Icon name={getFileIconClass(entry)} style={{ color: getFileIconColor(entry), fontSize: 18 }} />
+                  </td>
+                  <td className="fs-name-cell" style={styles.nameCell}>
+                    {entry.isDir ? (
+                      <span style={styles.dirLink} onClick={() => navigateTo(entry)}>{entry.name}</span>
+                    ) : isMarkdown(entry) ? (
+                      <span style={styles.previewLink} onClick={() => setPreviewEntry(entry)} title="クリックでプレビュー">
+                        <Icon name="fa-brands fa-markdown" style={{ marginRight: 6, fontSize: 12, color: "#6cb4ee" }} />
+                        {entry.name}
+                      </span>
+                    ) : isPreviewable(entry) ? (
+                      <span style={styles.previewLink} onClick={() => setPreviewEntry(entry)} title="クリックでプレビュー">
+                        <Icon name="fa-solid fa-play" style={{ marginRight: 6, fontSize: 10 }} />
+                        {entry.name}
+                      </span>
+                    ) : (
+                      <span style={styles.fileName}>{entry.name}</span>
+                    )}
+                  </td>
+                  <td className="fs-size-cell" style={styles.sizeCell}>{formatSize(entry.size)}</td>
+                  <td className="fs-date-cell" style={styles.dateCell}>{formatDate(entry.mtime)}</td>
+                  <td className="fs-action-cell" style={styles.actionCell}>
+                    {!entry.isDir && (
+                      <button style={styles.downloadBtn} onClick={() => downloadFile(entry)} title="ダウンロード">
+                        <Icon name="fa-solid fa-download" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </main>
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <ContextMenu
+          entry={contextMenu.entry}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          oplevel={oplevel}
+          onClose={() => setContextMenu(null)}
+          onRefresh={() => fetchEntries(currentPath)}
+        />
+      )}
+
+      {/* Preview Modal */}
+      {previewEntry && !isMarkdown(previewEntry) && (
+        <PreviewModal
+          entry={previewEntry}
+          entries={entries}
+          onClose={() => setPreviewEntry(null)}
+          onNavigate={(e) => setPreviewEntry(e)}
+        />
+      )}
+
+      {/* Markdown Preview Modal */}
+      {previewEntry && isMarkdown(previewEntry) && (
+        <MarkdownPreviewModal
+          entry={previewEntry}
+          onClose={() => setPreviewEntry(null)}
+        />
+      )}
+
+      {/* Footer */}
+      <footer style={styles.footer}>
+        <span>
+          <Icon name="fa-solid fa-server" style={{ marginRight: 6 }} />
+          FileShare v{CURRENT_FILESHARE_VERSION} — {entries.length} 項目
+        </span>
+      </footer>
+    </div>
+  );
+}
+
+// -- Inline Styles
+const styles: Record<string, React.CSSProperties> = {
+  container: {
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+    maxWidth: 960,
+    margin: "0 auto",
+    padding: "0 16px",
+    color: "#1a1a2e",
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+  },
+  header: {
+    padding: "24px 0 8px",
+    borderBottom: "2px solid #e0e0e0",
+  },
+  title: { margin: 0, fontSize: 28, fontWeight: 700, display: "flex", alignItems: "center" },
+  subtitle: { margin: "4px 0 0", fontSize: 14, color: "#666" },
+  nav: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "12px 0",
+    flexWrap: "wrap",
+  },
+  navBtn: {
+    padding: "6px 14px",
+    border: "1px solid #ccc",
+    borderRadius: 6,
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 14,
+    transition: "background 150ms",
+    display: "inline-flex",
+    alignItems: "center",
+    fontFamily: "inherit",
+  },
+  breadcrumb: { fontSize: 14, color: "#555", marginLeft: 8 },
+  breadcrumbItem: { cursor: "pointer", color: "#3366cc", textDecoration: "underline" },
+  main: { flex: 1 },
+  loading: { textAlign: "center", padding: 48, fontSize: 18, color: "#888", display: "flex", alignItems: "center", justifyContent: "center" },
+  error: { textAlign: "center", padding: 48, fontSize: 16, color: "#c00", display: "flex", alignItems: "center", justifyContent: "center" },
+  empty: { textAlign: "center", padding: 48, fontSize: 16, color: "#888", display: "flex", alignItems: "center", justifyContent: "center" },
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 14 },
+  th: {
+    padding: "10px 8px",
+    borderBottom: "2px solid #ddd",
+    textAlign: "center",
+    fontWeight: 600,
+    color: "#555",
+    whiteSpace: "nowrap",
+  },
+  row: { borderBottom: "1px solid #eee", transition: "background 100ms" },
+  iconCell: { padding: "10px 8px", textAlign: "center", width: 40, fontSize: 18 },
+  nameCell: { padding: "10px 8px", wordBreak: "break-all" },
+  dirLink: { cursor: "pointer", color: "#3366cc", fontWeight: 500, textDecoration: "none" },
+  previewLink: { cursor: "pointer", color: "#2255aa", fontWeight: 500, textDecoration: "none", display: "inline-flex", alignItems: "center" },
+  fileName: { color: "#1a1a2e" },
+  sizeCell: { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap", color: "#666", width: 100 },
+  dateCell: { padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap", color: "#666", width: 160 },
+  actionCell: { padding: "10px 8px", textAlign: "center", width: 50 },
+  downloadBtn: {
+    padding: "4px 10px",
+    border: "1px solid #ccc",
+    borderRadius: 6,
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 16,
+    transition: "background 150ms",
+    color: "#3366cc",
+  },
+  footer: {
+    textAlign: "center",
+    padding: "16px 0",
+    borderTop: "1px solid #e0e0e0",
+    fontSize: 12,
+    color: "#999",
+  },
+};

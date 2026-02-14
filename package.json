@@ -1,0 +1,27 @@
+{
+  "name": "fileshare",
+  "version": "1.0.0",
+  "description": "FileShare APP - Bun + React file sharing service",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun scripts/build.ts && bun src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "build": "bun scripts/build.ts",
+    "build:exe": "bun scripts/build.ts --exe && bun build --compile src/index.ts --outfile FileShare",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "koukunn",
+  "license": "MIT",
+  "dependencies": {
+    "markdown-it": "^14.1.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8",
+    "@types/markdown-it": "^14.1.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

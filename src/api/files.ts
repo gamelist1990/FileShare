@@ -1,0 +1,251 @@
+import { readdir, stat, realpath } from "node:fs/promises";
+import { join, relative, extname, basename } from "node:path";
+
+// ── Types ──────────────────────────────────────────────
+export interface FileEntry {
+  name: string;
+  path: string; // relative to root
+  isDir: boolean;
+  size: number;
+  mtime: string; // ISO string
+}
+
+// ── MIME map (common types) ────────────────────────────
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".xml": "application/xml; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+  ".mov": "video/quicktime",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".flac": "audio/flac",
+  ".m4a": "audio/mp4",
+  ".pdf": "application/pdf",
+  ".zip": "application/zip",
+  ".gz": "application/gzip",
+  ".tar": "application/x-tar",
+  ".7z": "application/x-7z-compressed",
+  ".rar": "application/vnd.rar",
+  ".exe": "application/octet-stream",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".ts": "video/mp2t",
+};
+
+export function getMime(filePath: string): string {
+  return MIME[extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
+
+// ── Security: validate path stays inside root ──────────
+export async function safePath(
+  rootReal: string,
+  relPath: string
+): Promise<string | null> {
+  try {
+    // Normalise: replace backslashes, strip leading slashes/dots
+    const cleaned = relPath
+      .replace(/\\/g, "/")
+      .replace(/^[./\\]+/, "")
+      .replace(/\.\./g, "");
+
+    const target = join(rootReal, cleaned);
+    const resolved = await realpath(target);
+
+    // Normalise both to forward-slash lowercase for Windows
+    const normRoot = rootReal.replace(/\\/g, "/").toLowerCase();
+    const normResolved = resolved.replace(/\\/g, "/").toLowerCase();
+
+    if (!normResolved.startsWith(normRoot)) {
+      return null; // path traversal attempt
+    }
+    return resolved;
+  } catch {
+    return null; // path doesn't exist
+  }
+}
+
+// ── Calculate total size of a directory (recursive) ───
+async function calcDirSize(dirPath: string): Promise<number> {
+  let total = 0;
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    const promises = entries.map(async (entry) => {
+      const fullPath = join(dirPath, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          return await calcDirSize(fullPath);
+        } else {
+          const st = await stat(fullPath);
+          return st.size;
+        }
+      } catch {
+        return 0;
+      }
+    });
+    const sizes = await Promise.all(promises);
+    total = sizes.reduce((a, b) => a + b, 0);
+  } catch {
+    // inaccessible directory
+  }
+  return total;
+}
+
+// ── List directory ─────────────────────────────────────
+export async function listDirectory(
+  rootReal: string,
+  relPath: string
+): Promise<FileEntry[] | null> {
+  const dirPath = relPath ? await safePath(rootReal, relPath) : rootReal;
+  if (!dirPath) return null;
+
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    const result: FileEntry[] = [];
+
+    const entryPromises = entries.map(async (entry) => {
+      const fullPath = join(dirPath, entry.name);
+      try {
+        const st = await stat(fullPath);
+        const rel = relative(rootReal, fullPath).replace(/\\/g, "/");
+        const isDir = entry.isDirectory();
+        const size = isDir ? await calcDirSize(fullPath) : st.size;
+        return {
+          name: entry.name,
+          path: rel,
+          isDir,
+          size,
+          mtime: st.mtime.toISOString(),
+        };
+      } catch {
+        return null; // skip inaccessible entries
+      }
+    });
+
+    const resolved = await Promise.all(entryPromises);
+    for (const item of resolved) {
+      if (item) result.push(item);
+    }
+
+    // Sort: directories first, then alphabetical
+    result.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+// ── Serve file with Range support ──────────────────────
+export async function serveFile(
+  rootReal: string,
+  relPath: string,
+  request: Request
+): Promise<Response> {
+  const filePath = await safePath(rootReal, relPath);
+  if (!filePath) {
+    return new Response(JSON.stringify({ error: "Not found or access denied" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  try {
+    const st = await stat(filePath);
+    if (st.isDirectory()) {
+      return new Response(JSON.stringify({ error: "Is a directory" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const fileSize = st.size;
+    const mime = getMime(filePath);
+    const fileName = basename(filePath);
+
+    // HEAD request
+    if (request.method === "HEAD") {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          "Content-Type": mime,
+          "Content-Length": String(fileSize),
+          "Accept-Ranges": "bytes",
+        },
+      });
+    }
+
+    const rangeHeader = request.headers.get("Range");
+
+    // ── Range request (partial content) ──
+    if (rangeHeader) {
+      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (!match) {
+        return new Response("Invalid Range", { status: 416 });
+      }
+
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+
+      if (start >= fileSize || end >= fileSize || start > end) {
+        return new Response("Range Not Satisfiable", {
+          status: 416,
+          headers: { "Content-Range": `bytes */${fileSize}` },
+        });
+      }
+
+      const chunkSize = end - start + 1;
+      const file = Bun.file(filePath);
+      const slice = file.slice(start, end + 1);
+
+      return new Response(slice, {
+        status: 206,
+        headers: {
+          "Content-Type": mime,
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+          "Content-Length": String(chunkSize),
+          "Accept-Ranges": "bytes",
+          "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
+        },
+      });
+    }
+
+    // ── Full file ──
+    const file = Bun.file(filePath);
+    return new Response(file, {
+      status: 200,
+      headers: {
+        "Content-Type": mime,
+        "Content-Length": String(fileSize),
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
+      },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Failed to read file" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
+}
