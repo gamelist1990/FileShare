@@ -11,6 +11,11 @@ import { rename, rm, stat } from "node:fs/promises";
 import { safePath } from "./files";
 import { isPathBlocked } from "./auth";
 
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 function jsonResponse(status: number, data: unknown): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -83,9 +88,9 @@ export async function handleRename(
       ok: true,
       message: `「${oldName}」を「${safeName}」に変更しました`,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("Rename error:", err);
-    return jsonResponse(500, { error: "名前変更に失敗しました: " + err.message });
+    return jsonResponse(500, { error: "名前変更に失敗しました: " + getErrorMessage(err) });
   }
 }
 
@@ -135,8 +140,8 @@ export async function handleDelete(
       ok: true,
       message: `${type}「${entryName}」を削除しました`,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("Delete error:", err);
-    return jsonResponse(500, { error: "削除に失敗しました: " + err.message });
+    return jsonResponse(500, { error: "削除に失敗しました: " + getErrorMessage(err) });
   }
 }

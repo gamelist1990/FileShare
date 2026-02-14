@@ -2,13 +2,14 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { listDirectory, serveFile } from "./api/files";
+import { listDirectory, serveFile, type FileEntry } from "./api/files";
 import {
   register, login, logout, verifyToken, getAuthStatus, getClientIp,
   approveUser, denyUser, clearPending, listPendingUsers, listAllUsers,
   resetAll, resetPassword, resetUsername, initAuth, flushSave,
   deleteUser, setOpLevel, getOpLevel,
   addBlockPath, removeBlockPath, listBlockedPaths, isPathBlocked,
+  type RequestIpServer,
 } from "./api/auth";
 import { handleUpload, handleMkdir, getDiskInfo } from "./api/upload";
 import { handleRename, handleDelete } from "./api/fileops";
@@ -23,7 +24,6 @@ import { isHAProxyProxyProtocolV2Enabled, registerHAProxySettings } from "./api/
 import { CURRENT_FILESHARE_VERSION } from "./version";
 import { startHAProxyBridge } from "./api/haproxyBridge";
 
-// ── CLI: parse --path argument ─────────────────────────
 function parseArgs(): { sharePath: string; port: number } {
   const args = process.argv.slice(2);
   let sharePath = process.cwd();
@@ -40,7 +40,6 @@ function parseArgs(): { sharePath: string; port: number } {
   return { sharePath: resolve(sharePath), port };
 }
 
-// ── CORS headers ───────────────────────────────────────
 function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -57,7 +56,6 @@ function jsonRes(status: number, data: unknown, extraHeaders?: Record<string, st
   });
 }
 
-// ── Serve embedded SPA assets (exe-safe) ───────────────
 function serveEmbeddedHtml(): Response {
   return new Response(INDEX_HTML, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -70,11 +68,18 @@ function serveEmbeddedJs(): Response {
   });
 }
 
-// ── Shared state for CLI (set in main, used by CLI) ────
 let port = 3000;
 let rootReal = "";
 
-// ── Console admin CLI (stdin) ──────────────────────────
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function isErrnoLike(err: unknown): err is { code?: string; errno?: string; syscall?: string } {
+  return typeof err === "object" && err !== null;
+}
+
 function startConsoleCLI() {
   const rl = createInterface({
     input: process.stdin,
@@ -108,7 +113,6 @@ function startConsoleCLI() {
     const parts = trimmed.split(/\s+/);
     const cmd = parts[0].toLowerCase();
 
-    // ── Multi-word commands: "user reset ...", "user delete ...", "user op ..." ──
     if (cmd === "user" && parts[1]?.toLowerCase() === "reset") {
       const subCmd = parts[2]?.toLowerCase();
       if (subCmd === "password") {
@@ -143,7 +147,6 @@ function startConsoleCLI() {
       return;
     }
 
-    // ── user delete <username> ──
     if (cmd === "user" && parts[1]?.toLowerCase() === "delete") {
       const username = parts[2] ?? "";
       if (!username) {
@@ -158,7 +161,6 @@ function startConsoleCLI() {
       return;
     }
 
-    // ── user op <username> <level> ──
     if (cmd === "user" && parts[1]?.toLowerCase() === "op") {
       const username = parts[2] ?? "";
       const level = parseInt(parts[3] ?? "", 10);
@@ -248,13 +250,11 @@ function startConsoleCLI() {
         break;
       }
       case "reload": {
-        // Re-read settings.json so runtime uses the latest configuration
         initSettings(rootReal);
         console.log("⚙️  設定をリロードしました");
         break;
       }
       case "block": {
-        // Support paths with spaces: rejoin everything after "block"
         const blockPath = trimmed.replace(/^block\s+/i, "").replace(/^"|"$/g, "").trim();
         if (!blockPath) {
           console.log("⚠️  使い方: block <path>");
@@ -318,7 +318,6 @@ function startConsoleCLI() {
   });
 }
 
-// ── Main ───────────────────────────────────────────────
 async function main() {
   const args = parseArgs();
   port = args.port;
@@ -369,11 +368,11 @@ async function main() {
       hostname: haproxyEnabled ? "127.0.0.1" : "0.0.0.0",
       idleTimeout: 120,
 
-      async fetch(request: Request, server: any): Promise<Response> {
+      async fetch(request: Request, server: RequestIpServer): Promise<Response> {
       let url: URL;
       try {
         url = new URL(request.url);
-      } catch (err) {
+      } catch (err: unknown) {
         console.error("Invalid URL:", request.url, err);
         return jsonRes(400, { error: "Invalid request URL" });
       }
@@ -420,8 +419,8 @@ async function main() {
               headers.set(k, v);
             }
             return new Response(payload, { status: 200, headers });
-          } catch (err: any) {
-            return jsonRes(500, { error: "speedtest download failed", detail: String(err?.message ?? err) });
+          } catch (err: unknown) {
+            return jsonRes(500, { error: "speedtest download failed", detail: getErrorMessage(err) });
           }
         }
 
@@ -436,8 +435,8 @@ async function main() {
               receivedBytes,
               elapsedMs,
             });
-          } catch (err: any) {
-            return jsonRes(500, { error: "speedtest upload failed", detail: String(err?.message ?? err) });
+          } catch (err: unknown) {
+            return jsonRes(500, { error: "speedtest upload failed", detail: getErrorMessage(err) });
           }
         }
 
@@ -490,7 +489,7 @@ async function main() {
             return jsonRes(404, { error: "Directory not found or access denied" });
           }
           // Filter out blocked entries from listing
-          const filtered = entries.filter((e: any) => {
+          const filtered = entries.filter((e: FileEntry) => {
             const fullPath = (rootReal + "/" + e.path).replace(/\\/g, "/");
             return !isPathBlocked(fullPath);
           });
@@ -731,8 +730,8 @@ async function main() {
       }
     },
   });
-  } catch (err: any) {
-    if (err && (err.code === "EADDRINUSE" || err.errno === "EADDRINUSE" || err.syscall === "listen")) {
+  } catch (err: unknown) {
+    if (isErrnoLike(err) && (err.code === "EADDRINUSE" || err.errno === "EADDRINUSE" || err.syscall === "listen")) {
       console.error(`❌ ポート ${internalPort} は既に使用されています。別のポートを指定するには --port <番号> を使ってください。`);
       process.exit(1);
     }

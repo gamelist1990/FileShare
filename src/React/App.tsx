@@ -22,7 +22,11 @@ import { StatusModal } from "./components/StatusModal";
 import { ContextMenu } from "./components/ContextMenu";
 import { modalStyles } from "./components/modalStyles";
 
-// -- App Component
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 export function App() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [currentPath, setCurrentPath] = useState("");
@@ -113,8 +117,8 @@ export function App() {
       setEntries(data);
       setCurrentPath(path);
       updateUrlPath(path);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e));
       setEntries([]);
     } finally {
       setLoading(false);

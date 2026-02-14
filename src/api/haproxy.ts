@@ -33,17 +33,23 @@ const DEFAULT_HAPROXY_SETTINGS: HAProxySettings = {
   proxyProtocolV2: false,
 };
 
+function asUnknownRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
 export function registerHAProxySettings(): void {
   registerSettingsModule<HAProxySettings>(SETTINGS_KEY, DEFAULT_HAPROXY_SETTINGS);
 
   // v1 -> v2: compact haproxy settings to only { proxyProtocolV2 }
-  registerSettingsMigration(1, (raw: any) => {
-    const modules: Record<string, any> = {
-      ...(raw?.modules && typeof raw.modules === "object" ? raw.modules : {}),
+  registerSettingsMigration(1, (raw) => {
+    const modules = {
+      ...(asUnknownRecord(raw.modules) ?? {}),
     };
     const prev = modules[SETTINGS_KEY];
+    const prevRecord = asUnknownRecord(prev);
     modules[SETTINGS_KEY] = {
-      proxyProtocolV2: Boolean(prev?.proxyProtocolV2),
+      proxyProtocolV2: Boolean(prevRecord?.proxyProtocolV2),
     };
     return { ...raw, modules };
   });
