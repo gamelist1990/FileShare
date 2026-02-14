@@ -13,7 +13,7 @@ import {
 } from "./api/auth";
 import { handleUpload, handleMkdir, getDiskInfo, registerUploadSettings } from "./api/upload";
 import { handleRename, handleDelete, handleMove } from "./api/fileops";
-import { handleHlsPlaylist, handleHlsFile } from "./api/stream";
+import { handleHlsPlaylist, handleHlsFile, registerStreamSettings, getStreamSettings } from "./api/stream";
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
   recordDownload, recordUpload, connectionStart, connectionEnd,
@@ -339,6 +339,7 @@ async function main() {
   registerRateLimitSettings();
   registerHAProxySettings();
   registerUploadSettings();
+  registerStreamSettings();
   initSettings(rootReal);
 
   const haproxyEnabled = isHAProxyProxyProtocolV2Enabled();
@@ -562,6 +563,16 @@ async function main() {
             headers.set(k, v);
           }
           return new Response(resp.body, { status: resp.status, headers });
+        }
+
+        if (pathname === "/api/stream/config") {
+          const settings = getStreamSettings();
+          return jsonRes(200, {
+            alwaysAnalyze: settings.alwaysAnalyze,
+            useFastCopyFirst: settings.useFastCopyFirst,
+            ffmpegPreset: settings.ffmpegPreset,
+            hlsSegmentSeconds: settings.hlsSegmentSeconds,
+          });
         }
 
         if (pathname === "/api/stream/file") {

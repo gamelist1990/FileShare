@@ -4,6 +4,7 @@ import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { safePath, getMime } from "./files";
+import { getModuleSettings, registerSettingsModule } from "./settings";
 
 function getErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -20,6 +21,54 @@ function jsonResponse(status: number, data: unknown): Response {
 const SUPPORTED_SOURCE_EXTS = new Set([".mp4", ".m4v", ".mov"]);
 const HLS_ROOT = join(tmpdir(), "fileshare-hls-cache");
 const inflight = new Map<string, Promise<void>>();
+const STREAM_SETTINGS_KEY = "stream";
+
+interface StreamSettings {
+  alwaysAnalyze: boolean;
+  useFastCopyFirst: boolean;
+  ffmpegPreset: "ultrafast" | "superfast" | "veryfast" | "faster";
+  hlsSegmentSeconds: number;
+}
+
+const DEFAULT_STREAM_SETTINGS: StreamSettings = {
+  alwaysAnalyze: false,
+  useFastCopyFirst: true,
+  ffmpegPreset: "ultrafast",
+  hlsSegmentSeconds: 6,
+};
+
+export function registerStreamSettings(): void {
+  registerSettingsModule<StreamSettings>(STREAM_SETTINGS_KEY, DEFAULT_STREAM_SETTINGS);
+}
+
+export function getStreamSettings(): StreamSettings {
+  const raw = getModuleSettings<StreamSettings>(STREAM_SETTINGS_KEY);
+  const allowedPresets = new Set(["ultrafast", "superfast", "veryfast", "faster"]);
+  const preset = typeof raw?.ffmpegPreset === "string" && allowedPresets.has(raw.ffmpegPreset)
+    ? raw.ffmpegPreset
+    : DEFAULT_STREAM_SETTINGS.ffmpegPreset;
+  const hlsSegmentSeconds = Math.max(2, Math.min(12, Number(raw?.hlsSegmentSeconds ?? DEFAULT_STREAM_SETTINGS.hlsSegmentSeconds) || DEFAULT_STREAM_SETTINGS.hlsSegmentSeconds));
+
+  return {
+    alwaysAnalyze: Boolean(raw?.alwaysAnalyze),
+    useFastCopyFirst: raw?.useFastCopyFirst !== false,
+    ffmpegPreset: preset,
+    hlsSegmentSeconds,
+  };
+}
+
+async function runFfmpeg(args: string[]): Promise<void> {
+  const proc = Bun.spawn(["ffmpeg", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(stderr || `ffmpeg failed with exit code ${exitCode}`);
+  }
+}
 
 interface ResolvedSource {
   sourceAbsPath: string;
@@ -66,6 +115,48 @@ async function ensureHlsGenerated(source: ResolvedSource): Promise<void> {
 
   const job = (async () => {
     await mkdir(source.cacheDir, { recursive: true });
+    const settings = getStreamSettings();
+    const hlsTime = String(settings.hlsSegmentSeconds);
+
+    // 1) Fast path: remux/copy first (very fast, minimal CPU)
+    if (settings.useFastCopyFirst) {
+      const copyArgs = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        source.sourceAbsPath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "copy",
+        "-f",
+        "hls",
+        "-hls_time",
+        hlsTime,
+        "-hls_playlist_type",
+        "vod",
+        "-hls_flags",
+        "independent_segments",
+        "-hls_segment_filename",
+        join(source.cacheDir, "seg_%05d.ts"),
+        source.playlistAbsPath,
+      ];
+
+      try {
+        await runFfmpeg(copyArgs);
+        if (existsSync(source.playlistAbsPath)) {
+          return;
+        }
+      } catch {
+        // fall through to transcode path
+      }
+    }
 
     const ffmpegArgs = [
       "-hide_banner",
@@ -77,36 +168,43 @@ async function ensureHlsGenerated(source: ResolvedSource): Promise<void> {
       "-c:v",
       "libx264",
       "-preset",
-      "veryfast",
+      settings.ffmpegPreset,
       "-crf",
-      "24",
+      "26",
+      "-profile:v",
+      "main",
+      "-level",
+      "4.0",
+      "-x264-params",
+      "scenecut=0:open_gop=0",
+      "-g",
+      "60",
+      "-keyint_min",
+      "60",
       "-c:a",
       "aac",
+      "-ac",
+      "2",
       "-b:a",
-      "128k",
+      "96k",
       "-movflags",
       "+faststart",
+      "-threads",
+      "0",
       "-f",
       "hls",
       "-hls_time",
-      "6",
+      hlsTime,
       "-hls_playlist_type",
       "vod",
+      "-hls_flags",
+      "independent_segments",
       "-hls_segment_filename",
       join(source.cacheDir, "seg_%05d.ts"),
       source.playlistAbsPath,
     ];
 
-    const proc = Bun.spawn(["ffmpeg", ...ffmpegArgs], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(stderr || `ffmpeg failed with exit code ${exitCode}`);
-    }
+    await runFfmpeg(ffmpegArgs);
 
     if (!existsSync(source.playlistAbsPath)) {
       throw new Error("HLS playlist was not generated");

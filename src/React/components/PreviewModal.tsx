@@ -19,6 +19,8 @@ export function PreviewModal({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [useDirectFallback, setUseDirectFallback] = useState(false);
+  const [alwaysAnalyze, setAlwaysAnalyze] = useState(false);
+  const [isMobileLikeClient, setIsMobileLikeClient] = useState(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -38,6 +40,26 @@ export function PreviewModal({
   }, [entry.path]);
 
   useEffect(() => {
+    fetch("/api/stream/config")
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error("config fetch failed")))
+      .then((d) => setAlwaysAnalyze(Boolean(d?.alwaysAnalyze)))
+      .catch(() => setAlwaysAnalyze(false));
+  }, []);
+
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const uaMobile = /iP(hone|ad|od)|Android|Mobile|Tablet/i.test(ua);
+    const update = () => {
+      const smallScreen = window.innerWidth <= 1024;
+      const coarse = window.matchMedia("(pointer: coarse)").matches;
+      setIsMobileLikeClient(uaMobile || smallScreen || coarse);
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  useEffect(() => {
     if (!isVideo(entry) || !videoRef.current) return;
     const v = videoRef.current;
     v.setAttribute("playsinline", "true");
@@ -50,7 +72,7 @@ export function PreviewModal({
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx < previewableFiles.length - 1;
   const ext = getExt(entry.name);
-  const shouldPreferServerHls = ["mp4", "m4v", "mov"].includes(ext);
+  const shouldPreferServerHls = ["mp4", "m4v", "mov"].includes(ext) && (alwaysAnalyze || isMobileLikeClient);
   const hlsPlaylistUrl = `/api/stream/playlist?path=${encodeURIComponent(entry.path)}`;
   const activeVideoUrl = shouldPreferServerHls && !useDirectFallback ? hlsPlaylistUrl : fileUrl(entry);
 
