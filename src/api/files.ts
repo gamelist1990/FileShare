@@ -57,29 +57,26 @@ export function getMime(filePath: string): string {
   return MIME[extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 
-function encodeRFC5987(value: string): string {
-  return encodeURIComponent(value)
-    .replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
-    .replace(/%(7C|60|5E)/g, "%25$1");
+function shouldForceDownload(request: Request): boolean {
+  try {
+    const url = new URL(request.url);
+    const v = (url.searchParams.get("download") ?? "").toLowerCase();
+    return v === "1" || v === "true" || v === "yes";
+  } catch {
+    return false;
+  }
 }
 
-function isInlineSafeMime(mime: string): boolean {
-  return (
-    mime.startsWith("image/") ||
-    mime.startsWith("video/") ||
-    mime.startsWith("audio/") ||
-    mime === "application/pdf" ||
-    mime.startsWith("text/") ||
-    mime === "application/json" ||
-    mime === "application/xml" ||
-    mime === "application/javascript; charset=utf-8"
-  );
+function encodeDispositionFilename(name: string): string {
+  return encodeURIComponent(name)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, "%2A");
 }
 
-function buildContentDisposition(filename: string, mode: "inline" | "attachment"): string {
-  const safeAscii = filename.replace(/[\r\n"]/g, "_");
-  const utf8 = encodeRFC5987(filename);
-  return `${mode}; filename="${safeAscii}"; filename*=UTF-8''${utf8}`;
+function buildContentDisposition(filePath: string): string {
+  const fileName = basename(filePath);
+  const encoded = encodeDispositionFilename(fileName);
+  return `attachment; filename*=UTF-8''${encoded}`;
 }
 
 function isExternalUri(uri: string): boolean {
@@ -252,14 +249,9 @@ export async function serveFile(
 
     const fileSize = st.size;
     const mime = getMime(filePath);
+    const forceDownload = shouldForceDownload(request);
+    const disposition = buildContentDisposition(filePath);
     const fileExt = extname(filePath).toLowerCase();
-    const filename = basename(filePath);
-    const reqUrl = new URL(request.url);
-    const forceDownload = reqUrl.searchParams.get("download") === "1";
-    const dispositionMode: "inline" | "attachment" = forceDownload
-      ? "attachment"
-      : (isInlineSafeMime(mime) ? "inline" : "attachment");
-    const contentDisposition = buildContentDisposition(filename, dispositionMode);
 
     // HLS playlist: rewrite relative URIs so Safari can fetch segments via /api/file
     if (fileExt === ".m3u8" || fileExt === ".m3u") {
@@ -272,21 +264,23 @@ export async function serveFile(
           "Cache-Control": "no-store",
           "Content-Length": String(new TextEncoder().encode(rewritten).byteLength),
           "Accept-Ranges": "bytes",
-          "Content-Disposition": contentDisposition,
         },
       });
     }
 
     // HEAD request
     if (request.method === "HEAD") {
+      const headers: Record<string, string> = {
+        "Content-Type": mime,
+        "Content-Length": String(fileSize),
+        "Accept-Ranges": "bytes",
+      };
+      if (forceDownload) {
+        headers["Content-Disposition"] = disposition;
+      }
       return new Response(null, {
         status: 200,
-        headers: {
-          "Content-Type": mime,
-          "Content-Length": String(fileSize),
-          "Accept-Ranges": "bytes",
-          "Content-Disposition": contentDisposition,
-        },
+        headers,
       });
     }
 
@@ -347,7 +341,7 @@ export async function serveFile(
           "Content-Range": `bytes ${start}-${end}/${fileSize}`,
           "Content-Length": String(chunkSize),
           "Accept-Ranges": "bytes",
-          "Content-Disposition": contentDisposition,
+          ...(forceDownload ? { "Content-Disposition": disposition } : {}),
         },
       });
     }
@@ -360,7 +354,7 @@ export async function serveFile(
         "Content-Type": mime,
         "Content-Length": String(fileSize),
         "Accept-Ranges": "bytes",
-        "Content-Disposition": contentDisposition,
+        ...(forceDownload ? { "Content-Disposition": disposition } : {}),
       },
     });
   } catch (err) {
