@@ -21,6 +21,7 @@ import {
   getStreamCacheTtlSeconds,
   startStreamCacheJanitor,
   setupStreamCacheShutdownCleanup,
+  setHlsCacheRoot,
 } from "./api/stream";
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
@@ -349,6 +350,8 @@ async function main() {
   registerUploadSettings();
   registerStreamSettings();
   initSettings(rootReal);
+  // Put HLS cache inside the share at <share>/.fileshare/cache and ensure it's ready
+  await setHlsCacheRoot(rootReal);
   startStreamCacheJanitor();
   setupStreamCacheShutdownCleanup();
 
