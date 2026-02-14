@@ -4,3 +4,4 @@ dist/
 bun.lock
 package-lock.json
 src/FileShare.exe
+FileShare.exe

@@ -50,6 +50,7 @@ export function App() {
   const [draggedEntry, setDraggedEntry] = useState<FileEntry | null>(null);
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const [touchDragPoint, setTouchDragPoint] = useState<{ x: number; y: number } | null>(null);
+  const [isTouchDragging, setIsTouchDragging] = useState(false);
   const [moveBusy, setMoveBusy] = useState(false);
   const [moveMsg, setMoveMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
@@ -241,10 +242,29 @@ export function App() {
     return path;
   }, [entries]);
 
+  useEffect(() => {
+    const lock = canDragMove && isTouchDragging;
+    if (!lock) return;
+
+    const prevOverflow = document.body.style.overflow;
+    const prevTouchAction = document.body.style.touchAction;
+    const prevOverscroll = document.body.style.overscrollBehavior;
+
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+    document.body.style.overscrollBehavior = "none";
+
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.touchAction = prevTouchAction;
+      document.body.style.overscrollBehavior = prevOverscroll;
+    };
+  }, [canDragMove, isTouchDragging]);
+
   const breadcrumbs = currentPath ? currentPath.split("/") : [];
 
   return (
-    <div style={styles.container}>
+    <div style={{ ...styles.container, touchAction: canDragMove && isTouchDragging ? "none" : "auto" }}>
       {/* Header */}
       <header style={styles.header}>
         <div className="fs-header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -437,7 +457,8 @@ export function App() {
                     touchStartPos.current = { x: touch.clientX, y: touch.clientY };
                     if (canDragMove) {
                       setDraggedEntry(entry);
-                      setTouchDragPoint({ x: touch.clientX, y: touch.clientY });
+                      setTouchDragPoint(null);
+                      setIsTouchDragging(false);
                       setDropTargetPath(null);
                     }
                     longPressTimer.current = setTimeout(() => {
@@ -450,28 +471,31 @@ export function App() {
                       longPressTimer.current = null;
                     }
 
-                    if (canDragMove && draggedEntry && dropTargetPath) {
+                    if (canDragMove && draggedEntry && isTouchDragging && dropTargetPath) {
                       void moveEntryToFolder(draggedEntry, dropTargetPath);
                     }
 
                     setDraggedEntry(null);
                     setDropTargetPath(null);
                     setTouchDragPoint(null);
+                    setIsTouchDragging(false);
                     touchStartPos.current = null;
                   }}
                   onTouchMove={(e) => {
                     const touch = e.touches[0];
+                    let movedEnough = false;
                     if (touchStartPos.current) {
                       const dx = touch.clientX - touchStartPos.current.x;
                       const dy = touch.clientY - touchStartPos.current.y;
-                      if (Math.hypot(dx, dy) > 8 && longPressTimer.current) {
+                      movedEnough = Math.hypot(dx, dy) > 8;
+                      if (movedEnough && longPressTimer.current) {
                         clearTimeout(longPressTimer.current);
                         longPressTimer.current = null;
                       }
                     }
 
-                    if (canDragMove && draggedEntry) {
-                      e.preventDefault();
+                    if (canDragMove && draggedEntry && movedEnough) {
+                      setIsTouchDragging(true);
                       setTouchDragPoint({ x: touch.clientX, y: touch.clientY });
                       setDropTargetPath(detectTouchDropFolder(touch.clientX, touch.clientY, draggedEntry));
                     }
@@ -480,6 +504,17 @@ export function App() {
                       clearTimeout(longPressTimer.current);
                       longPressTimer.current = null;
                     }
+                  }}
+                  onTouchCancel={() => {
+                    if (longPressTimer.current) {
+                      clearTimeout(longPressTimer.current);
+                      longPressTimer.current = null;
+                    }
+                    setDraggedEntry(null);
+                    setDropTargetPath(null);
+                    setTouchDragPoint(null);
+                    setIsTouchDragging(false);
+                    touchStartPos.current = null;
                   }}
                 >
                   <td className="fs-icon-cell" style={styles.iconCell}>
@@ -518,7 +553,7 @@ export function App() {
         )}
       </main>
 
-      {canDragMove && draggedEntry && touchDragPoint && (
+      {canDragMove && draggedEntry && isTouchDragging && touchDragPoint && (
         <div
           style={{
             ...styles.touchDragBadge,
