@@ -1,21 +1,8 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { formatSize, fileUrl, isVideo, isAudio, isImage, isPreviewable, getExt } from "../helpers/fileHelpers";
 import { modalStyles } from "./modalStyles";
 import type { FileEntry } from "../types";
-
-function getVideoMimeByExt(ext: string): string {
-  const map: Record<string, string> = {
-    mp4: "video/mp4",
-    m4v: "video/mp4",
-    mov: "video/quicktime",
-    webm: "video/webm",
-    ogv: "video/ogg",
-    mkv: "video/x-matroska",
-    avi: "video/x-msvideo",
-  };
-  return map[ext] ?? "video/mp4";
-}
 
 // ── Preview Modal Component ────────────────────────────
 export function PreviewModal({
@@ -30,6 +17,8 @@ export function PreviewModal({
   onNavigate: (entry: FileEntry) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [useDirectFallback, setUseDirectFallback] = useState(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -43,11 +32,27 @@ export function PreviewModal({
     return () => window.removeEventListener("keydown", handler);
   }, [entry, entries, onClose, onNavigate]);
 
+  useEffect(() => {
+    setVideoError(null);
+    setUseDirectFallback(false);
+  }, [entry.path]);
+
+  useEffect(() => {
+    if (!isVideo(entry) || !videoRef.current) return;
+    const v = videoRef.current;
+    v.setAttribute("playsinline", "true");
+    v.setAttribute("webkit-playsinline", "true");
+    v.load();
+  }, [entry, useDirectFallback]);
+
   const previewableFiles = entries.filter(isPreviewable);
   const currentIdx = previewableFiles.findIndex((f) => f.path === entry.path);
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx < previewableFiles.length - 1;
   const ext = getExt(entry.name);
+  const shouldPreferServerHls = ["mp4", "m4v", "mov"].includes(ext);
+  const hlsPlaylistUrl = `/api/stream/playlist?path=${encodeURIComponent(entry.path)}`;
+  const activeVideoUrl = shouldPreferServerHls && !useDirectFallback ? hlsPlaylistUrl : fileUrl(entry);
 
   return (
     <div style={modalStyles.overlay} onClick={onClose}>
@@ -66,17 +71,50 @@ export function PreviewModal({
             </button>
           )}
           {isVideo(entry) && (
-            <video
-              ref={videoRef}
-              key={entry.path}
-              className="fs-modal-video"
-              style={modalStyles.video}
-              controls
-              preload="metadata"
-              playsInline
-            >
-              <source src={fileUrl(entry)} type={getVideoMimeByExt(ext)} />
-            </video>
+            videoError ? (
+              <div style={videoFallbackStyles.wrapper}>
+                <Icon name="fa-solid fa-triangle-exclamation" style={videoFallbackStyles.icon} />
+                <div style={videoFallbackStyles.title}>この動画はブラウザで再生できませんでした</div>
+                <div style={videoFallbackStyles.desc}>{videoError}</div>
+                <div style={videoFallbackStyles.actions}>
+                  <a href={fileUrl(entry)} target="_blank" rel="noreferrer" style={videoFallbackStyles.linkBtn}>
+                    別タブで開く
+                  </a>
+                  <a href={fileUrl(entry)} download={entry.name} style={videoFallbackStyles.linkBtn}>
+                    ダウンロード
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <video
+                ref={videoRef}
+                key={`${entry.path}:${useDirectFallback ? "direct" : "hls"}`}
+                src={activeVideoUrl}
+                className="fs-modal-video"
+                style={modalStyles.video}
+                controls
+                autoPlay
+                preload="metadata"
+                playsInline
+                onLoadedMetadata={() => setVideoError(null)}
+                onError={() => {
+                  if (shouldPreferServerHls && !useDirectFallback) {
+                    setUseDirectFallback(true);
+                    setVideoError(null);
+                    return;
+                  }
+                  const v = videoRef.current;
+                  const code = v?.error?.code;
+                  const detail =
+                    code === 1 ? "再生が中止されました" :
+                    code === 2 ? "ネットワークエラー" :
+                    code === 3 ? "デコードエラー" :
+                    code === 4 ? "非対応形式" :
+                    "不明なエラー";
+                  setVideoError(`再生できませんでした: ${detail}（H.264/AAC推奨）`);
+                }}
+              />
+            )
           )}
           {isAudio(entry) && (
             <div className="fs-modal-audio-wrapper" style={modalStyles.audioWrapper}>
@@ -106,3 +144,45 @@ export function PreviewModal({
     </div>
   );
 }
+
+const videoFallbackStyles: Record<string, React.CSSProperties> = {
+  wrapper: {
+    minHeight: 220,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    textAlign: "center",
+    color: "#ddd",
+    padding: "20px 16px",
+    gap: 8,
+  },
+  icon: {
+    color: "#ffb74d",
+    fontSize: 28,
+    marginBottom: 2,
+  },
+  title: {
+    fontSize: 16,
+    fontWeight: 600,
+  },
+  desc: {
+    fontSize: 12,
+    color: "#aaa",
+  },
+  actions: {
+    marginTop: 8,
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  linkBtn: {
+    border: "1px solid #6cb4ee",
+    color: "#6cb4ee",
+    borderRadius: 6,
+    padding: "6px 10px",
+    textDecoration: "none",
+    fontSize: 12,
+  },
+};

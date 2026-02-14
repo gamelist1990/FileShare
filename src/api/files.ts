@@ -1,5 +1,5 @@
 import { readdir, stat, realpath } from "node:fs/promises";
-import { join, relative, extname, basename } from "node:path";
+import { join, relative, extname, basename, dirname } from "node:path";
 
 // ── Types ──────────────────────────────────────────────
 export interface FileEntry {
@@ -32,6 +32,8 @@ const MIME: Record<string, string> = {
   ".mkv": "video/x-matroska",
   ".avi": "video/x-msvideo",
   ".mov": "video/quicktime",
+  ".m3u8": "application/vnd.apple.mpegurl",
+  ".m3u": "application/x-mpegurl",
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
@@ -53,6 +55,49 @@ const MIME: Record<string, string> = {
 
 export function getMime(filePath: string): string {
   return MIME[extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
+
+function isExternalUri(uri: string): boolean {
+  return /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(uri) || /^data:|^blob:/i.test(uri);
+}
+
+function normalizeRelPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function toApiFileUrlFromPlaylist(playlistRelPath: string, rawUri: string): string {
+  const uri = rawUri.trim();
+  if (!uri || isExternalUri(uri)) return uri;
+
+  const targetRel = uri.startsWith("/")
+    ? uri.replace(/^\/+/, "")
+    : normalizeRelPath(join(dirname(playlistRelPath), uri));
+
+  return `/api/file?path=${encodeURIComponent(targetRel)}`;
+}
+
+function rewriteHlsPlaylist(content: string, playlistRelPath: string): string {
+  const lines = content.split(/\r?\n/);
+
+  return lines.map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+
+    // URI attribute lines (e.g. EXT-X-KEY, EXT-X-MAP, EXT-X-I-FRAME-STREAM-INF)
+    if (trimmed.startsWith("#") && /URI="([^"]+)"/i.test(line)) {
+      return line.replace(/URI="([^"]+)"/i, (_m, uri: string) => {
+        const rewritten = toApiFileUrlFromPlaylist(playlistRelPath, uri);
+        return `URI="${rewritten}"`;
+      });
+    }
+
+    // Media / playlist segment URI lines
+    if (!trimmed.startsWith("#")) {
+      return toApiFileUrlFromPlaylist(playlistRelPath, trimmed);
+    }
+
+    return line;
+  }).join("\n");
 }
 
 // ── Security: validate path stays inside root ──────────
@@ -182,7 +227,22 @@ export async function serveFile(
 
     const fileSize = st.size;
     const mime = getMime(filePath);
-    const fileName = basename(filePath);
+    const fileExt = extname(filePath).toLowerCase();
+
+    // HLS playlist: rewrite relative URIs so Safari can fetch segments via /api/file
+    if (fileExt === ".m3u8" || fileExt === ".m3u") {
+      const playlist = await Bun.file(filePath).text();
+      const rewritten = rewriteHlsPlaylist(playlist, relPath.replace(/\\/g, "/"));
+      return new Response(rewritten, {
+        status: 200,
+        headers: {
+          "Content-Type": mime,
+          "Cache-Control": "no-store",
+          "Content-Length": String(new TextEncoder().encode(rewritten).byteLength),
+          "Accept-Ranges": "bytes",
+        },
+      });
+    }
 
     // HEAD request
     if (request.method === "HEAD") {
@@ -200,7 +260,8 @@ export async function serveFile(
 
     const parseRange = (header: string, totalSize: number): { start: number; end: number } | null => {
       // supports: bytes=START-END, bytes=START-, bytes=-SUFFIX
-      const m = header.trim().match(/^bytes=(\d*)-(\d*)$/i);
+      const single = header.split(",")[0]?.trim() ?? header.trim();
+      const m = single.match(/^bytes=(\d*)-(\d*)$/i);
       if (!m) return null;
       const rawStart = m[1];
       const rawEnd = m[2];
@@ -252,7 +313,6 @@ export async function serveFile(
           "Content-Range": `bytes ${start}-${end}/${fileSize}`,
           "Content-Length": String(chunkSize),
           "Accept-Ranges": "bytes",
-          "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
         },
       });
     }
@@ -265,7 +325,6 @@ export async function serveFile(
         "Content-Type": mime,
         "Content-Length": String(fileSize),
         "Accept-Ranges": "bytes",
-        "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
       },
     });
   } catch (err) {

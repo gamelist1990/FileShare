@@ -13,6 +13,7 @@ import {
 } from "./api/auth";
 import { handleUpload, handleMkdir, getDiskInfo, registerUploadSettings } from "./api/upload";
 import { handleRename, handleDelete, handleMove } from "./api/fileops";
+import { handleHlsPlaylist, handleHlsFile } from "./api/stream";
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
   recordDownload, recordUpload, connectionStart, connectionEnd,
@@ -528,6 +529,69 @@ async function main() {
           const contentLen = parseInt(headers.get("Content-Length") ?? "0", 10);
           if (resp.status === 200 || resp.status === 206) {
             recordDownload(contentLen);
+          }
+          return new Response(resp.body, { status: resp.status, headers });
+        }
+
+        if (pathname === "/api/stream/playlist") {
+          const rl = checkIpRateLimit("download", clientIp);
+          if (!rl.allowed) {
+            return jsonRes(429, {
+              error: "ダウンロードのレート制限に達しました",
+              target: "download",
+              retryAfterSec: rl.retryAfterSec ?? 1,
+            }, {
+              "Retry-After": String(rl.retryAfterSec ?? 1),
+            });
+          }
+
+          const relPath = url.searchParams.get("path") ?? "";
+          if (!relPath) {
+            return jsonRes(400, { error: "Missing path parameter" });
+          }
+
+          const { safePath } = await import("./api/files");
+          const resolved = await safePath(rootReal, relPath);
+          if (resolved && isPathBlocked(resolved)) {
+            return jsonRes(403, { error: "このファイルはブロックされています" });
+          }
+
+          const resp = await handleHlsPlaylist(rootReal, relPath);
+          const headers = new Headers(resp.headers);
+          for (const [k, v] of Object.entries(corsHeaders())) {
+            headers.set(k, v);
+          }
+          return new Response(resp.body, { status: resp.status, headers });
+        }
+
+        if (pathname === "/api/stream/file") {
+          const rl = checkIpRateLimit("download", clientIp);
+          if (!rl.allowed) {
+            return jsonRes(429, {
+              error: "ダウンロードのレート制限に達しました",
+              target: "download",
+              retryAfterSec: rl.retryAfterSec ?? 1,
+            }, {
+              "Retry-After": String(rl.retryAfterSec ?? 1),
+            });
+          }
+
+          const relPath = url.searchParams.get("path") ?? "";
+          const file = url.searchParams.get("file") ?? "";
+          if (!relPath || !file) {
+            return jsonRes(400, { error: "Missing path/file parameter" });
+          }
+
+          const { safePath } = await import("./api/files");
+          const resolved = await safePath(rootReal, relPath);
+          if (resolved && isPathBlocked(resolved)) {
+            return jsonRes(403, { error: "このファイルはブロックされています" });
+          }
+
+          const resp = await handleHlsFile(rootReal, relPath, file);
+          const headers = new Headers(resp.headers);
+          for (const [k, v] of Object.entries(corsHeaders())) {
+            headers.set(k, v);
           }
           return new Response(resp.body, { status: resp.status, headers });
         }

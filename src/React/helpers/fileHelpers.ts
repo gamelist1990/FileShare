@@ -1,7 +1,7 @@
 import type { FileEntry } from "../types";
 
 // ── Extension Sets ─────────────────────────────────────
-export const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "mkv", "avi", "m4v", "ogv"]);
+export const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "mkv", "avi", "m4v", "ogv", "m3u8", "m3u"]);
 export const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "flac", "m4a", "aac", "wma"]);
 export const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico"]);
 export const MD_EXTS = new Set(["md", "markdown", "mdown", "mkd"]);
@@ -56,6 +56,7 @@ export function getFileIconClass(entry: FileEntry): string {
   const map: Record<string, string> = {
     mp4: "fa-solid fa-film", mkv: "fa-solid fa-film", avi: "fa-solid fa-film",
     mov: "fa-solid fa-film", webm: "fa-solid fa-film", ts: "fa-solid fa-film",
+    m3u8: "fa-solid fa-film", m3u: "fa-solid fa-film",
     m4v: "fa-solid fa-film", ogv: "fa-solid fa-film",
     mp3: "fa-solid fa-music", wav: "fa-solid fa-music", ogg: "fa-solid fa-music",
     flac: "fa-solid fa-music", m4a: "fa-solid fa-music", aac: "fa-solid fa-music",
