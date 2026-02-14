@@ -57,6 +57,31 @@ export function getMime(filePath: string): string {
   return MIME[extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 
+function encodeRFC5987(value: string): string {
+  return encodeURIComponent(value)
+    .replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%(7C|60|5E)/g, "%25$1");
+}
+
+function isInlineSafeMime(mime: string): boolean {
+  return (
+    mime.startsWith("image/") ||
+    mime.startsWith("video/") ||
+    mime.startsWith("audio/") ||
+    mime === "application/pdf" ||
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime === "application/xml" ||
+    mime === "application/javascript; charset=utf-8"
+  );
+}
+
+function buildContentDisposition(filename: string, mode: "inline" | "attachment"): string {
+  const safeAscii = filename.replace(/[\r\n"]/g, "_");
+  const utf8 = encodeRFC5987(filename);
+  return `${mode}; filename="${safeAscii}"; filename*=UTF-8''${utf8}`;
+}
+
 function isExternalUri(uri: string): boolean {
   return /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(uri) || /^data:|^blob:/i.test(uri);
 }
@@ -228,6 +253,13 @@ export async function serveFile(
     const fileSize = st.size;
     const mime = getMime(filePath);
     const fileExt = extname(filePath).toLowerCase();
+    const filename = basename(filePath);
+    const reqUrl = new URL(request.url);
+    const forceDownload = reqUrl.searchParams.get("download") === "1";
+    const dispositionMode: "inline" | "attachment" = forceDownload
+      ? "attachment"
+      : (isInlineSafeMime(mime) ? "inline" : "attachment");
+    const contentDisposition = buildContentDisposition(filename, dispositionMode);
 
     // HLS playlist: rewrite relative URIs so Safari can fetch segments via /api/file
     if (fileExt === ".m3u8" || fileExt === ".m3u") {
@@ -240,6 +272,7 @@ export async function serveFile(
           "Cache-Control": "no-store",
           "Content-Length": String(new TextEncoder().encode(rewritten).byteLength),
           "Accept-Ranges": "bytes",
+          "Content-Disposition": contentDisposition,
         },
       });
     }
@@ -252,6 +285,7 @@ export async function serveFile(
           "Content-Type": mime,
           "Content-Length": String(fileSize),
           "Accept-Ranges": "bytes",
+          "Content-Disposition": contentDisposition,
         },
       });
     }
@@ -313,6 +347,7 @@ export async function serveFile(
           "Content-Range": `bytes ${start}-${end}/${fileSize}`,
           "Content-Length": String(chunkSize),
           "Accept-Ranges": "bytes",
+          "Content-Disposition": contentDisposition,
         },
       });
     }
@@ -325,6 +360,7 @@ export async function serveFile(
         "Content-Type": mime,
         "Content-Length": String(fileSize),
         "Accept-Ranges": "bytes",
+        "Content-Disposition": contentDisposition,
       },
     });
   } catch (err) {

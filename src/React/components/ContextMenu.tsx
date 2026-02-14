@@ -186,7 +186,7 @@ export function ContextMenu({ entry, x, y, oplevel, onClose, onRefresh }: Contex
         onClick={async () => {
           const url = entry.isDir
             ? `${location.origin}/?path=${encodeURIComponent(entry.path)}`
-            : `${location.origin}/api/file?path=${encodeURIComponent(entry.path)}`;
+            : `${location.origin}/api/file?path=${encodeURIComponent(entry.path)}&download=1`;
 
           const copied = await copyTextWithFallback(url);
           if (copied) {
