@@ -1,5 +1,4 @@
 node_modules/
-scripts/
 dist/
 .fileshare/
 bun.lock
