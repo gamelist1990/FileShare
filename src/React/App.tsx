@@ -310,25 +310,6 @@ export function App() {
     setMoveModalLoading(false);
   };
 
-  useEffect(() => {
-    const lock = canDesktopDragMove && isTouchDragging;
-    if (!lock) return;
-
-    const prevOverflow = document.body.style.overflow;
-    const prevTouchAction = document.body.style.touchAction;
-    const prevOverscroll = document.body.style.overscrollBehavior;
-
-    document.body.style.overflow = "hidden";
-    document.body.style.touchAction = "none";
-    document.body.style.overscrollBehavior = "none";
-
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      document.body.style.touchAction = prevTouchAction;
-      document.body.style.overscrollBehavior = prevOverscroll;
-    };
-  }, [canDesktopDragMove, isTouchDragging]);
-
   const breadcrumbs = currentPath ? currentPath.split("/") : [];
   const moveModalOverlayStyle: React.CSSProperties = isTouchDevice
     ? styles.moveModalOverlay
@@ -350,7 +331,7 @@ export function App() {
     };
 
   return (
-    <div style={{ ...styles.container, touchAction: canDesktopDragMove && isTouchDragging ? "none" : "auto" }}>
+    <div style={styles.container}>
       {/* Header */}
       <header style={styles.header}>
         <div className="fs-header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
