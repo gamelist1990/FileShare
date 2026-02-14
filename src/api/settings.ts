@@ -66,9 +66,19 @@ function normalizeAndMigrate(raw: unknown): SettingsFile {
   if (!rawRecord) {
     normalized = { "settings-version": 0, modules: {} };
   } else if (!hasNumericVersion) {
+    const cleanedModules = asRecord(rawRecord.modules) ?? (() => {
+      const knownKeys = ["settings-version", "modules"];
+      const cleaned: Record<string, unknown> = {};
+      for (const key in rawRecord) {
+        if (!knownKeys.includes(key)) {
+          cleaned[key] = rawRecord[key];
+        }
+      }
+      return cleaned;
+    })();
     normalized = {
       "settings-version": 0,
-      modules: { ...rawRecord },
+      modules: cleanedModules,
     };
   } else {
     const modules = asRecord(rawRecord.modules) ?? {};
