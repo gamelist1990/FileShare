@@ -198,15 +198,41 @@ export async function serveFile(
 
     const rangeHeader = request.headers.get("Range");
 
+    const parseRange = (header: string, totalSize: number): { start: number; end: number } | null => {
+      // supports: bytes=START-END, bytes=START-, bytes=-SUFFIX
+      const m = header.trim().match(/^bytes=(\d*)-(\d*)$/i);
+      if (!m) return null;
+      const rawStart = m[1];
+      const rawEnd = m[2];
+
+      if (!rawStart && !rawEnd) return null;
+
+      if (!rawStart && rawEnd) {
+        const suffixLen = parseInt(rawEnd, 10);
+        if (!Number.isFinite(suffixLen) || suffixLen <= 0) return null;
+        const end = totalSize - 1;
+        const start = Math.max(0, totalSize - suffixLen);
+        if (start > end) return null;
+        return { start, end };
+      }
+
+      const start = parseInt(rawStart, 10);
+      if (!Number.isFinite(start) || start < 0 || start >= totalSize) return null;
+
+      const end = rawEnd ? parseInt(rawEnd, 10) : (totalSize - 1);
+      if (!Number.isFinite(end) || end < start) return null;
+
+      return { start, end: Math.min(end, totalSize - 1) };
+    };
+
     // ── Range request (partial content) ──
     if (rangeHeader) {
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (!match) {
+      const parsed = parseRange(rangeHeader, fileSize);
+      if (!parsed) {
         return new Response("Invalid Range", { status: 416 });
       }
 
-      const start = parseInt(match[1], 10);
-      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+      const { start, end } = parsed;
 
       if (start >= fileSize || end >= fileSize || start > end) {
         return new Response("Range Not Satisfiable", {

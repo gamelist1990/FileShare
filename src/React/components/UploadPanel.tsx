@@ -14,6 +14,7 @@ export function UploadPanel({
   disk: DiskInfo | null;
   onUploaded: () => void;
 }) {
+  const UPLOAD_CONCURRENCY = 3;
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -25,38 +26,85 @@ export function UploadPanel({
   const [folderName, setFolderName] = useState("");
 
   const uploadFiles = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files as ArrayLike<File>).filter((f): f is File => f instanceof File);
+    if (fileArray.length === 0) return;
+
     setUploading(true);
     setMsg(null);
+    const total = fileArray.length;
     let successCount = 0;
-    const total = files.length;
+    let failCount = 0;
+    let completed = 0;
+    let inFlight = 0;
+    let cursor = 0;
+    const failedNames: string[] = [];
 
-    for (let i = 0; i < total; i++) {
-      const file = files[i] instanceof File ? files[i] : (files as FileList).item(i);
-      if (!file) continue;
-      setProgress(`${i + 1} / ${total}: ${file.name}`);
-      const form = new FormData();
-      form.append("file", file);
-      if (currentPath) form.append("path", currentPath);
-      try {
-        const res = await fetch("/api/upload", {
-          method: "POST",
-          headers: authHeaders(),
-          body: form,
-        });
-        const data = await res.json();
-        if (data.ok) successCount++;
-        else setMsg({ text: data.error || data.message, ok: false });
-      } catch {
-        setMsg({ text: `通信エラー: ${file.name}`, ok: false });
+    const updateProgress = () => {
+      setProgress(`アップロード中 ${completed}/${total}（同時 ${inFlight}）`);
+    };
+
+    const worker = async () => {
+      while (true) {
+        const idx = cursor;
+        cursor++;
+        if (idx >= total) break;
+
+        const file = fileArray[idx];
+        inFlight++;
+        updateProgress();
+
+        const form = new FormData();
+        form.append("file", file);
+        if (currentPath) form.append("path", currentPath);
+
+        try {
+          const res = await fetch("/api/upload", {
+            method: "POST",
+            headers: authHeaders(),
+            body: form,
+          });
+          const data = await res.json();
+          if (data.ok) {
+            successCount++;
+          } else {
+            failCount++;
+            failedNames.push(file.name);
+          }
+        } catch {
+          failCount++;
+          failedNames.push(file.name);
+        } finally {
+          completed++;
+          inFlight = Math.max(0, inFlight - 1);
+          updateProgress();
+        }
       }
-    }
+    };
+
+    const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, () => worker());
+    await Promise.all(workers);
 
     setProgress(null);
     setUploading(false);
-    if (successCount > 0) {
+
+    if (successCount > 0 && failCount === 0) {
       setMsg({ text: `${successCount} 件アップロード完了`, ok: true });
       onUploaded();
+      return;
     }
+
+    if (successCount > 0 && failCount > 0) {
+      const preview = failedNames.slice(0, 2).join("、");
+      const tail = failedNames.length > 2 ? ` ほか${failedNames.length - 2}件` : "";
+      setMsg({
+        text: `${successCount} 件成功 / ${failCount} 件失敗${preview ? `（失敗: ${preview}${tail}）` : ""}`,
+        ok: false,
+      });
+      onUploaded();
+      return;
+    }
+
+    setMsg({ text: "アップロードに失敗しました", ok: false });
   };
 
   const handleDrop = (e: React.DragEvent) => {

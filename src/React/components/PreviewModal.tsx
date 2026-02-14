@@ -4,6 +4,19 @@ import { formatSize, fileUrl, isVideo, isAudio, isImage, isPreviewable, getExt }
 import { modalStyles } from "./modalStyles";
 import type { FileEntry } from "../types";
 
+function getVideoMimeByExt(ext: string): string {
+  const map: Record<string, string> = {
+    mp4: "video/mp4",
+    m4v: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    ogv: "video/ogg",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
+  };
+  return map[ext] ?? "video/mp4";
+}
+
 // ── Preview Modal Component ────────────────────────────
 export function PreviewModal({
   entry,
@@ -34,6 +47,7 @@ export function PreviewModal({
   const currentIdx = previewableFiles.findIndex((f) => f.path === entry.path);
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx < previewableFiles.length - 1;
+  const ext = getExt(entry.name);
 
   return (
     <div style={modalStyles.overlay} onClick={onClose}>
@@ -52,8 +66,16 @@ export function PreviewModal({
             </button>
           )}
           {isVideo(entry) && (
-            <video ref={videoRef} key={entry.path} className="fs-modal-video" style={modalStyles.video} controls autoPlay preload="metadata">
-              <source src={fileUrl(entry)} type={getExt(entry.name) === "mov" ? "video/quicktime" : getExt(entry.name) === "webm" ? "video/webm" : "video/mp4"} />
+            <video
+              ref={videoRef}
+              key={entry.path}
+              className="fs-modal-video"
+              style={modalStyles.video}
+              controls
+              preload="metadata"
+              playsInline
+            >
+              <source src={fileUrl(entry)} type={getVideoMimeByExt(ext)} />
             </video>
           )}
           {isAudio(entry) && (
