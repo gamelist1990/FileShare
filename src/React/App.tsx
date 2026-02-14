@@ -51,12 +51,19 @@ export function App() {
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const [touchDragPoint, setTouchDragPoint] = useState<{ x: number; y: number } | null>(null);
   const [isTouchDragging, setIsTouchDragging] = useState(false);
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [moveModalSource, setMoveModalSource] = useState<FileEntry | null>(null);
+  const [moveModalPath, setMoveModalPath] = useState("");
+  const [moveModalEntries, setMoveModalEntries] = useState<FileEntry[]>([]);
+  const [moveModalLoading, setMoveModalLoading] = useState(false);
+  const [moveModalError, setMoveModalError] = useState<string | null>(null);
   const [moveBusy, setMoveBusy] = useState(false);
   const [moveMsg, setMoveMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   // Long-press refs
   const longPressTimer = useRef<NodeJS.Timeout | null>(null);
   const touchStartPos = useRef<{ x: number; y: number } | null>(null);
+  const touchStartAt = useRef(0);
 
   // User op level
   const [oplevel, setOplevel] = useState(0);
@@ -100,6 +107,21 @@ export function App() {
   useEffect(() => {
     if (loggedInUser) fetchDisk();
   }, [loggedInUser, fetchDisk]);
+
+  useEffect(() => {
+    const query = "(pointer: coarse)";
+    const media = window.matchMedia(query);
+    const update = () => {
+      setIsTouchDevice(("ontouchstart" in window) || navigator.maxTouchPoints > 0 || media.matches);
+    };
+    update();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+    media.addListener(update);
+    return () => media.removeListener(update);
+  }, []);
 
   const updateUrlPath = (path: string) => {
     try {
@@ -190,6 +212,8 @@ export function App() {
   };
 
   const canDragMove = Boolean(loggedInUser) && oplevel >= 2;
+  const canDesktopDragMove = canDragMove && !isTouchDevice;
+  const canMoveModal = canDragMove;
 
   const getParentPath = (path: string): string => {
     const idx = path.lastIndexOf("/");
@@ -201,6 +225,16 @@ export function App() {
     if (source.path === target.path) return false;
     if (getParentPath(source.path) === target.path) return false;
     if (source.isDir && (target.path === source.path || target.path.startsWith(`${source.path}/`))) {
+      return false;
+    }
+    return true;
+  };
+
+  const canMoveToPath = (source: FileEntry | null, targetPath: string): boolean => {
+    if (!source) return false;
+    if (source.path === targetPath) return false;
+    if (getParentPath(source.path) === targetPath) return false;
+    if (source.isDir && (targetPath === source.path || targetPath.startsWith(`${source.path}/`))) {
       return false;
     }
     return true;
@@ -242,8 +276,42 @@ export function App() {
     return path;
   }, [entries]);
 
+  const loadMoveModalEntries = useCallback(async (path: string) => {
+    setMoveModalLoading(true);
+    setMoveModalError(null);
+    try {
+      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "移動先フォルダの取得に失敗しました");
+      }
+      const data: FileEntry[] = await res.json();
+      setMoveModalEntries(data.filter((e) => e.isDir));
+      setMoveModalPath(path);
+    } catch (err: unknown) {
+      setMoveModalEntries([]);
+      setMoveModalError(getErrorMessage(err));
+    } finally {
+      setMoveModalLoading(false);
+    }
+  }, []);
+
+  const openMoveModal = useCallback((entry: FileEntry) => {
+    setContextMenu(null);
+    setMoveModalSource(entry);
+    void loadMoveModalEntries(currentPath);
+  }, [currentPath, loadMoveModalEntries]);
+
+  const closeMoveModal = () => {
+    setMoveModalSource(null);
+    setMoveModalPath("");
+    setMoveModalEntries([]);
+    setMoveModalError(null);
+    setMoveModalLoading(false);
+  };
+
   useEffect(() => {
-    const lock = canDragMove && isTouchDragging;
+    const lock = canDesktopDragMove && isTouchDragging;
     if (!lock) return;
 
     const prevOverflow = document.body.style.overflow;
@@ -259,12 +327,30 @@ export function App() {
       document.body.style.touchAction = prevTouchAction;
       document.body.style.overscrollBehavior = prevOverscroll;
     };
-  }, [canDragMove, isTouchDragging]);
+  }, [canDesktopDragMove, isTouchDragging]);
 
   const breadcrumbs = currentPath ? currentPath.split("/") : [];
+  const moveModalOverlayStyle: React.CSSProperties = isTouchDevice
+    ? styles.moveModalOverlay
+    : {
+      ...styles.moveModalOverlay,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+    };
+  const moveModalPanelStyle: React.CSSProperties = isTouchDevice
+    ? styles.moveModalPanel
+    : {
+      ...styles.moveModalPanel,
+      width: "min(860px, 94vw)",
+      height: "min(82vh, 760px)",
+      borderRadius: 14,
+      boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
+      padding: "14px 14px 16px",
+    };
 
   return (
-    <div style={{ ...styles.container, touchAction: canDragMove && isTouchDragging ? "none" : "auto" }}>
+    <div style={{ ...styles.container, touchAction: canDesktopDragMove && isTouchDragging ? "none" : "auto" }}>
       {/* Header */}
       <header style={styles.header}>
         <div className="fs-header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -416,9 +502,9 @@ export function App() {
                   style={{ ...styles.row, ...(dropTargetPath === entry.path ? styles.dropTargetRow : {}) }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f0f4ff"; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ""; }}
-                  draggable={canDragMove}
+                  draggable={canDesktopDragMove}
                   onDragStart={(e) => {
-                    if (!canDragMove) {
+                    if (!canDesktopDragMove) {
                       e.preventDefault();
                       return;
                     }
@@ -455,15 +541,16 @@ export function App() {
                     if (!loggedInUser) return;
                     const touch = e.touches[0];
                     touchStartPos.current = { x: touch.clientX, y: touch.clientY };
-                    if (canDragMove) {
-                      setDraggedEntry(entry);
+                    touchStartAt.current = Date.now();
+                    if (canDesktopDragMove) {
                       setTouchDragPoint(null);
                       setIsTouchDragging(false);
                       setDropTargetPath(null);
+                      setDraggedEntry(null);
                     }
                     longPressTimer.current = setTimeout(() => {
                       handleLongPress(entry, touch.clientX, touch.clientY);
-                    }, 300);
+                    }, 420);
                   }}
                   onTouchEnd={() => {
                     if (longPressTimer.current) {
@@ -471,31 +558,42 @@ export function App() {
                       longPressTimer.current = null;
                     }
 
-                    if (canDragMove && draggedEntry && isTouchDragging && dropTargetPath) {
+                    if (canDesktopDragMove && draggedEntry && isTouchDragging && dropTargetPath) {
                       void moveEntryToFolder(draggedEntry, dropTargetPath);
                     }
 
-                    setDraggedEntry(null);
-                    setDropTargetPath(null);
-                    setTouchDragPoint(null);
-                    setIsTouchDragging(false);
+                    if (canDesktopDragMove) {
+                      setDraggedEntry(null);
+                      setDropTargetPath(null);
+                      setTouchDragPoint(null);
+                      setIsTouchDragging(false);
+                    }
                     touchStartPos.current = null;
+                    touchStartAt.current = 0;
                   }}
                   onTouchMove={(e) => {
+                    if (!canDesktopDragMove) return;
                     const touch = e.touches[0];
                     let movedEnough = false;
                     if (touchStartPos.current) {
                       const dx = touch.clientX - touchStartPos.current.x;
                       const dy = touch.clientY - touchStartPos.current.y;
-                      movedEnough = Math.hypot(dx, dy) > 8;
+                      movedEnough = Math.hypot(dx, dy) > 12;
                       if (movedEnough && longPressTimer.current) {
                         clearTimeout(longPressTimer.current);
                         longPressTimer.current = null;
                       }
                     }
 
-                    if (canDragMove && draggedEntry && movedEnough) {
-                      setIsTouchDragging(true);
+                    if (!isTouchDragging && movedEnough) {
+                      const heldMs = Date.now() - touchStartAt.current;
+                      if (heldMs >= 140) {
+                        setDraggedEntry(entry);
+                        setIsTouchDragging(true);
+                      }
+                    }
+
+                    if (draggedEntry && isTouchDragging) {
                       setTouchDragPoint({ x: touch.clientX, y: touch.clientY });
                       setDropTargetPath(detectTouchDropFolder(touch.clientX, touch.clientY, draggedEntry));
                     }
@@ -510,11 +608,14 @@ export function App() {
                       clearTimeout(longPressTimer.current);
                       longPressTimer.current = null;
                     }
-                    setDraggedEntry(null);
-                    setDropTargetPath(null);
-                    setTouchDragPoint(null);
-                    setIsTouchDragging(false);
+                    if (canDesktopDragMove) {
+                      setDraggedEntry(null);
+                      setDropTargetPath(null);
+                      setTouchDragPoint(null);
+                      setIsTouchDragging(false);
+                    }
                     touchStartPos.current = null;
+                    touchStartAt.current = 0;
                   }}
                 >
                   <td className="fs-icon-cell" style={styles.iconCell}>
@@ -540,11 +641,18 @@ export function App() {
                   <td className="fs-size-cell" style={styles.sizeCell}>{formatSize(entry.size)}</td>
                   <td className="fs-date-cell" style={styles.dateCell}>{formatDate(entry.mtime)}</td>
                   <td className="fs-action-cell" style={styles.actionCell}>
-                    {!entry.isDir && (
-                      <button style={styles.downloadBtn} onClick={() => downloadFile(entry)} title="ダウンロード">
-                        <Icon name="fa-solid fa-download" />
-                      </button>
-                    )}
+                    <div className="fs-action-buttons" style={styles.actionButtons}>
+                      {canMoveModal && (
+                        <button style={styles.moveBtn} onClick={() => openMoveModal(entry)} title="移動先を選択">
+                          <Icon name="fa-solid fa-right-left" />
+                        </button>
+                      )}
+                      {!entry.isDir && (
+                        <button style={styles.downloadBtn} onClick={() => downloadFile(entry)} title="ダウンロード">
+                          <Icon name="fa-solid fa-download" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -553,7 +661,7 @@ export function App() {
         )}
       </main>
 
-      {canDragMove && draggedEntry && isTouchDragging && touchDragPoint && (
+      {canDesktopDragMove && draggedEntry && isTouchDragging && touchDragPoint && (
         <div
           style={{
             ...styles.touchDragBadge,
@@ -563,6 +671,67 @@ export function App() {
         >
           <Icon name={draggedEntry.isDir ? "fa-solid fa-folder" : "fa-solid fa-file"} style={{ marginRight: 6 }} />
           {draggedEntry.name}
+        </div>
+      )}
+
+      {/* Move modal */}
+      {canMoveModal && moveModalSource && (
+        <div style={moveModalOverlayStyle} onClick={closeMoveModal}>
+          <div style={moveModalPanelStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.moveModalHeader}>
+              <div style={styles.moveModalTitleWrap}>
+                <div style={styles.moveModalTitle}>移動先フォルダを選択</div>
+                <div style={styles.moveModalSub}>対象: {moveModalSource.name}</div>
+              </div>
+              <button style={styles.moveModalClose} onClick={closeMoveModal}>
+                <Icon name="fa-solid fa-xmark" />
+              </button>
+            </div>
+
+            <div style={styles.moveModalPath}>/{moveModalPath || ""}</div>
+
+            <button
+              style={{ ...styles.moveModalSubmit, ...(canMoveToPath(moveModalSource, moveModalPath) ? {} : styles.moveModalSubmitDisabled) }}
+              disabled={moveBusy || !canMoveToPath(moveModalSource, moveModalPath)}
+              onClick={async () => {
+                if (!moveModalSource) return;
+                await moveEntryToFolder(moveModalSource, moveModalPath);
+                closeMoveModal();
+              }}
+            >
+              {moveBusy ? "移動中..." : "このフォルダへ移動"}
+            </button>
+
+            {moveModalPath && (
+              <button style={styles.moveModalNavBtn} onClick={() => void loadMoveModalEntries(getParentPath(moveModalPath))}>
+                <Icon name="fa-solid fa-arrow-up" style={{ marginRight: 8 }} />
+                1つ上へ
+              </button>
+            )}
+
+            <div style={styles.moveModalList}>
+              {moveModalLoading && <div style={styles.moveModalInfo}>読み込み中...</div>}
+              {!moveModalLoading && moveModalError && <div style={styles.moveModalErr}>{moveModalError}</div>}
+              {!moveModalLoading && !moveModalError && moveModalEntries.length === 0 && (
+                <div style={styles.moveModalInfo}>サブフォルダがありません</div>
+              )}
+              {!moveModalLoading && !moveModalError && moveModalEntries.map((folder) => {
+                const disabled = moveModalSource.isDir && (folder.path === moveModalSource.path || folder.path.startsWith(`${moveModalSource.path}/`));
+                return (
+                  <button
+                    key={folder.path}
+                    style={{ ...styles.moveModalFolderBtn, ...(disabled ? styles.moveModalFolderBtnDisabled : {}) }}
+                    disabled={disabled}
+                    onClick={() => void loadMoveModalEntries(folder.path)}
+                    title={disabled ? "このフォルダには移動できません" : folder.name}
+                  >
+                    <Icon name="fa-solid fa-folder" style={{ marginRight: 8, color: disabled ? "#999" : "#f0b429" }} />
+                    {folder.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -690,7 +859,25 @@ const styles: Record<string, React.CSSProperties> = {
   fileName: { color: "#1a1a2e" },
   sizeCell: { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap", color: "#666", width: 100 },
   dateCell: { padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap", color: "#666", width: 160 },
-  actionCell: { padding: "10px 8px", textAlign: "center", width: 50 },
+  actionCell: { padding: "10px 8px", textAlign: "center", width: 108, whiteSpace: "nowrap" },
+  actionButtons: {
+    display: "inline-flex",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "nowrap",
+    whiteSpace: "nowrap",
+  },
+  moveBtn: {
+    padding: "4px 10px",
+    border: "1px solid #ccc",
+    borderRadius: 6,
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 14,
+    transition: "background 150ms",
+    color: "#5a67d8",
+  },
   downloadBtn: {
     padding: "4px 10px",
     border: "1px solid #ccc",
@@ -715,6 +902,132 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
     boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
+  },
+  moveModalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.55)",
+    zIndex: 12000,
+    display: "flex",
+    alignItems: "stretch",
+    justifyContent: "stretch",
+  },
+  moveModalPanel: {
+    background: "#fff",
+    width: "100%",
+    height: "100%",
+    display: "flex",
+    flexDirection: "column",
+    padding: "12px 12px 16px",
+    boxSizing: "border-box",
+  },
+  moveModalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  moveModalTitleWrap: {
+    minWidth: 0,
+  },
+  moveModalTitle: {
+    fontSize: 16,
+    fontWeight: 700,
+    color: "#1a1a2e",
+  },
+  moveModalSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#666",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    maxWidth: "80vw",
+  },
+  moveModalClose: {
+    border: "1px solid #ddd",
+    background: "#fff",
+    borderRadius: 8,
+    padding: "8px 10px",
+    fontSize: 16,
+    color: "#666",
+    cursor: "pointer",
+  },
+  moveModalPath: {
+    fontSize: 12,
+    color: "#334",
+    background: "#f4f6fb",
+    border: "1px solid #e0e5f0",
+    borderRadius: 8,
+    padding: "8px 10px",
+    marginBottom: 10,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  moveModalSubmit: {
+    border: "none",
+    background: "#3366cc",
+    color: "#fff",
+    borderRadius: 8,
+    padding: "10px 12px",
+    fontSize: 14,
+    cursor: "pointer",
+    marginBottom: 8,
+  },
+  moveModalSubmitDisabled: {
+    background: "#9aa9d1",
+    cursor: "not-allowed",
+  },
+  moveModalNavBtn: {
+    border: "1px solid #ddd",
+    background: "#fff",
+    color: "#334",
+    borderRadius: 8,
+    padding: "10px 12px",
+    fontSize: 14,
+    cursor: "pointer",
+    textAlign: "left",
+    marginBottom: 8,
+  },
+  moveModalList: {
+    flex: 1,
+    overflowY: "auto",
+    border: "1px solid #e5e7ef",
+    borderRadius: 10,
+    background: "#fafbff",
+    padding: 8,
+  },
+  moveModalInfo: {
+    color: "#667",
+    fontSize: 13,
+    textAlign: "center",
+    padding: "16px 8px",
+  },
+  moveModalErr: {
+    color: "#b53a3a",
+    fontSize: 13,
+    textAlign: "center",
+    padding: "16px 8px",
+  },
+  moveModalFolderBtn: {
+    width: "100%",
+    border: "1px solid #dde3f2",
+    background: "#fff",
+    color: "#1a1a2e",
+    borderRadius: 8,
+    padding: "10px 12px",
+    fontSize: 14,
+    cursor: "pointer",
+    textAlign: "left",
+    display: "flex",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  moveModalFolderBtnDisabled: {
+    color: "#999",
+    background: "#f4f4f4",
+    cursor: "not-allowed",
   },
   footer: {
     textAlign: "center",
