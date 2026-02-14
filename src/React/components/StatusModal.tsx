@@ -4,6 +4,11 @@ import { modalStyles } from "./modalStyles";
 import { formatSize } from "../helpers/fileHelpers";
 import type { ServerStatusData } from "../types";
 
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 // ── Speed Test helpers ─────────────────────────────────
 async function fetchWithTimeout(
   input: RequestInfo | URL,
@@ -130,8 +135,8 @@ export function StatusModal({ onClose }: { onClose: () => void }) {
       const data: ServerStatusData = await res.json();
       setStatus(data);
       setError(null);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }

@@ -9,14 +9,11 @@
  */
 
 import { join, basename } from "node:path";
-import { mkdir, stat, realpath } from "node:fs/promises";
-import { execSync } from "node:child_process";
+import { mkdir, stat } from "node:fs/promises";
+import * as diskusage from "diskusage";
 import { safePath } from "./files";
 
-// Max upload size: 100 GB
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024 * 1024;
-
-// ── Disk capacity ──────────────────────────────────────
 
 export interface DiskInfo {
   total: number;       // bytes
@@ -30,13 +27,32 @@ const DISK_CACHE_TTL_MS = 30_000;
 let diskInfoCache: DiskInfo | null = null;
 let diskInfoCacheAt = 0;
 
+function toDiskInfo(totalBytes: number, freeBytes: number): DiskInfo {
+  const total = Number.isFinite(totalBytes) && totalBytes > 0 ? Math.floor(totalBytes) : 0;
+  const freeRaw = Number.isFinite(freeBytes) && freeBytes > 0 ? Math.floor(freeBytes) : 0;
+  const free = total > 0 ? Math.min(freeRaw, total) : freeRaw;
+  const used = total > 0 ? Math.max(0, total - free) : 0;
+  return {
+    total,
+    free,
+    used,
+    usedPercent: total > 0 ? Math.round((used / total) * 100) : 0,
+    maxUpload: Math.min(free, MAX_UPLOAD_SIZE),
+  };
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 function cacheAndReturn(info: DiskInfo): DiskInfo {
   diskInfoCache = info;
   diskInfoCacheAt = Date.now();
   return info;
 }
 
-/** Get disk space for the drive containing rootPath (Windows & Unix) */
+/** Get disk space for the drive containing rootPath (cross-platform). */
 export function getDiskInfo(rootPath: string): DiskInfo {
   const now = Date.now();
   if (diskInfoCache && now - diskInfoCacheAt < DISK_CACHE_TTL_MS) {
@@ -44,109 +60,11 @@ export function getDiskInfo(rootPath: string): DiskInfo {
   }
 
   try {
-    if (process.platform === "win32") {
-      // Windows: try multiple PowerShell strategies for robust detection
-      const driveLetter = rootPath.charAt(0).toUpperCase();
-      // 1) Prefer CIM/Win32_LogicalDisk (reliable)
-      try {
-        // Use CIM but suppress PowerShell errors to avoid noisy stderr output
-        const cmd = `powershell -NoProfile -Command "Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='${driveLetter}:'\" -ErrorAction SilentlyContinue | Select-Object -Property Size,FreeSpace | ConvertTo-Json 2>$null"`;
-        const output = execSync(cmd, { encoding: "utf-8", timeout: 1500 }).trim();
-        if (output) {
-          const info = JSON.parse(output);
-          const total = Number(info.Size) || 0;
-          const free = Number(info.FreeSpace) || 0;
-          const used = total > 0 ? total - free : 0;
-          if (total > 0) {
-            return cacheAndReturn({
-              total,
-              free,
-              used,
-              usedPercent: total > 0 ? Math.round((used / total) * 100) : 0,
-              maxUpload: Math.min(free, MAX_UPLOAD_SIZE),
-            });
-          }
-        }
-      } catch (e) {
-        // try fallback
-      }
-
-      // 2) Fallback to Get-Volume (PowerShell 3.0+)
-      try {
-        const cmdVol = `powershell -NoProfile -Command "Get-Volume -DriveLetter ${driveLetter} -ErrorAction SilentlyContinue | Select-Object -Property SizeRemaining,Size | ConvertTo-Json 2>$null"`;
-        const outVol = execSync(cmdVol, { encoding: "utf-8", timeout: 1500 }).trim();
-        if (outVol) {
-          const infoV = JSON.parse(outVol);
-          const total = Number(infoV.Size) || 0;
-          const free = Number(infoV.SizeRemaining) || 0;
-          const used = total > 0 ? total - free : 0;
-          if (total > 0) {
-            return cacheAndReturn({
-              total,
-              free,
-              used,
-              usedPercent: total > 0 ? Math.round((used / total) * 100) : 0,
-              maxUpload: Math.min(free, MAX_UPLOAD_SIZE),
-            });
-          }
-        }
-      } catch (eVol) {
-        // fallback to Get-PSDrive next
-      }
-
-      // 3) Fallback to Get-PSDrive
-      try {
-        const cmd2 = `powershell -NoProfile -Command "(Get-PSDrive -Name ${driveLetter} | Select-Object Used,Free | ConvertTo-Json) 2>$null"`;
-        const output2 = execSync(cmd2, { encoding: "utf-8", timeout: 1500 }).trim();
-        if (output2) {
-          const info2 = JSON.parse(output2);
-          const used = Number(info2.Used) || 0;
-          const free = Number(info2.Free) || 0;
-          const total = used + free;
-          if (total > 0) {
-            return cacheAndReturn({
-              total,
-              free,
-              used,
-              usedPercent: total > 0 ? Math.round((used / total) * 100) : 0,
-              maxUpload: Math.min(free, MAX_UPLOAD_SIZE),
-            });
-          }
-        }
-      } catch (e2) {
-        console.warn("Disk detection (PowerShell) failed:", e2);
-        // fall through to generic fallback
-      }
-
-      // If we reach here, fall back to generic response
-      return cacheAndReturn({
-        total: 0,
-        free: 0,
-        used: 0,
-        usedPercent: 0,
-        maxUpload: MAX_UPLOAD_SIZE,
-      });
-    } else {
-      // Unix: use df
-      const output = execSync(`df -B1 "${rootPath}" | tail -1`, {
-        encoding: "utf-8",
-        timeout: 1500,
-      }).trim();
-      const parts = output.split(/\s+/);
-      const total = parseInt(parts[1], 10) || 0;
-      const used = parseInt(parts[2], 10) || 0;
-      const free = parseInt(parts[3], 10) || 0;
-      return cacheAndReturn({
-        total,
-        free,
-        used,
-        usedPercent: total > 0 ? Math.round((used / total) * 100) : 0,
-        maxUpload: Math.min(free, MAX_UPLOAD_SIZE),
-      });
-    }
-  } catch (err) {
-    // Fallback: can't detect
-    console.warn("Disk detection failed:", err);
+    const usage = diskusage.checkSync(rootPath);
+    const freeBytes = Number.isFinite(usage.available) ? usage.available : usage.free;
+    return cacheAndReturn(toDiskInfo(usage.total, freeBytes));
+  } catch (err: unknown) {
+    console.warn("Disk detection failed:", getErrorMessage(err));
     return diskInfoCache ?? {
       total: 0,
       free: 0,
@@ -169,7 +87,6 @@ export async function handleUpload(
   username: string
 ): Promise<Response> {
   try {
-    // Check content length
     const contentLength = parseInt(request.headers.get("content-length") ?? "0", 10);
     if (contentLength > MAX_UPLOAD_SIZE) {
       return jsonResponse(413, { error: "ファイルサイズが大きすぎます (最大 100 GB)" });
@@ -183,7 +100,6 @@ export async function handleUpload(
       return jsonResponse(400, { error: "ファイルが指定されていません" });
     }
 
-    // Sanitise filename: remove path separators, null bytes
     let fileName = basename(file.name)
       .replace(/[\x00-\x1f]/g, "")
       .replace(/[/\\:*?"<>|]/g, "_")
@@ -193,7 +109,6 @@ export async function handleUpload(
       return jsonResponse(400, { error: "無効なファイル名です" });
     }
 
-    // Resolve target directory
     let destDir: string;
     if (targetDir) {
       const resolved = await safePath(rootReal, targetDir);
@@ -205,7 +120,6 @@ export async function handleUpload(
       destDir = rootReal;
     }
 
-    // Ensure directory exists
     try {
       const dirStat = await stat(destDir);
       if (!dirStat.isDirectory()) {
@@ -215,10 +129,8 @@ export async function handleUpload(
       return jsonResponse(400, { error: "アップロード先ディレクトリが存在しません" });
     }
 
-    // Avoid overwriting existing files: append number if needed
     const destPath = await getUniqueFilePath(destDir, fileName);
 
-    // Write file using Bun's efficient API
     const arrayBuffer = await file.arrayBuffer();
     await Bun.write(destPath, arrayBuffer);
 
@@ -239,9 +151,9 @@ export async function handleUpload(
         size: file.size,
       },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("Upload error:", err);
-    return jsonResponse(500, { error: "アップロードに失敗しました: " + err.message });
+    return jsonResponse(500, { error: "アップロードに失敗しました: " + getErrorMessage(err) });
   }
 }
 
@@ -262,7 +174,6 @@ export async function handleMkdir(
       return jsonResponse(400, { error: "フォルダ名を指定してください" });
     }
 
-    // Sanitise
     const safeName = dirName
       .replace(/[\x00-\x1f]/g, "")
       .replace(/[/\\:*?"<>|]/g, "_")
@@ -285,7 +196,6 @@ export async function handleMkdir(
 
     const newDir = join(baseDir, safeName);
 
-    // Verify stays inside root
     const newDirNorm = newDir.replace(/\\/g, "/").toLowerCase();
     const rootNorm = rootReal.replace(/\\/g, "/").toLowerCase();
     if (!newDirNorm.startsWith(rootNorm)) {
@@ -300,12 +210,10 @@ export async function handleMkdir(
       ok: true,
       message: `フォルダ「${safeName}」を作成しました`,
     });
-  } catch (err: any) {
-    return jsonResponse(500, { error: "フォルダ作成に失敗しました: " + err.message });
+  } catch (err: unknown) {
+    return jsonResponse(500, { error: "フォルダ作成に失敗しました: " + getErrorMessage(err) });
   }
 }
-
-// ── Helpers ────────────────────────────────────────────
 
 async function getUniqueFilePath(dir: string, fileName: string): Promise<string> {
   let candidate = join(dir, fileName);

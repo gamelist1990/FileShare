@@ -44,6 +44,14 @@ export interface Session {
   expiresAt: number; // epoch ms
 }
 
+export interface RequestIpInfo {
+  address?: string;
+}
+
+export interface RequestIpServer {
+  requestIP?: (request: Request) => RequestIpInfo | null | undefined;
+}
+
 // ── In-memory stores ───────────────────────────────────
 const usersById = new Map<string, User>();      // id → User
 const usernameIndex = new Map<string, string>(); // username → id
@@ -176,7 +184,7 @@ function getUserByName(username: string): User | undefined {
 // ── Public API ─────────────────────────────────────────
 
 /** Extract client IP from request */
-export function getClientIp(request: Request, server?: any): string {
+export function getClientIp(request: Request, server?: RequestIpServer): string {
   const haproxyIp = resolveClientIpFromHAProxy(request);
   if (haproxyIp) return haproxyIp;
 

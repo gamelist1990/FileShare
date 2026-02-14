@@ -7,7 +7,7 @@ const md = new MarkdownIt({
   typographer: true,
 });
 
-const headingOpenRule = (tokens: any[], idx: number): string => {
+const headingOpenRule: NonNullable<MarkdownIt["renderer"]["rules"]["heading_open"]> = (tokens, idx): string => {
   const tag = tokens[idx]?.tag ?? "h1";
   const styles: Record<string, string> = {
     h1: ' style="margin:24px 0 10px;font-size:28px;color:#111;border-bottom:2px solid #e0e0e0;padding-bottom:8px"',
@@ -37,28 +37,46 @@ md.renderer.rules.bullet_list_open = bulletListOpenRule;
 md.renderer.rules.ordered_list_open = orderedListOpenRule;
 md.renderer.rules.list_item_open = listItemOpenRule;
 
-const codeInlineRule = (tokens: any[], idx: number): string => {
+const codeInlineRule: NonNullable<MarkdownIt["renderer"]["rules"]["code_inline"]> = (tokens, idx): string => {
   const content = md.utils.escapeHtml(tokens[idx]?.content ?? "");
   return `<code style="background:#f0f0f5;padding:2px 6px;border-radius:4px;font-size:0.88em;color:#c7254e">${content}</code>`;
 };
 md.renderer.rules.code_inline = codeInlineRule;
 
-const fenceRule = (tokens: any[], idx: number): string => {
+const fenceRule: NonNullable<MarkdownIt["renderer"]["rules"]["fence"]> = (tokens, idx): string => {
   const content = md.utils.escapeHtml(tokens[idx]?.content ?? "");
   return `<pre style="background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:8px;overflow-x:auto;font-size:13px;line-height:1.6;margin:12px 0"><code>${content}</code></pre>`;
 };
 md.renderer.rules.fence = fenceRule;
 
-const linkOpenRule = (tokens: any[], idx: number, options: any, _env: unknown, self: any): string => {
-  tokens[idx]?.attrSet("target", "_blank");
-  tokens[idx]?.attrSet("rel", "noopener noreferrer");
-  tokens[idx]?.attrSet("style", "color:#3366cc;text-decoration:underline");
+const linkOpenRule: NonNullable<MarkdownIt["renderer"]["rules"]["link_open"]> = (
+  tokens,
+  idx,
+  options,
+  _env,
+  self
+): string => {
+  const token = tokens[idx];
+  if (token) {
+    token.attrSet("target", "_blank");
+    token.attrSet("rel", "noopener noreferrer");
+    token.attrSet("style", "color:#3366cc;text-decoration:underline");
+  }
   return self.renderToken(tokens, idx, options);
 };
 md.renderer.rules.link_open = linkOpenRule;
 
-const imageRule = (tokens: any[], idx: number, options: any, _env: unknown, self: any): string => {
-  tokens[idx]?.attrSet("style", "max-width:100%;border-radius:6px;margin:8px 0");
+const imageRule: NonNullable<MarkdownIt["renderer"]["rules"]["image"]> = (
+  tokens,
+  idx,
+  options,
+  _env,
+  self
+): string => {
+  const token = tokens[idx];
+  if (token) {
+    token.attrSet("style", "max-width:100%;border-radius:6px;margin:8px 0");
+  }
   return self.renderToken(tokens, idx, options);
 };
 md.renderer.rules.image = imageRule;
@@ -70,7 +88,6 @@ md.renderer.rules.table_open = tableOpenRule;
 md.renderer.rules.th_open = thOpenRule;
 md.renderer.rules.td_open = tdOpenRule;
 
-// ── Markdown → HTML converter (library-based) ─────────
 export function simpleMarkdownToHtml(src: string): string {
   return md.render(src);
 }

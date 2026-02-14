@@ -17,7 +17,6 @@ import { resolve } from "node:path";
 
 const doExe = process.argv.includes("--exe");
 
-// ── Step 1: Bundle React SPA ───────────────────────────
 console.log("📦 Step 1: Building React SPA...");
 
 const uiResult = await Bun.build({
@@ -39,7 +38,6 @@ if (!uiResult.success) {
 const bundledJs = await uiResult.outputs[0].text();
 console.log(`   ✅ React bundle: ${(bundledJs.length / 1024).toFixed(1)} KB`);
 
-// ── Step 2: Generate embedded assets module ────────────
 console.log("📝 Step 2: Generating embedded assets...");
 
 const indexHtml = `<!DOCTYPE html>
@@ -120,7 +118,6 @@ await Bun.write("public/index.html", indexHtml);
 await Bun.write("public/index.js", bundledJs);
 console.log("   ✅ public/ updated (dev fallback)");
 
-// ── Step 3: Compile to exe (if --exe) ──────────────────
 if (doExe) {
   console.log("🔨 Step 3: Compiling standalone exe...");
 

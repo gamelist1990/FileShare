@@ -11,7 +11,12 @@ interface SettingsModuleDefinition<T> {
   defaultValue: T;
 }
 
-type SettingsMigration = (raw: any) => any;
+type SettingsLike = {
+  "settings-version"?: unknown;
+  modules?: unknown;
+};
+
+type SettingsMigration = (raw: SettingsLike) => SettingsLike;
 
 const moduleRegistry = new Map<string, SettingsModuleDefinition<unknown>>();
 const migrationRegistry = new Map<number, SettingsMigration>();
@@ -47,23 +52,39 @@ function mergeModuleDefaults(rawModules: Record<string, unknown>): Record<string
   return merged;
 }
 
-function normalizeAndMigrate(raw: any): SettingsFile {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function normalizeAndMigrate(raw: unknown): SettingsFile {
   let normalized: SettingsFile;
-  const rawVersion = Number(raw?.["settings-version"]);
+  const rawRecord = asRecord(raw);
+  const rawVersion = Number(rawRecord?.["settings-version"]);
   const hasNumericVersion = Number.isFinite(rawVersion);
 
-  // Legacy (v0): plain object with module keys directly.
-  if (!raw || typeof raw !== "object") {
+  if (!rawRecord) {
     normalized = { "settings-version": 0, modules: {} };
   } else if (!hasNumericVersion) {
+    const cleanedModules = asRecord(rawRecord.modules) ?? (() => {
+      const knownKeys = ["settings-version", "modules"];
+      const cleaned: Record<string, unknown> = {};
+      for (const key in rawRecord) {
+        if (!knownKeys.includes(key)) {
+          cleaned[key] = rawRecord[key];
+        }
+      }
+      return cleaned;
+    })();
     normalized = {
       "settings-version": 0,
-      modules: { ...raw },
+      modules: cleanedModules,
     };
   } else {
+    const modules = asRecord(rawRecord.modules) ?? {};
     normalized = {
       "settings-version": Math.floor(rawVersion),
-      modules: (raw.modules && typeof raw.modules === "object") ? raw.modules : {},
+      modules,
     };
   }
 
@@ -72,11 +93,10 @@ function normalizeAndMigrate(raw: any): SettingsFile {
     const migration = migrationRegistry.get(fromVersion);
     if (migration) {
       const migrated = migration(normalized);
+      const migratedModules = asRecord(migrated.modules) ?? {};
       normalized = {
         "settings-version": fromVersion + 1,
-        modules: (migrated?.modules && typeof migrated.modules === "object")
-          ? migrated.modules
-          : {},
+        modules: migratedModules,
       };
     } else {
       normalized = {
@@ -112,7 +132,7 @@ export function initSettings(sharePath: string): void {
     mkdirSync(settingsDir, { recursive: true });
   }
 
-  let raw: any = null;
+  let raw: unknown = null;
   if (existsSync(settingsFilePath)) {
     try {
       raw = JSON.parse(readFileSync(settingsFilePath, "utf-8"));
