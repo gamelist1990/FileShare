@@ -304,14 +304,16 @@ export function StatusModal({ onClose }: { onClose: () => void }) {
               <div style={{ ...statusStyles.section, marginBottom: 0 }}>
                 <div style={statusStyles.sectionTitle}>
                   <Icon name="fa-solid fa-database" style={{ marginRight: 8, opacity: 0.7 }} />
-                  ストレージ
+                  {status.disk.scope === "quota" ? "ストレージ（共有クォータ）" : "ストレージ"}
                 </div>
                 <div style={statusStyles.diskContainer}>
                   {status.disk && status.disk.total > 0 ? (
                     <>
                       <div style={statusStyles.diskInfo}>
                         <div style={{ fontWeight: 600 }}>{formatSize(status.disk.used)} / {formatSize(status.disk.total)}</div>
-                        <div style={{ color: "#64748b", fontSize: 12 }}>空き容量: {formatSize(status.disk.free)}</div>
+                        <div style={{ color: "#64748b", fontSize: 12 }}>
+                          空き容量: {formatSize(status.disk.free)} / 1ファイル上限: {formatSize(status.disk.maxFileSize)}
+                        </div>
                       </div>
                       <div style={statusStyles.diskBarOuter}>
                         <div style={{ ...statusStyles.diskBarInner, width: `${Math.min(diskPct, 100)}%`, background: diskBarColor }} />

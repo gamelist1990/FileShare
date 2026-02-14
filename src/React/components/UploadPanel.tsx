@@ -121,9 +121,10 @@ export function UploadPanel({
             <span style={uploadStyles.dropText}>
               ファイルをドラッグ＆ドロップ、またはクリックして選択
             </span>
-            {disk && disk.maxUpload > 0 && (
+            {disk && disk.maxFileSize > 0 && (
               <span style={uploadStyles.limitText}>
-                1ファイル最大 {formatSize(disk.maxUpload)}
+                1ファイル最大 {formatSize(disk.maxFileSize)}
+                {disk.maxUpload > 0 && ` / 現在アップロード可能 ${formatSize(disk.maxUpload)}`}
               </span>
             )}
           </>

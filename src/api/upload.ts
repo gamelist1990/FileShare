@@ -9,25 +9,95 @@
  */
 
 import { join, basename } from "node:path";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, stat, readdir } from "node:fs/promises";
 import * as diskusage from "diskusage";
 import { safePath } from "./files";
+import { getModuleSettings, registerSettingsModule } from "./settings";
 
-const MAX_UPLOAD_SIZE = 100 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD_SIZE = 100 * 1024 * 1024 * 1024;
+const SETTINGS_KEY = "upload";
+
+interface UploadSettings {
+  maxFileSizeBytes: number;
+  directoryQuotaBytes: number;
+}
+
+const DEFAULT_UPLOAD_SETTINGS: UploadSettings = {
+  maxFileSizeBytes: DEFAULT_MAX_UPLOAD_SIZE,
+  directoryQuotaBytes: 0,
+};
+
+export function registerUploadSettings(): void {
+  registerSettingsModule<UploadSettings>(SETTINGS_KEY, DEFAULT_UPLOAD_SETTINGS);
+}
+
+function getUploadSettings(): UploadSettings {
+  const raw = getModuleSettings<UploadSettings>(SETTINGS_KEY);
+  return {
+    maxFileSizeBytes: Math.max(1, Math.floor(Number(raw?.maxFileSizeBytes ?? DEFAULT_MAX_UPLOAD_SIZE))),
+    directoryQuotaBytes: Math.max(0, Math.floor(Number(raw?.directoryQuotaBytes ?? 0))),
+  };
+}
 
 export interface DiskInfo {
   total: number;       // bytes
   free: number;        // bytes
   used: number;        // bytes
   usedPercent: number; // 0-100
-  maxUpload: number;   // effective max upload size (min of free, MAX_UPLOAD_SIZE)
+  maxUpload: number;   // effective upload headroom (bytes)
+  maxFileSize: number; // per-file upload limit (bytes)
+  scope: "disk" | "quota";
+  quotaBytes: number;
 }
 
 const DISK_CACHE_TTL_MS = 30_000;
 let diskInfoCache: DiskInfo | null = null;
 let diskInfoCacheAt = 0;
+let dirUsageCache: number | null = null;
+let dirUsageCacheAt = 0;
 
-function toDiskInfo(totalBytes: number, freeBytes: number): DiskInfo {
+async function calculateDirectoryUsage(dirPath: string): Promise<number> {
+  let total = 0;
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = join(dirPath, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        total += await calculateDirectoryUsage(fullPath);
+      } else {
+        const st = await stat(fullPath);
+        total += st.size;
+      }
+    } catch {
+      // ignore unreadable entries
+    }
+  }
+  return total;
+}
+
+async function getDirectoryUsage(rootPath: string): Promise<number> {
+  const now = Date.now();
+  if (dirUsageCache !== null && now - dirUsageCacheAt < DISK_CACHE_TTL_MS) {
+    return dirUsageCache;
+  }
+  try {
+    const used = await calculateDirectoryUsage(rootPath);
+    dirUsageCache = used;
+    dirUsageCacheAt = now;
+    return used;
+  } catch {
+    return dirUsageCache ?? 0;
+  }
+}
+
+function invalidateUsageCache(): void {
+  diskInfoCache = null;
+  diskInfoCacheAt = 0;
+  dirUsageCache = null;
+  dirUsageCacheAt = 0;
+}
+
+function toDiskInfo(totalBytes: number, freeBytes: number, maxFileSize: number): DiskInfo {
   const total = Number.isFinite(totalBytes) && totalBytes > 0 ? Math.floor(totalBytes) : 0;
   const freeRaw = Number.isFinite(freeBytes) && freeBytes > 0 ? Math.floor(freeBytes) : 0;
   const free = total > 0 ? Math.min(freeRaw, total) : freeRaw;
@@ -37,7 +107,10 @@ function toDiskInfo(totalBytes: number, freeBytes: number): DiskInfo {
     free,
     used,
     usedPercent: total > 0 ? Math.round((used / total) * 100) : 0,
-    maxUpload: Math.min(free, MAX_UPLOAD_SIZE),
+    maxUpload: Math.min(free, maxFileSize),
+    maxFileSize,
+    scope: "disk",
+    quotaBytes: 0,
   };
 }
 
@@ -53,16 +126,36 @@ function cacheAndReturn(info: DiskInfo): DiskInfo {
 }
 
 /** Get disk space for the drive containing rootPath (cross-platform). */
-export function getDiskInfo(rootPath: string): DiskInfo {
+export async function getDiskInfo(rootPath: string): Promise<DiskInfo> {
   const now = Date.now();
   if (diskInfoCache && now - diskInfoCacheAt < DISK_CACHE_TTL_MS) {
     return diskInfoCache;
   }
 
+  const uploadSettings = getUploadSettings();
+
   try {
     const usage = diskusage.checkSync(rootPath);
     const freeBytes = Number.isFinite(usage.available) ? usage.available : usage.free;
-    return cacheAndReturn(toDiskInfo(usage.total, freeBytes));
+
+    if (uploadSettings.directoryQuotaBytes > 0) {
+      const dirUsed = await getDirectoryUsage(rootPath);
+      const quotaBytes = uploadSettings.directoryQuotaBytes;
+      const quotaFree = Math.max(0, quotaBytes - dirUsed);
+
+      return cacheAndReturn({
+        total: quotaBytes,
+        free: quotaFree,
+        used: dirUsed,
+        usedPercent: quotaBytes > 0 ? Math.round((dirUsed / quotaBytes) * 100) : 0,
+        maxUpload: Math.min(quotaFree, Math.max(0, freeBytes), uploadSettings.maxFileSizeBytes),
+        maxFileSize: uploadSettings.maxFileSizeBytes,
+        scope: "quota",
+        quotaBytes,
+      });
+    }
+
+    return cacheAndReturn(toDiskInfo(usage.total, freeBytes, uploadSettings.maxFileSizeBytes));
   } catch (err: unknown) {
     console.warn("Disk detection failed:", getErrorMessage(err));
     return diskInfoCache ?? {
@@ -70,7 +163,10 @@ export function getDiskInfo(rootPath: string): DiskInfo {
       free: 0,
       used: 0,
       usedPercent: 0,
-      maxUpload: MAX_UPLOAD_SIZE,
+      maxUpload: uploadSettings.maxFileSizeBytes,
+      maxFileSize: uploadSettings.maxFileSizeBytes,
+      scope: "disk",
+      quotaBytes: 0,
     };
   }
 }
@@ -87,9 +183,12 @@ export async function handleUpload(
   username: string
 ): Promise<Response> {
   try {
+    const uploadSettings = getUploadSettings();
+    const maxFileSize = uploadSettings.maxFileSizeBytes;
+
     const contentLength = parseInt(request.headers.get("content-length") ?? "0", 10);
-    if (contentLength > MAX_UPLOAD_SIZE) {
-      return jsonResponse(413, { error: "ファイルサイズが大きすぎます (最大 100 GB)" });
+    if (contentLength > maxFileSize) {
+      return jsonResponse(413, { error: `ファイルサイズが大きすぎます (1ファイル最大 ${formatBytes(maxFileSize)})` });
     }
 
     const formData = await request.formData();
@@ -98,6 +197,10 @@ export async function handleUpload(
 
     if (!file || !(file instanceof File)) {
       return jsonResponse(400, { error: "ファイルが指定されていません" });
+    }
+
+    if (file.size > maxFileSize) {
+      return jsonResponse(413, { error: `ファイルサイズが大きすぎます (1ファイル最大 ${formatBytes(maxFileSize)})` });
     }
 
     let fileName = basename(file.name)
@@ -131,8 +234,28 @@ export async function handleUpload(
 
     const destPath = await getUniqueFilePath(destDir, fileName);
 
+    const currentDiskInfo = await getDiskInfo(rootReal);
+    if (currentDiskInfo.maxUpload <= 0) {
+      if (currentDiskInfo.scope === "quota") {
+        return jsonResponse(413, { error: "ディレクトリ容量の上限に達しています。不要なファイルを削除してください" });
+      }
+      return jsonResponse(507, { error: "空き容量不足のためアップロードできません" });
+    }
+
+    if (file.size > currentDiskInfo.maxUpload) {
+      if (currentDiskInfo.scope === "quota") {
+        return jsonResponse(413, {
+          error: `ディレクトリ容量の上限を超えます (残り ${formatBytes(currentDiskInfo.free)})`,
+        });
+      }
+      return jsonResponse(507, {
+        error: `空き容量不足のためアップロードできません (残り ${formatBytes(currentDiskInfo.free)})`,
+      });
+    }
+
     const arrayBuffer = await file.arrayBuffer();
     await Bun.write(destPath, arrayBuffer);
+    invalidateUsageCache();
 
     const finalName = basename(destPath);
     const relPath = destPath
@@ -203,6 +326,7 @@ export async function handleMkdir(
     }
 
     await mkdir(newDir, { recursive: true });
+    invalidateUsageCache();
 
     console.log(`📁 Mkdir: "${safeName}" by ${username}`);
 

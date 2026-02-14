@@ -11,7 +11,7 @@ import {
   addBlockPath, removeBlockPath, listBlockedPaths, isPathBlocked,
   type RequestIpServer,
 } from "./api/auth";
-import { handleUpload, handleMkdir, getDiskInfo } from "./api/upload";
+import { handleUpload, handleMkdir, getDiskInfo, registerUploadSettings } from "./api/upload";
 import { handleRename, handleDelete } from "./api/fileops";
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
@@ -337,6 +337,7 @@ async function main() {
   // Register + load settings modules
   registerRateLimitSettings();
   registerHAProxySettings();
+  registerUploadSettings();
   initSettings(rootReal);
 
   const haproxyEnabled = isHAProxyProxyProtocolV2Enabled();
@@ -454,7 +455,7 @@ async function main() {
           }
 
           const status = getServerStatus();
-          const diskInfo = getDiskInfo(rootReal);
+          const diskInfo = await getDiskInfo(rootReal);
           return jsonRes(200, {
             ...status,
             disk: diskInfo,
@@ -602,7 +603,7 @@ async function main() {
               "Retry-After": String(rl.retryAfterSec ?? 1),
             });
           }
-          return jsonRes(200, getDiskInfo(rootReal));
+          return jsonRes(200, await getDiskInfo(rootReal));
         }
 
         // ── Protected routes (require auth) ──

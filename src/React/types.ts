@@ -14,6 +14,9 @@ export interface DiskInfo {
   used: number;
   usedPercent: number;
   maxUpload: number;
+  maxFileSize: number;
+  scope: "disk" | "quota";
+  quotaBytes: number;
 }
 
 export interface ServerStatusData {

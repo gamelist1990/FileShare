@@ -36,13 +36,14 @@ export function DiskQuotaBar({ disk, onRetry }: { disk: DiskInfo | null; onRetry
   }
   const pct = disk.usedPercent;
   const barColor = pct > 90 ? "#e74c3c" : pct > 70 ? "#f39c12" : "#2ecc71";
+  const scopeLabel = disk.scope === "quota" ? "共有クォータ" : "ディスク";
   return (
     <div style={diskStyles.container}>
       <div style={diskStyles.label}>
         <Icon name="fa-solid fa-hard-drive" style={{ marginRight: 6, color: "#888" }} />
-        ディスク: {formatSize(disk.used)} / {formatSize(disk.total)} 使用中
+        {scopeLabel}: {formatSize(disk.used)} / {formatSize(disk.total)} 使用中
         <span style={diskStyles.freeLabel} className="fs-disk-free-label">
-          （空き {formatSize(disk.free)}・最大 {formatSize(disk.maxUpload)} アップロード可）
+          （空き {formatSize(disk.free)}・1ファイル上限 {formatSize(disk.maxFileSize)}・現在 {formatSize(disk.maxUpload)} までアップロード可）
         </span>
       </div>
       <div style={diskStyles.barOuter}>
