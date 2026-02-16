@@ -225,7 +225,12 @@ export function StatusModal({ onClose }: { onClose: () => void }) {
                 <div className="fs-status-grid" style={statusStyles.grid}>
                   <StatusItem icon="fa-solid fa-up-right-from-square" label="稼働時間" value={status.uptimeFormatted} />
                   <StatusItem icon="fa-solid fa-network-wired" label="ポート番号" value={String(status.port)} />
-                  <StatusItem icon="fa-solid fa-users" label="アクティブ接続" value={String(status.activeConnections)} />
+                  <StatusItem
+                    icon="fa-solid fa-users"
+                    label="アクティブ接続"
+                    value={String(status.activeConnections)}
+                    sub={`同時リクエスト: ${status.activeRequests}`}
+                  />
                   <StatusItem icon="fa-solid fa-folder-tree" label="共有ディレクトリ" value={status.sharePath} isCode />
                 </div>
               </div>

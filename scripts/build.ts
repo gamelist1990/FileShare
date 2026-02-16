@@ -68,6 +68,7 @@ const indexHtml = `<!DOCTYPE html>
       .fs-name-cell { grid-column: 2 !important; grid-row: 1 !important; padding: 0 !important; font-size: 14px !important; }
       .fs-size-cell { grid-column: 2 !important; grid-row: 2 !important; padding: 0 !important; text-align: left !important; font-size: 12px !important; }
       .fs-date-cell { display: none !important; }
+      .fs-dl-cell { display: none !important; }
       .fs-action-cell { grid-column: 3 !important; grid-row: 1 / 3 !important; display: flex !important; align-items: center !important; padding: 0 !important; }
       .fs-drop-zone { padding: 16px 12px !important; }
       .fs-drop-icon { font-size: 24px !important; }

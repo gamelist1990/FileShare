@@ -1,5 +1,6 @@
 import { readdir, stat, realpath } from "node:fs/promises";
 import { join, relative, extname, basename, dirname } from "node:path";
+import { getFileDownloadCount } from "./stats";
 
 // ── Types ──────────────────────────────────────────────
 export interface FileEntry {
@@ -8,6 +9,7 @@ export interface FileEntry {
   isDir: boolean;
   size: number;
   mtime: string; // ISO string
+  downloadCount?: number;
 }
 
 // ── MIME map (common types) ────────────────────────────
@@ -77,6 +79,72 @@ function buildContentDisposition(filePath: string): string {
   const fileName = basename(filePath);
   const encoded = encodeDispositionFilename(fileName);
   return `attachment; filename*=UTF-8''${encoded}`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function isSocialPreviewRequest(request: Request): boolean {
+  const ua = (request.headers.get("user-agent") ?? "").toLowerCase();
+  if (!ua) return false;
+
+  const bots = [
+    "discordbot",
+    "slackbot",
+    "twitterbot",
+    "facebookexternalhit",
+    "linkedinbot",
+    "whatsapp",
+    "telegrambot",
+    "line",
+    "skypeuripreview",
+  ];
+
+  return bots.some((keyword) => ua.includes(keyword));
+}
+
+function buildDownloadPreviewHtml(request: Request, relPath: string, filePath: string): string {
+  const url = new URL(request.url);
+  const fileName = basename(filePath);
+  const normalizedRelPath = relPath.replace(/\\/g, "/");
+  const downloadCount = getFileDownloadCount(normalizedRelPath);
+  const title = `${fileName} | FileShare`;
+  const description = `ダウンロード共有ファイル: ${normalizedRelPath}（ダウンロード: ${downloadCount}回）`;
+  const canonicalUrl = `${url.origin}${url.pathname}${url.search}`;
+
+  const escapedTitle = escapeHtml(title);
+  const escapedDescription = escapeHtml(description);
+  const escapedCanonicalUrl = escapeHtml(canonicalUrl);
+
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapedTitle}</title>
+  <meta name="description" content="${escapedDescription}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="FileShare" />
+  <meta property="og:title" content="${escapedTitle}" />
+  <meta property="og:description" content="${escapedDescription}" />
+  <meta property="og:url" content="${escapedCanonicalUrl}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${escapedTitle}" />
+  <meta name="twitter:description" content="${escapedDescription}" />
+  <link rel="canonical" href="${escapedCanonicalUrl}" />
+</head>
+<body>
+  <h1>${escapedTitle}</h1>
+  <p>${escapedDescription}</p>
+  <p><a href="${escapedCanonicalUrl}">ダウンロード</a></p>
+</body>
+</html>`;
 }
 
 function isExternalUri(uri: string): boolean {
@@ -252,6 +320,24 @@ export async function serveFile(
     const forceDownload = shouldForceDownload(request);
     const disposition = buildContentDisposition(filePath);
     const fileExt = extname(filePath).toLowerCase();
+
+    // Social preview bots (Discord / Slack / X etc.) should receive HTML metadata
+    // for download URLs so link unfurl works, while normal users still get binary.
+    if (
+      forceDownload &&
+      request.method === "GET" &&
+      !request.headers.get("Range") &&
+      isSocialPreviewRequest(request)
+    ) {
+      const html = buildDownloadPreviewHtml(request, relPath, filePath);
+      return new Response(html, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
 
     // HLS playlist: rewrite relative URIs so Safari can fetch segments via /api/file
     if (fileExt === ".m3u8" || fileExt === ".m3u") {

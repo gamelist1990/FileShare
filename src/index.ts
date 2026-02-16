@@ -1,8 +1,8 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { listDirectory, serveFile, type FileEntry } from "./api/files";
+import { listDirectory, serveFile, safePath, type FileEntry } from "./api/files";
 import {
   register, login, logout, verifyToken, getAuthStatus, getClientIp,
   approveUser, denyUser, clearPending, listPendingUsers, listAllUsers,
@@ -26,7 +26,7 @@ import {
 import { INDEX_HTML, INDEX_JS } from "./generated/assets";
 import {
   recordDownload, recordUpload, connectionStart, connectionEnd,
-  getServerStatus, printStatus,
+  getServerStatus, printStatus, getFileDownloadCount, recordFileDownload, markClientActive,
 } from "./api/stats";
 import { initSettings } from "./api/settings";
 import { checkIpRateLimit, registerRateLimitSettings } from "./api/rateLimit";
@@ -66,8 +66,95 @@ function jsonRes(status: number, data: unknown, extraHeaders?: Record<string, st
   });
 }
 
-function serveEmbeddedHtml(): Response {
-  return new Response(INDEX_HTML, {
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeSharedRelPath(input: string): string {
+  return input
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .trim();
+}
+
+async function resolveShareKind(rootPath: string, relPath: string): Promise<"file" | "folder" | "unknown"> {
+  const resolved = await safePath(rootPath, relPath);
+  if (!resolved) return "unknown";
+  try {
+    const st = await stat(resolved);
+    return st.isDirectory() ? "folder" : "file";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function buildShareMeta(url: URL, rootPath: string): Promise<{ title: string; description: string; canonicalUrl: string }> {
+  const appName = "FileShare";
+  const relPath = normalizeSharedRelPath(url.searchParams.get("path") ?? "");
+  const canonicalUrl = `${url.origin}${url.pathname}${url.search}`;
+
+  if (!relPath) {
+    return {
+      title: appName,
+      description: "ファイルやフォルダをブラウザで共有できる FileShare ページです。",
+      canonicalUrl,
+    };
+  }
+
+  const displayName = relPath.split("/").filter(Boolean).at(-1) ?? relPath;
+  const kind = await resolveShareKind(rootPath, relPath);
+  const kindLabel = kind === "file" ? "ファイル" : kind === "folder" ? "フォルダ" : "共有アイテム";
+  const downloadCountText = kind === "file" ? `（ダウンロード: ${getFileDownloadCount(relPath)}回）` : "";
+
+  return {
+    title: `${displayName} | ${appName}`,
+    description: `${kindLabel}を共有中: ${relPath}${downloadCountText}`,
+    canonicalUrl,
+  };
+}
+
+function injectMetaTags(html: string, meta: { title: string; description: string; canonicalUrl: string }): string {
+  const escapedTitle = escapeHtml(meta.title);
+  const escapedDescription = escapeHtml(meta.description);
+  const escapedUrl = escapeHtml(meta.canonicalUrl);
+
+  const withoutOldSocialMeta = html
+    .replace(/\s*<meta\s+name=["']description["'][^>]*>\s*/gi, "\n")
+    .replace(/\s*<meta\s+property=["']og:[^"']+["'][^>]*>\s*/gi, "\n")
+    .replace(/\s*<meta\s+name=["']twitter:[^"']+["'][^>]*>\s*/gi, "\n")
+    .replace(/\s*<link\s+rel=["']canonical["'][^>]*>\s*/gi, "\n")
+    .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapedTitle}</title>`);
+
+  const metaBlock = [
+    `<meta name="description" content="${escapedDescription}" />`,
+    `<meta property="og:type" content="website" />`,
+    `<meta property="og:site_name" content="FileShare" />`,
+    `<meta property="og:title" content="${escapedTitle}" />`,
+    `<meta property="og:description" content="${escapedDescription}" />`,
+    `<meta property="og:url" content="${escapedUrl}" />`,
+    `<meta name="twitter:card" content="summary" />`,
+    `<meta name="twitter:title" content="${escapedTitle}" />`,
+    `<meta name="twitter:description" content="${escapedDescription}" />`,
+    `<link rel="canonical" href="${escapedUrl}" />`,
+  ].join("\n  ");
+
+  if (/<\/head>/i.test(withoutOldSocialMeta)) {
+    return withoutOldSocialMeta.replace(/<\/head>/i, `  ${metaBlock}\n</head>`);
+  }
+
+  return `${metaBlock}\n${withoutOldSocialMeta}`;
+}
+
+async function serveEmbeddedHtml(url: URL, rootPath: string): Promise<Response> {
+  const meta = await buildShareMeta(url, rootPath);
+  const html = injectMetaTags(INDEX_HTML, meta);
+  return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }
@@ -395,6 +482,7 @@ async function main() {
       const pathname = decodeURIComponent(url.pathname);
       const clientIp = getClientIp(request, server);
 
+      markClientActive(clientIp);
       connectionStart();
 
       try {
@@ -508,7 +596,10 @@ async function main() {
           const filtered = entries.filter((e: FileEntry) => {
             const fullPath = (rootReal + "/" + e.path).replace(/\\/g, "/");
             return !isPathBlocked(fullPath);
-          });
+          }).map((e: FileEntry) => ({
+            ...e,
+            downloadCount: e.isDir ? undefined : getFileDownloadCount(e.path),
+          }));
           return jsonRes(200, filtered);
         }
 
@@ -543,6 +634,13 @@ async function main() {
           const contentLen = parseInt(headers.get("Content-Length") ?? "0", 10);
           if (resp.status === 200 || resp.status === 206) {
             recordDownload(contentLen);
+
+            const isForceDownload = ["1", "true", "yes"].includes((url.searchParams.get("download") ?? "").toLowerCase());
+            const contentType = (headers.get("Content-Type") ?? "").toLowerCase();
+            const isMetadataPreviewHtml = contentType.includes("text/html");
+            if (isForceDownload && request.method === "GET" && !request.headers.get("Range") && !isMetadataPreviewHtml) {
+              recordFileDownload(relPath);
+            }
           }
           return new Response(resp.body, { status: resp.status, headers });
         }
@@ -845,7 +943,7 @@ async function main() {
         }
 
         // Fallback: serve embedded index.html (SPA)
-        return serveEmbeddedHtml();
+        return await serveEmbeddedHtml(url, rootReal);
       } finally {
         connectionEnd();
       }

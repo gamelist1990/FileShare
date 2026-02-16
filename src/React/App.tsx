@@ -183,7 +183,7 @@ export function App() {
 
   const downloadFile = (entry: FileEntry) => {
     const a = document.createElement("a");
-    a.href = fileUrl(entry);
+    a.href = `${fileUrl(entry)}&download=1`;
     a.download = entry.name;
     a.click();
   };
@@ -471,6 +471,7 @@ export function App() {
                 <th style={{ ...styles.th, textAlign: "left" as const }}>名前</th>
                 <th style={styles.th}>サイズ</th>
                 <th style={styles.th}>更新日時</th>
+                <th className="fs-dl-cell" style={styles.th}>DL</th>
                 <th style={styles.th}></th>
               </tr>
             </thead>
@@ -621,6 +622,7 @@ export function App() {
                   </td>
                   <td className="fs-size-cell" style={styles.sizeCell}>{formatSize(entry.size)}</td>
                   <td className="fs-date-cell" style={styles.dateCell}>{formatDate(entry.mtime)}</td>
+                  <td className="fs-dl-cell" style={styles.dlCell}>{entry.isDir ? "-" : (entry.downloadCount ?? 0)}</td>
                   <td className="fs-action-cell" style={styles.actionCell}>
                     <div className="fs-action-buttons" style={styles.actionButtons}>
                       {canMoveModal && (
@@ -840,6 +842,7 @@ const styles: Record<string, React.CSSProperties> = {
   fileName: { color: "#1a1a2e" },
   sizeCell: { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap", color: "#666", width: 100 },
   dateCell: { padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap", color: "#666", width: 160 },
+  dlCell: { padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap", color: "#666", width: 70 },
   actionCell: { padding: "10px 8px", textAlign: "center", width: 108, whiteSpace: "nowrap" },
   actionButtons: {
     display: "inline-flex",

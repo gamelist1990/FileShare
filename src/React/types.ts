@@ -6,6 +6,7 @@ export interface FileEntry {
   isDir: boolean;
   size: number;
   mtime: string;
+  downloadCount?: number;
 }
 
 export interface DiskInfo {
@@ -29,6 +30,7 @@ export interface ServerStatusData {
   totalUploadBytes: number;
   totalUploadFormatted: string;
   activeConnections: number;
+  activeRequests: number;
   downloadBytesPerSec: number;
   downloadSpeedFormatted: string;
   uploadBytesPerSec: number;

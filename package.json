@@ -4,7 +4,7 @@
   "description": "FileShare APP - Bun + React file sharing service",
   "main": "src/index.ts",
   "scripts": {
-    "start": "bun ./scripts/build.ts && bun src/index.ts",
+    "start": "bun ./scripts/build.ts && bun src/index.ts --port 8100",
     "dev": "bun --watch src/index.ts",
     "build": "bun ./scripts/build.ts",
     "build:exe": "bun ./scripts/build.ts --exe && bun build --compile src/index.ts --outfile FileShare",
