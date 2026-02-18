@@ -434,11 +434,19 @@ function startConsoleCLI() {
             console.log(`📁 FTPポートを ${newPort} に変更しました。`);
             if (wasRunning) startFtpServer(rootReal);
           }
+        } else if (sub === "pasv-address") {
+          const newAddr = parts[2] ?? "";
+          const wasRunning = isFtpRunning();
+          if (wasRunning) stopFtpServer();
+          updateFtpSettings({ pasvAddress: newAddr });
+          console.log(`📁 PASVアドレスを ${newAddr || "(自動検出)"} に設定しました。`);
+          if (wasRunning) startFtpServer(rootReal);
         } else {
           const settings = getFtpSettings();
           console.log(`\n📁 FTPサーバー:`);
           console.log(`  状態: ${isFtpRunning() ? "✅ 起動中" : "⏹️ 停止中"}`);
           console.log(`  ポート: ${settings.port}`);
+          console.log(`  PASVアドレス: ${settings.pasvAddress || "(自動検出)"}`);
           console.log(`  匿名アクセス: ${settings.anonymousRead ? "有効 (読み取りのみ)" : "無効"}`);
           console.log(`  PASVポート: ${settings.pasvPortMin}-${settings.pasvPortMax}\n`);
         }

@@ -14,6 +14,7 @@
 import { readdir, stat, mkdir, rename, unlink, rm } from "node:fs/promises";
 import { join, basename, dirname } from "node:path";
 import { networkInterfaces } from "node:os";
+import { promises as dns } from "node:dns";
 import { safePath, getMime } from "./files";
 import { getModuleSettings, registerSettingsModule, updateModuleSettings } from "./settings";
 import type { Socket, TCPSocketListener } from "bun";
@@ -25,6 +26,8 @@ interface FtpSettings {
     port: number;
     pasvPortMin: number;
     pasvPortMax: number;
+    /** Public IP or hostname to return in PASV responses (empty = auto-detect local IP) */
+    pasvAddress: string;
     /** Allow anonymous (no login) read-only access */
     anonymousRead: boolean;
 }
@@ -35,6 +38,7 @@ const DEFAULT_FTP_SETTINGS: FtpSettings = {
     port: 2121,
     pasvPortMin: 50000,
     pasvPortMax: 50100,
+    pasvAddress: "",
     anonymousRead: true,
 };
 
@@ -85,6 +89,18 @@ function getLocalIp(): string {
         }
     }
     return "127.0.0.1";
+}
+
+function isAddressLocal(addr: string): boolean {
+    if (!addr) return false;
+    const nets = networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name] ?? []) {
+            if (net.family === "IPv4" && net.address === addr) return true;
+            if (net.family === "IPv4" && addr === `::ffff:${net.address}`) return true;
+        }
+    }
+    return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
 let cachedServerIp = "127.0.0.1";
@@ -366,10 +382,22 @@ async function handleFtpCommand(
         case "PASV": {
             try {
                 const { port: pasvPort } = await setupPasvListener(session, settings);
-                // Determine correct IP: if client connected via loopback, respond with 127.0.0.1
                 const remoteAddr = (socket as any).remoteAddress ?? "";
-                const isLocal = remoteAddr === "127.0.0.1" || remoteAddr === "::1" || remoteAddr === "::ffff:127.0.0.1";
-                const pasvIp = isLocal ? "127.0.0.1" : session.serverIp;
+
+                // If client is local to the server, prefer local interface IP (avoids NAT/hairpin issues)
+                let pasvIp = isAddressLocal(remoteAddr) ? getLocalIp() : session.serverIp;
+
+                // If pasvIp is a hostname (not dotted quad), try to resolve to IPv4
+                if (!/^\d+\.\d+\.\d+\.\d+$/.test(pasvIp)) {
+                    try {
+                        const res = await dns.lookup(pasvIp, { family: 4 });
+                        pasvIp = res.address;
+                    } catch {
+                        // fallback to local IP
+                        pasvIp = getLocalIp();
+                    }
+                }
+
                 const ipParts = pasvIp.split(".").map(Number);
                 const p1 = (pasvPort >> 8) & 0xff;
                 const p2 = pasvPort & 0xff;
@@ -793,7 +821,7 @@ export function startFtpServer(rootReal: string): { port: number } | null {
     }
 
     try {
-        cachedServerIp = getLocalIp();
+        cachedServerIp = settings.pasvAddress && settings.pasvAddress.trim() !== "" ? settings.pasvAddress.trim() : getLocalIp();
         ftpServer = Bun.listen<FtpSession>({
             hostname: "0.0.0.0",
             port: settings.port,
