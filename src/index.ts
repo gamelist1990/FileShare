@@ -202,7 +202,6 @@ function startConsoleCLI() {
   console.log("  ftp start                         … FTPサーバー起動");
   console.log("  ftp stop                          … FTPサーバー停止");
   console.log("  ftp port <number>                 … FTPポート変更");
-  console.log("  ftp pasv-address <ip|host|''>      … PASV応答のアドレス指定（空で自動検出）");
   console.log("  ftp address <ip|host|''>           … (同上) PASV応答のアドレス指定");
   console.log("  block <path>                      … パスをブロック");
   console.log("  unblock <path>                    … ブロック解除");
@@ -441,7 +440,7 @@ function startConsoleCLI() {
             console.log(`📁 FTPポートを ${newPort} に変更しました。`);
             if (wasRunning) startFtpServer(rootReal);
           }
-        } else if (sub === "pasv-address" || sub === "address") {
+        } else if (sub === "address") {
           if (parts.length < 3) {
             console.log("⚠️  使い方: ftp address <ip|host|''>");
             console.log("   例: ftp address 168.138.211.157");
@@ -482,7 +481,6 @@ function startConsoleCLI() {
         console.log("  ftp start                         … FTPサーバー起動");
         console.log("  ftp stop                          … FTPサーバー停止");
         console.log("  ftp port <number>                 … FTPポート変更");
-        console.log("  ftp pasv-address <ip|host|''>      … PASV応答のアドレス指定（空で自動検出）");
         console.log("  ftp address <ip|host|''>           … (同上) PASV応答のアドレス指定");
         console.log("  block <path>                      … パスをブロック");
         console.log("  unblock <path>                    … ブロック解除");
