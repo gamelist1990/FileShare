@@ -12,7 +12,7 @@
  *   bun scripts/build.ts --exe    → build UI + compile exe
  */
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const doExe = process.argv.includes("--exe");
@@ -40,12 +40,17 @@ console.log(`   ✅ React bundle: ${(bundledJs.length / 1024).toFixed(1)} KB`);
 
 console.log("📝 Step 2: Generating embedded assets...");
 
+// Read and embed favicon SVG
+const faviconSvg = await readFile(resolve("src", "favicon.svg"), "utf-8");
+const faviconDataUri = `data:image/svg+xml,${encodeURIComponent(faviconSvg.trim())}`;
+
 const indexHtml = `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>FileShare</title>
+  <link rel="icon" type="image/svg+xml" href="${faviconDataUri}" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>

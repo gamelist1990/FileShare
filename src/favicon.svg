@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4A90E2"/>
+      <stop offset="100%" stop-color="#7B68EE"/>
+    </linearGradient>
+    <linearGradient id="folder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#e8edf5" stop-opacity="0.9"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+  <!-- Background rounded square -->
+  <rect width="512" height="512" rx="96" ry="96" fill="url(#bg)"/>
+  <!-- Folder body -->
+  <g filter="url(#shadow)">
+    <!-- Folder tab -->
+    <path d="M 100 160 L 100 140 Q 100 120 120 120 L 200 120 Q 210 120 218 130 L 240 160 Z" fill="url(#folder)"/>
+    <!-- Folder main -->
+    <rect x="100" y="155" width="312" height="220" rx="16" ry="16" fill="url(#folder)"/>
+  </g>
+  <!-- Share/network icon (3 nodes + lines) -->
+  <g stroke="#4A90E2" stroke-width="6" fill="none">
+    <!-- Center node to top-right -->
+    <line x1="256" y1="270" x2="320" y2="220"/>
+    <!-- Center node to bottom-right -->
+    <line x1="256" y1="270" x2="320" y2="320"/>
+    <!-- Center node to left -->
+    <line x1="256" y1="270" x2="192" y2="270"/>
+  </g>
+  <!-- Share nodes -->
+  <circle cx="192" cy="270" r="16" fill="#4A90E2"/>
+  <circle cx="320" cy="220" r="16" fill="#7B68EE"/>
+  <circle cx="320" cy="320" r="16" fill="#7B68EE"/>
+  <circle cx="256" cy="270" r="14" fill="#5B8EE6"/>
+</svg>

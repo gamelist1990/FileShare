@@ -34,6 +34,7 @@ import { checkIpRateLimit, registerRateLimitSettings } from "./api/rateLimit";
 import { isHAProxyProxyProtocolV2Enabled, registerHAProxySettings } from "./api/haproxy";
 import { CURRENT_FILESHARE_VERSION } from "./version";
 import { startHAProxyBridge } from "./api/haproxyBridge";
+import { registerFtpSettings, startFtpServer, stopFtpServer, isFtpRunning, getFtpSettings, updateFtpSettings } from "./api/ftp";
 
 function parseArgs(): { sharePath: string; port: number } {
   const args = process.argv.slice(2);
@@ -197,6 +198,10 @@ function startConsoleCLI() {
   console.log("  users                             … 全ユーザー一覧");
   console.log("  pending                           … 承認待ちユーザー一覧");
   console.log("  private <true|false>              … プライベートモード切替");
+  console.log("  ftp                               … FTPサーバー状態確認");
+  console.log("  ftp start                         … FTPサーバー起動");
+  console.log("  ftp stop                          … FTPサーバー停止");
+  console.log("  ftp port <number>                 … FTPポート変更");
   console.log("  block <path>                      … パスをブロック");
   console.log("  unblock <path>                    … ブロック解除");
   console.log("  blocks                            … ブロックリスト表示");
@@ -408,6 +413,37 @@ function startConsoleCLI() {
         }
         break;
       }
+      case "ftp": {
+        const sub = parts[1]?.toLowerCase();
+        if (sub === "start") {
+          if (isFtpRunning()) {
+            console.log("📁 FTPサーバーは既に起動中です。");
+          } else {
+            startFtpServer(rootReal);
+          }
+        } else if (sub === "stop") {
+          stopFtpServer();
+        } else if (sub === "port") {
+          const newPort = parseInt(parts[2] ?? "", 10);
+          if (!Number.isFinite(newPort) || newPort < 1 || newPort > 65535) {
+            console.log("⚠️  有効なポート番号を指定してください (1-65535)");
+          } else {
+            const wasRunning = isFtpRunning();
+            if (wasRunning) stopFtpServer();
+            updateFtpSettings({ port: newPort });
+            console.log(`📁 FTPポートを ${newPort} に変更しました。`);
+            if (wasRunning) startFtpServer(rootReal);
+          }
+        } else {
+          const settings = getFtpSettings();
+          console.log(`\n📁 FTPサーバー:`);
+          console.log(`  状態: ${isFtpRunning() ? "✅ 起動中" : "⏹️ 停止中"}`);
+          console.log(`  ポート: ${settings.port}`);
+          console.log(`  匿名アクセス: ${settings.anonymousRead ? "有効 (読み取りのみ)" : "無効"}`);
+          console.log(`  PASVポート: ${settings.pasvPortMin}-${settings.pasvPortMax}\n`);
+        }
+        break;
+      }
       case "help": {
         console.log("\n  allow <username>                  … ユーザーを承認");
         console.log("  deny <username>                   … ユーザーを拒否");
@@ -420,6 +456,10 @@ function startConsoleCLI() {
         console.log("  users                             … 全ユーザー一覧");
         console.log("  pending                           … 承認待ちユーザー一覧");
         console.log("  private <true|false>              … プライベートモード切替");
+        console.log("  ftp                               … FTPサーバー状態確認");
+        console.log("  ftp start                         … FTPサーバー起動");
+        console.log("  ftp stop                          … FTPサーバー停止");
+        console.log("  ftp port <number>                 … FTPポート変更");
         console.log("  block <path>                      … パスをブロック");
         console.log("  unblock <path>                    … ブロック解除");
         console.log("  blocks                            … ブロックリスト表示");
@@ -455,6 +495,7 @@ async function main() {
   registerUploadSettings();
   registerStreamSettings();
   registerPrivateSettings();
+  registerFtpSettings();
   initSettings(rootReal);
 
   // Show private mode status
@@ -1021,6 +1062,9 @@ async function main() {
     });
     console.log(`🔒 Public endpoint requires HAProxy protocol on :${port}`);
   }
+
+  // Start FTP server
+  startFtpServer(rootReal);
 
   // Start admin console
   startConsoleCLI();
