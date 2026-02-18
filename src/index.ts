@@ -203,6 +203,7 @@ function startConsoleCLI() {
   console.log("  ftp stop                          … FTPサーバー停止");
   console.log("  ftp port <number>                 … FTPポート変更");
   console.log("  ftp pasv-address <ip|host|''>      … PASV応答のアドレス指定（空で自動検出）");
+  console.log("  ftp address <ip|host|''>           … (同上) PASV応答のアドレス指定");
   console.log("  block <path>                      … パスをブロック");
   console.log("  unblock <path>                    … ブロック解除");
   console.log("  blocks                            … ブロックリスト表示");
@@ -415,7 +416,12 @@ function startConsoleCLI() {
         break;
       }
       case "ftp": {
-        const sub = parts[1]?.toLowerCase();
+        const sub = (parts[1] ?? "").toLowerCase();
+        const normalizeEmpty = (v: string) => {
+          const t = (v ?? "").trim();
+          if (t === "''" || t === '""') return "";
+          return t;
+        };
         if (sub === "start") {
           if (isFtpRunning()) {
             console.log("📁 FTPサーバーは既に起動中です。");
@@ -435,8 +441,15 @@ function startConsoleCLI() {
             console.log(`📁 FTPポートを ${newPort} に変更しました。`);
             if (wasRunning) startFtpServer(rootReal);
           }
-        } else if (sub === "pasv-address") {
-          const newAddr = parts[2] ?? "";
+        } else if (sub === "pasv-address" || sub === "address") {
+          if (parts.length < 3) {
+            console.log("⚠️  使い方: ftp address <ip|host|''>");
+            console.log("   例: ftp address 168.138.211.157");
+            console.log("   例: ftp address pexserver.mooo.com");
+            console.log("   解除: ftp address ''");
+            break;
+          }
+          const newAddr = normalizeEmpty(parts[2] ?? "");
           const wasRunning = isFtpRunning();
           if (wasRunning) stopFtpServer();
           updateFtpSettings({ pasvAddress: newAddr });
@@ -470,6 +483,7 @@ function startConsoleCLI() {
         console.log("  ftp stop                          … FTPサーバー停止");
         console.log("  ftp port <number>                 … FTPポート変更");
         console.log("  ftp pasv-address <ip|host|''>      … PASV応答のアドレス指定（空で自動検出）");
+        console.log("  ftp address <ip|host|''>           … (同上) PASV応答のアドレス指定");
         console.log("  block <path>                      … パスをブロック");
         console.log("  unblock <path>                    … ブロック解除");
         console.log("  blocks                            … ブロックリスト表示");

@@ -16,6 +16,7 @@ import { join, basename, dirname } from "node:path";
 import { networkInterfaces } from "node:os";
 import { promises as dns } from "node:dns";
 import { safePath, getMime } from "./files";
+import { login } from "./auth";
 import { getModuleSettings, registerSettingsModule, updateModuleSettings } from "./settings";
 import type { Socket, TCPSocketListener } from "bun";
 
@@ -355,18 +356,31 @@ async function handleFtpCommand(
                     session.authenticated = true;
                     socket.write("230 Anonymous login OK, read-only access.\r\n");
                 } else {
+                    session.authenticated = false;
                     socket.write("331 Password required.\r\n");
                 }
                 return;
             case "PASS":
-                // Accept any password for anonymous
+                // Anonymous: allow any password (or empty)
                 if (session.username === "anonymous" && settings.anonymousRead) {
                     session.authenticated = true;
                     socket.write("230 Login successful.\r\n");
-                } else {
-                    // TODO: integrate with FileShare auth system
-                    session.authenticated = true;
-                    socket.write("230 Login successful.\r\n");
+                    return;
+                }
+
+                // Non-anonymous: verify against FileShare users
+                // Windows Explorer may send an empty password; do NOT accept it.
+                {
+                    const clientIpRaw = (socket as any).remoteAddress ?? "";
+                    const clientIp = normalizeIpv4(String(clientIpRaw));
+                    const result = login(session.username, arg ?? "", clientIp || "0.0.0.0");
+                    if (result.ok) {
+                        session.authenticated = true;
+                        socket.write("230 Login successful.\r\n");
+                    } else {
+                        session.authenticated = false;
+                        socket.write("530 Login incorrect.\r\n");
+                    }
                 }
                 return;
             case "AUTH":
