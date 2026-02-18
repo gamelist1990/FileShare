@@ -158,3 +158,9 @@ export function getModuleSettings<T>(name: string): T {
   }
   return deepClone(def.defaultValue as T);
 }
+
+/** Update a module's settings at runtime and persist to disk */
+export function updateModuleSettings<T>(name: string, value: T): void {
+  currentSettings.modules[name] = deepClone(value);
+  persistSettings();
+}

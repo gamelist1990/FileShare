@@ -9,6 +9,7 @@ import {
   resetAll, resetPassword, resetUsername, initAuth, flushSave,
   deleteUser, setOpLevel, getOpLevel,
   addBlockPath, removeBlockPath, listBlockedPaths, isPathBlocked,
+  registerPrivateSettings, isPrivateMode, setPrivateMode,
   type RequestIpServer,
 } from "./api/auth";
 import { handleUpload, handleMkdir, getDiskInfo, registerUploadSettings } from "./api/upload";
@@ -195,6 +196,7 @@ function startConsoleCLI() {
   console.log("  user op <username> <1|2>          … 権限レベル設定");
   console.log("  users                             … 全ユーザー一覧");
   console.log("  pending                           … 承認待ちユーザー一覧");
+  console.log("  private <true|false>              … プライベートモード切替");
   console.log("  block <path>                      … パスをブロック");
   console.log("  unblock <path>                    … ブロック解除");
   console.log("  blocks                            … ブロックリスト表示");
@@ -320,7 +322,7 @@ function startConsoleCLI() {
           for (const u of all) {
             const status =
               u.status === "approved" ? "✅" :
-              u.status === "pending" ? "⏳" : "🚫";
+                u.status === "pending" ? "⏳" : "🚫";
             const opLabel = u.oplevel === 2 ? " [OP:2]" : "";
             console.log(`  ${status} ${u.username}  ID:${u.id}  IP:${u.ip}  ${u.status}${opLabel}  ${u.createdAt}`);
           }
@@ -344,6 +346,21 @@ function startConsoleCLI() {
       }
       case "status": {
         printStatus(port, rootReal);
+        break;
+      }
+      case "private": {
+        const val = arg.toLowerCase();
+        if (val === "true" || val === "1" || val === "on") {
+          setPrivateMode(true);
+          console.log(" プライベートモードを有効にしました（全APIへのアクセスにログインが必要です）");
+        } else if (val === "false" || val === "0" || val === "off") {
+          setPrivateMode(false);
+          console.log(" パブリックモードに切り替えました（読み取りは認証不要の全体公開）");
+        } else {
+          const current = isPrivateMode();
+          console.log(`🔐 現在のモード: ${current ? "🔒 プライベート（ログイン必須）" : "🌐 パブリック（全体公開）"}`);
+          console.log("   使い方: private true / private false");
+        }
         break;
       }
       case "reload": {
@@ -402,6 +419,7 @@ function startConsoleCLI() {
         console.log("  user op <username> <1|2>          … 権限レベル設定");
         console.log("  users                             … 全ユーザー一覧");
         console.log("  pending                           … 承認待ちユーザー一覧");
+        console.log("  private <true|false>              … プライベートモード切替");
         console.log("  block <path>                      … パスをブロック");
         console.log("  unblock <path>                    … ブロック解除");
         console.log("  blocks                            … ブロックリスト表示");
@@ -436,7 +454,15 @@ async function main() {
   registerHAProxySettings();
   registerUploadSettings();
   registerStreamSettings();
+  registerPrivateSettings();
   initSettings(rootReal);
+
+  // Show private mode status
+  if (isPrivateMode()) {
+    console.log("🔒 プライベートモード: 有効 (全APIへのアクセスにログインが必要です)");
+  } else {
+    console.log("🌐 パブリックモード: 全体公開 (読み取りは認証不要)");
+  }
   // Put HLS cache inside the share at <share>/.fileshare/cache and ensure it's ready
   await setHlsCacheRoot(rootReal);
   startStreamCacheJanitor();
@@ -472,483 +498,512 @@ async function main() {
       idleTimeout: 120,
 
       async fetch(request: Request, server: RequestIpServer): Promise<Response> {
-      let url: URL;
-      try {
-        url = new URL(request.url);
-      } catch (err: unknown) {
-        console.error("Invalid URL:", request.url, err);
-        return jsonRes(400, { error: "Invalid request URL" });
-      }
-      const pathname = decodeURIComponent(url.pathname);
-      const clientIp = getClientIp(request, server);
-
-      markClientActive(clientIp);
-      connectionStart();
-
-      try {
-        // CORS preflight
-        if (request.method === "OPTIONS") {
-          return new Response(null, { status: 204, headers: corsHeaders() });
+        let url: URL;
+        try {
+          url = new URL(request.url);
+        } catch (err: unknown) {
+          console.error("Invalid URL:", request.url, err);
+          return jsonRes(400, { error: "Invalid request URL" });
         }
+        const pathname = decodeURIComponent(url.pathname);
+        const clientIp = getClientIp(request, server);
 
-        // ── Public API routes ──
+        markClientActive(clientIp);
+        connectionStart();
 
-        if (pathname === "/api/health") {
-          return jsonRes(200, { status: "ok", sharing: rootReal, version: CURRENT_FILESHARE_VERSION });
-        }
+        try {
+          // CORS preflight
+          if (request.method === "OPTIONS") {
+            return new Response(null, { status: 204, headers: corsHeaders() });
+          }
 
-        // ── Speed test endpoints (client network measurement) ──
-        if (pathname === "/api/speedtest/download") {
-          try {
-            const sizeParam = parseInt(url.searchParams.get("size") ?? "0", 10);
-            const size = Number.isFinite(sizeParam) && sizeParam > 0
-              ? Math.min(sizeParam, 4 * 1024 * 1024) // cap at 4MB (WAN-safe)
-              : 1024 * 1024; // default 1MB
+          // ── Public API routes ──
 
-            // Fixed-length payload (no chunked transfer) for proxy compatibility.
-            const payload = new Uint8Array(size);
-            for (let i = 0; i < size; i++) {
-              payload[i] = i % 251;
+          if (pathname === "/api/health") {
+            return jsonRes(200, { status: "ok", sharing: rootReal, version: CURRENT_FILESHARE_VERSION });
+          }
+
+          // ── Speed test endpoints (client network measurement) ──
+          if (pathname === "/api/speedtest/download") {
+            try {
+              const sizeParam = parseInt(url.searchParams.get("size") ?? "0", 10);
+              const size = Number.isFinite(sizeParam) && sizeParam > 0
+                ? Math.min(sizeParam, 4 * 1024 * 1024) // cap at 4MB (WAN-safe)
+                : 1024 * 1024; // default 1MB
+
+              // Fixed-length payload (no chunked transfer) for proxy compatibility.
+              const payload = new Uint8Array(size);
+              for (let i = 0; i < size; i++) {
+                payload[i] = i % 251;
+              }
+
+              const headers = new Headers({
+                "Content-Type": "application/octet-stream",
+                "Content-Length": String(size),
+                "Content-Encoding": "identity",
+                "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+                Pragma: "no-cache",
+                Expires: "0",
+              });
+              for (const [k, v] of Object.entries(corsHeaders())) {
+                headers.set(k, v);
+              }
+              return new Response(payload, { status: 200, headers });
+            } catch (err: unknown) {
+              return jsonRes(500, { error: "speedtest download failed", detail: getErrorMessage(err) });
+            }
+          }
+
+          if (pathname === "/api/speedtest/upload" && request.method === "POST") {
+            try {
+              const start = Date.now();
+              const body = await request.arrayBuffer();
+              const elapsedMs = Math.max(1, Date.now() - start);
+              const receivedBytes = body.byteLength;
+              return jsonRes(200, {
+                ok: true,
+                receivedBytes,
+                elapsedMs,
+              });
+            } catch (err: unknown) {
+              return jsonRes(500, { error: "speedtest upload failed", detail: getErrorMessage(err) });
+            }
+          }
+
+          // ── Status API (for client Status modal) ──
+          if (pathname === "/api/status") {
+            const rl = checkIpRateLimit("status", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ステータスのレート制限に達しました",
+                target: "status",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
             }
 
-            const headers = new Headers({
-              "Content-Type": "application/octet-stream",
-              "Content-Length": String(size),
-              "Content-Encoding": "identity",
-              "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-              Pragma: "no-cache",
-              Expires: "0",
+            const status = getServerStatus();
+            const diskInfo = await getDiskInfo(rootReal);
+            return jsonRes(200, {
+              ...status,
+              disk: diskInfo,
+              port,
+              sharePath: rootReal,
             });
+          }
+
+          if (pathname === "/api/list") {
+            const rl = checkIpRateLimit("list", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "一覧取得のレート制限に達しました",
+                target: "list",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const relPath = url.searchParams.get("path") ?? "";
+            // Block check: if the directory itself is blocked, deny
+            if (relPath) {
+              const { safePath } = await import("./api/files");
+              const resolved = await safePath(rootReal, relPath);
+              if (resolved && isPathBlocked(resolved)) {
+                return jsonRes(403, { error: "このパスへのアクセスはブロックされています" });
+              }
+            }
+            const entries = await listDirectory(rootReal, relPath);
+            if (entries === null) {
+              return jsonRes(404, { error: "Directory not found or access denied" });
+            }
+            // Filter out blocked entries from listing
+            const filtered = entries.filter((e: FileEntry) => {
+              const fullPath = (rootReal + "/" + e.path).replace(/\\/g, "/");
+              return !isPathBlocked(fullPath);
+            }).map((e: FileEntry) => ({
+              ...e,
+              downloadCount: e.isDir ? undefined : getFileDownloadCount(e.path),
+            }));
+            return jsonRes(200, filtered);
+          }
+
+          if (pathname === "/api/file") {
+            const rl = checkIpRateLimit("download", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ダウンロードのレート制限に達しました",
+                target: "download",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const relPath = url.searchParams.get("path");
+            if (!relPath) {
+              return jsonRes(400, { error: "Missing path parameter" });
+            }
+            // Block check for file download
+            const { safePath } = await import("./api/files");
+            const resolvedFile = await safePath(rootReal, relPath);
+            if (resolvedFile && isPathBlocked(resolvedFile)) {
+              return jsonRes(403, { error: "このファイルはブロックされています" });
+            }
+            const resp = await serveFile(rootReal, relPath, request);
+            const headers = new Headers(resp.headers);
             for (const [k, v] of Object.entries(corsHeaders())) {
               headers.set(k, v);
             }
-            return new Response(payload, { status: 200, headers });
-          } catch (err: unknown) {
-            return jsonRes(500, { error: "speedtest download failed", detail: getErrorMessage(err) });
-          }
-        }
+            // Track download stats
+            const contentLen = parseInt(headers.get("Content-Length") ?? "0", 10);
+            if (resp.status === 200 || resp.status === 206) {
+              recordDownload(contentLen);
 
-        if (pathname === "/api/speedtest/upload" && request.method === "POST") {
-          try {
-            const start = Date.now();
-            const body = await request.arrayBuffer();
-            const elapsedMs = Math.max(1, Date.now() - start);
-            const receivedBytes = body.byteLength;
-            return jsonRes(200, {
-              ok: true,
-              receivedBytes,
-              elapsedMs,
-            });
-          } catch (err: unknown) {
-            return jsonRes(500, { error: "speedtest upload failed", detail: getErrorMessage(err) });
-          }
-        }
-
-        // ── Status API (for client Status modal) ──
-        if (pathname === "/api/status") {
-          const rl = checkIpRateLimit("status", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ステータスのレート制限に達しました",
-              target: "status",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
+              const isForceDownload = ["1", "true", "yes"].includes((url.searchParams.get("download") ?? "").toLowerCase());
+              const contentType = (headers.get("Content-Type") ?? "").toLowerCase();
+              const isMetadataPreviewHtml = contentType.includes("text/html");
+              if (isForceDownload && request.method === "GET" && !request.headers.get("Range") && !isMetadataPreviewHtml) {
+                recordFileDownload(relPath);
+              }
+            }
+            return new Response(resp.body, { status: resp.status, headers });
           }
 
-          const status = getServerStatus();
-          const diskInfo = await getDiskInfo(rootReal);
-          return jsonRes(200, {
-            ...status,
-            disk: diskInfo,
-            port,
-            sharePath: rootReal,
-          });
-        }
+          if (pathname === "/api/stream/playlist") {
+            const rl = checkIpRateLimit("download", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ダウンロードのレート制限に達しました",
+                target: "download",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
 
-        if (pathname === "/api/list") {
-          const rl = checkIpRateLimit("list", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "一覧取得のレート制限に達しました",
-              target: "list",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
+            const relPath = url.searchParams.get("path") ?? "";
+            if (!relPath) {
+              return jsonRes(400, { error: "Missing path parameter" });
+            }
 
-          const relPath = url.searchParams.get("path") ?? "";
-          // Block check: if the directory itself is blocked, deny
-          if (relPath) {
             const { safePath } = await import("./api/files");
             const resolved = await safePath(rootReal, relPath);
             if (resolved && isPathBlocked(resolved)) {
-              return jsonRes(403, { error: "このパスへのアクセスはブロックされています" });
+              return jsonRes(403, { error: "このファイルはブロックされています" });
+            }
+
+            const resp = await handleHlsPlaylist(rootReal, relPath);
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          if (pathname === "/api/stream/config") {
+            const settings = getStreamSettings();
+            return jsonRes(200, {
+              alwaysAnalyze: settings.alwaysAnalyze,
+              useFastCopyFirst: settings.useFastCopyFirst,
+              ffmpegPreset: settings.ffmpegPreset,
+              hlsSegmentSeconds: settings.hlsSegmentSeconds,
+              cacheTtlSeconds: getStreamCacheTtlSeconds(),
+            });
+          }
+
+          if (pathname === "/api/stream/file") {
+            const rl = checkIpRateLimit("download", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ダウンロードのレート制限に達しました",
+                target: "download",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const relPath = url.searchParams.get("path") ?? "";
+            const file = url.searchParams.get("file") ?? "";
+            if (!relPath || !file) {
+              return jsonRes(400, { error: "Missing path/file parameter" });
+            }
+
+            const { safePath } = await import("./api/files");
+            const resolved = await safePath(rootReal, relPath);
+            if (resolved && isPathBlocked(resolved)) {
+              return jsonRes(403, { error: "このファイルはブロックされています" });
+            }
+
+            const resp = await handleHlsFile(rootReal, relPath, file);
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          // ── Auth routes ──
+
+          if (pathname === "/api/auth/register" && request.method === "POST") {
+            const rl = checkIpRateLimit("auth", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                ok: false,
+                error: "認証関連のレート制限に達しました",
+                target: "auth",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            try {
+              const body = await request.json() as { username?: string; password?: string };
+              const result = register(body.username ?? "", body.password ?? "", clientIp);
+              return jsonRes(result.ok ? 200 : 400, result);
+            } catch {
+              return jsonRes(400, { ok: false, message: "Invalid request body" });
             }
           }
-          const entries = await listDirectory(rootReal, relPath);
-          if (entries === null) {
-            return jsonRes(404, { error: "Directory not found or access denied" });
-          }
-          // Filter out blocked entries from listing
-          const filtered = entries.filter((e: FileEntry) => {
-            const fullPath = (rootReal + "/" + e.path).replace(/\\/g, "/");
-            return !isPathBlocked(fullPath);
-          }).map((e: FileEntry) => ({
-            ...e,
-            downloadCount: e.isDir ? undefined : getFileDownloadCount(e.path),
-          }));
-          return jsonRes(200, filtered);
-        }
 
-        if (pathname === "/api/file") {
-          const rl = checkIpRateLimit("download", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ダウンロードのレート制限に達しました",
-              target: "download",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
+          if (pathname === "/api/auth/login" && request.method === "POST") {
+            const rl = checkIpRateLimit("auth", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                ok: false,
+                error: "認証関連のレート制限に達しました",
+                target: "auth",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
 
-          const relPath = url.searchParams.get("path");
-          if (!relPath) {
-            return jsonRes(400, { error: "Missing path parameter" });
-          }
-          // Block check for file download
-          const { safePath } = await import("./api/files");
-          const resolvedFile = await safePath(rootReal, relPath);
-          if (resolvedFile && isPathBlocked(resolvedFile)) {
-            return jsonRes(403, { error: "このファイルはブロックされています" });
-          }
-          const resp = await serveFile(rootReal, relPath, request);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          // Track download stats
-          const contentLen = parseInt(headers.get("Content-Length") ?? "0", 10);
-          if (resp.status === 200 || resp.status === 206) {
-            recordDownload(contentLen);
-
-            const isForceDownload = ["1", "true", "yes"].includes((url.searchParams.get("download") ?? "").toLowerCase());
-            const contentType = (headers.get("Content-Type") ?? "").toLowerCase();
-            const isMetadataPreviewHtml = contentType.includes("text/html");
-            if (isForceDownload && request.method === "GET" && !request.headers.get("Range") && !isMetadataPreviewHtml) {
-              recordFileDownload(relPath);
+            try {
+              const body = await request.json() as { username?: string; password?: string };
+              const result = login(body.username ?? "", body.password ?? "", clientIp);
+              return jsonRes(result.ok ? 200 : 401, result);
+            } catch {
+              return jsonRes(400, { ok: false, message: "Invalid request body" });
             }
           }
-          return new Response(resp.body, { status: resp.status, headers });
+
+          if (pathname === "/api/auth/logout" && request.method === "POST") {
+            const token = request.headers.get("Authorization");
+            logout(token);
+            return jsonRes(200, { ok: true, message: "ログアウトしました" });
+          }
+
+          if (pathname === "/api/auth/status") {
+            const token = request.headers.get("Authorization");
+            const status = getAuthStatus(token);
+            const oplevel = getOpLevel(token);
+            return jsonRes(200, { ...status, oplevel });
+          }
+
+          // ── Private mode status endpoint ──
+          if (pathname === "/api/auth/private-mode") {
+            return jsonRes(200, { privateMode: isPrivateMode() });
+          }
+
+          // ── Private mode gate: require auth for all data API routes ──
+          if (isPrivateMode() && pathname.startsWith("/api/")) {
+            const gateExemptPaths = [
+              "/api/health",
+              "/api/auth/login",
+              "/api/auth/register",
+              "/api/auth/logout",
+              "/api/auth/status",
+              "/api/auth/private-mode",
+              "/api/speedtest/download",
+              "/api/speedtest/upload",
+            ];
+            if (!gateExemptPaths.includes(pathname)) {
+              const token = request.headers.get("Authorization");
+              const username = verifyToken(token);
+              if (!username) {
+                return jsonRes(401, {
+                  error: "プライベートモードが有効です。アクセスにはログインが必要です。",
+                  privateMode: true,
+                });
+              }
+            }
+          }
+
+          // ── Disk info route ──
+          if (pathname === "/api/disk") {
+            const rl = checkIpRateLimit("disk", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ディスク情報のレート制限に達しました",
+                target: "disk",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+            return jsonRes(200, await getDiskInfo(rootReal));
+          }
+
+          // ── Protected routes (require auth) ──
+
+          if (pathname === "/api/upload" && request.method === "POST") {
+            const rl = checkIpRateLimit("upload", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "アップロードのレート制限に達しました",
+                target: "upload",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const token = request.headers.get("Authorization");
+            const username = verifyToken(token);
+            if (!username) {
+              return jsonRes(401, { error: "アップロードにはログインが必要です" });
+            }
+            const resp = await handleUpload(rootReal, request, username);
+            // Track upload stats
+            const uploadLen = parseInt(request.headers.get("content-length") ?? "0", 10);
+            if (resp.status === 200) {
+              recordUpload(uploadLen);
+            }
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          if (pathname === "/api/mkdir" && request.method === "POST") {
+            const rl = checkIpRateLimit("fileops", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ファイル操作のレート制限に達しました",
+                target: "fileops",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const token = request.headers.get("Authorization");
+            const username = verifyToken(token);
+            if (!username) {
+              return jsonRes(401, { error: "フォルダ作成にはログインが必要です" });
+            }
+            const resp = await handleMkdir(rootReal, request, username);
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          // ── Rename (requires login, oplevel 1+) ──
+          if (pathname === "/api/rename" && request.method === "POST") {
+            const rl = checkIpRateLimit("fileops", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ファイル操作のレート制限に達しました",
+                target: "fileops",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const token = request.headers.get("Authorization");
+            const username = verifyToken(token);
+            if (!username) {
+              return jsonRes(401, { error: "名前変更にはログインが必要です" });
+            }
+            const resp = await handleRename(rootReal, request, username);
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          // ── Delete (requires login, oplevel 2) ──
+          if (pathname === "/api/delete" && request.method === "POST") {
+            const rl = checkIpRateLimit("fileops", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ファイル操作のレート制限に達しました",
+                target: "fileops",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const token = request.headers.get("Authorization");
+            const username = verifyToken(token);
+            if (!username) {
+              return jsonRes(401, { error: "削除にはログインが必要です" });
+            }
+            const oplevel = getOpLevel(token);
+            if (oplevel < 2) {
+              return jsonRes(403, { error: "削除には権限レベル2が必要です" });
+            }
+            const resp = await handleDelete(rootReal, request, username);
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          // ── Move (requires login, oplevel 2) ──
+          if (pathname === "/api/move" && request.method === "POST") {
+            const rl = checkIpRateLimit("fileops", clientIp);
+            if (!rl.allowed) {
+              return jsonRes(429, {
+                error: "ファイル操作のレート制限に達しました",
+                target: "fileops",
+                retryAfterSec: rl.retryAfterSec ?? 1,
+              }, {
+                "Retry-After": String(rl.retryAfterSec ?? 1),
+              });
+            }
+
+            const token = request.headers.get("Authorization");
+            const username = verifyToken(token);
+            if (!username) {
+              return jsonRes(401, { error: "移動にはログインが必要です" });
+            }
+            const oplevel = getOpLevel(token);
+            if (oplevel < 2) {
+              return jsonRes(403, { error: "移動には権限レベル2が必要です" });
+            }
+
+            const resp = await handleMove(rootReal, request, username);
+            const headers = new Headers(resp.headers);
+            for (const [k, v] of Object.entries(corsHeaders())) {
+              headers.set(k, v);
+            }
+            return new Response(resp.body, { status: resp.status, headers });
+          }
+
+          // ── Embedded static assets (exe-safe) ──
+          if (pathname === "/index.js") {
+            return serveEmbeddedJs();
+          }
+
+          // Fallback: serve embedded index.html (SPA)
+          return await serveEmbeddedHtml(url, rootReal);
+        } finally {
+          connectionEnd();
         }
-
-        if (pathname === "/api/stream/playlist") {
-          const rl = checkIpRateLimit("download", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ダウンロードのレート制限に達しました",
-              target: "download",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const relPath = url.searchParams.get("path") ?? "";
-          if (!relPath) {
-            return jsonRes(400, { error: "Missing path parameter" });
-          }
-
-          const { safePath } = await import("./api/files");
-          const resolved = await safePath(rootReal, relPath);
-          if (resolved && isPathBlocked(resolved)) {
-            return jsonRes(403, { error: "このファイルはブロックされています" });
-          }
-
-          const resp = await handleHlsPlaylist(rootReal, relPath);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        if (pathname === "/api/stream/config") {
-          const settings = getStreamSettings();
-          return jsonRes(200, {
-            alwaysAnalyze: settings.alwaysAnalyze,
-            useFastCopyFirst: settings.useFastCopyFirst,
-            ffmpegPreset: settings.ffmpegPreset,
-            hlsSegmentSeconds: settings.hlsSegmentSeconds,
-            cacheTtlSeconds: getStreamCacheTtlSeconds(),
-          });
-        }
-
-        if (pathname === "/api/stream/file") {
-          const rl = checkIpRateLimit("download", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ダウンロードのレート制限に達しました",
-              target: "download",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const relPath = url.searchParams.get("path") ?? "";
-          const file = url.searchParams.get("file") ?? "";
-          if (!relPath || !file) {
-            return jsonRes(400, { error: "Missing path/file parameter" });
-          }
-
-          const { safePath } = await import("./api/files");
-          const resolved = await safePath(rootReal, relPath);
-          if (resolved && isPathBlocked(resolved)) {
-            return jsonRes(403, { error: "このファイルはブロックされています" });
-          }
-
-          const resp = await handleHlsFile(rootReal, relPath, file);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        // ── Auth routes ──
-
-        if (pathname === "/api/auth/register" && request.method === "POST") {
-          const rl = checkIpRateLimit("auth", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              ok: false,
-              error: "認証関連のレート制限に達しました",
-              target: "auth",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          try {
-            const body = await request.json() as { username?: string; password?: string };
-            const result = register(body.username ?? "", body.password ?? "", clientIp);
-            return jsonRes(result.ok ? 200 : 400, result);
-          } catch {
-            return jsonRes(400, { ok: false, message: "Invalid request body" });
-          }
-        }
-
-        if (pathname === "/api/auth/login" && request.method === "POST") {
-          const rl = checkIpRateLimit("auth", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              ok: false,
-              error: "認証関連のレート制限に達しました",
-              target: "auth",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          try {
-            const body = await request.json() as { username?: string; password?: string };
-            const result = login(body.username ?? "", body.password ?? "", clientIp);
-            return jsonRes(result.ok ? 200 : 401, result);
-          } catch {
-            return jsonRes(400, { ok: false, message: "Invalid request body" });
-          }
-        }
-
-        if (pathname === "/api/auth/logout" && request.method === "POST") {
-          const token = request.headers.get("Authorization");
-          logout(token);
-          return jsonRes(200, { ok: true, message: "ログアウトしました" });
-        }
-
-        if (pathname === "/api/auth/status") {
-          const token = request.headers.get("Authorization");
-          const status = getAuthStatus(token);
-          const oplevel = getOpLevel(token);
-          return jsonRes(200, { ...status, oplevel });
-        }
-
-        // ── Disk info route ──
-        if (pathname === "/api/disk") {
-          const rl = checkIpRateLimit("disk", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ディスク情報のレート制限に達しました",
-              target: "disk",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-          return jsonRes(200, await getDiskInfo(rootReal));
-        }
-
-        // ── Protected routes (require auth) ──
-
-        if (pathname === "/api/upload" && request.method === "POST") {
-          const rl = checkIpRateLimit("upload", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "アップロードのレート制限に達しました",
-              target: "upload",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const token = request.headers.get("Authorization");
-          const username = verifyToken(token);
-          if (!username) {
-            return jsonRes(401, { error: "アップロードにはログインが必要です" });
-          }
-          const resp = await handleUpload(rootReal, request, username);
-          // Track upload stats
-          const uploadLen = parseInt(request.headers.get("content-length") ?? "0", 10);
-          if (resp.status === 200) {
-            recordUpload(uploadLen);
-          }
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        if (pathname === "/api/mkdir" && request.method === "POST") {
-          const rl = checkIpRateLimit("fileops", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ファイル操作のレート制限に達しました",
-              target: "fileops",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const token = request.headers.get("Authorization");
-          const username = verifyToken(token);
-          if (!username) {
-            return jsonRes(401, { error: "フォルダ作成にはログインが必要です" });
-          }
-          const resp = await handleMkdir(rootReal, request, username);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        // ── Rename (requires login, oplevel 1+) ──
-        if (pathname === "/api/rename" && request.method === "POST") {
-          const rl = checkIpRateLimit("fileops", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ファイル操作のレート制限に達しました",
-              target: "fileops",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const token = request.headers.get("Authorization");
-          const username = verifyToken(token);
-          if (!username) {
-            return jsonRes(401, { error: "名前変更にはログインが必要です" });
-          }
-          const resp = await handleRename(rootReal, request, username);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        // ── Delete (requires login, oplevel 2) ──
-        if (pathname === "/api/delete" && request.method === "POST") {
-          const rl = checkIpRateLimit("fileops", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ファイル操作のレート制限に達しました",
-              target: "fileops",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const token = request.headers.get("Authorization");
-          const username = verifyToken(token);
-          if (!username) {
-            return jsonRes(401, { error: "削除にはログインが必要です" });
-          }
-          const oplevel = getOpLevel(token);
-          if (oplevel < 2) {
-            return jsonRes(403, { error: "削除には権限レベル2が必要です" });
-          }
-          const resp = await handleDelete(rootReal, request, username);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        // ── Move (requires login, oplevel 2) ──
-        if (pathname === "/api/move" && request.method === "POST") {
-          const rl = checkIpRateLimit("fileops", clientIp);
-          if (!rl.allowed) {
-            return jsonRes(429, {
-              error: "ファイル操作のレート制限に達しました",
-              target: "fileops",
-              retryAfterSec: rl.retryAfterSec ?? 1,
-            }, {
-              "Retry-After": String(rl.retryAfterSec ?? 1),
-            });
-          }
-
-          const token = request.headers.get("Authorization");
-          const username = verifyToken(token);
-          if (!username) {
-            return jsonRes(401, { error: "移動にはログインが必要です" });
-          }
-          const oplevel = getOpLevel(token);
-          if (oplevel < 2) {
-            return jsonRes(403, { error: "移動には権限レベル2が必要です" });
-          }
-
-          const resp = await handleMove(rootReal, request, username);
-          const headers = new Headers(resp.headers);
-          for (const [k, v] of Object.entries(corsHeaders())) {
-            headers.set(k, v);
-          }
-          return new Response(resp.body, { status: resp.status, headers });
-        }
-
-        // ── Embedded static assets (exe-safe) ──
-        if (pathname === "/index.js") {
-          return serveEmbeddedJs();
-        }
-
-        // Fallback: serve embedded index.html (SPA)
-        return await serveEmbeddedHtml(url, rootReal);
-      } finally {
-        connectionEnd();
-      }
-    },
-  });
+      },
+    });
   } catch (err: unknown) {
     if (isErrnoLike(err) && (err.code === "EADDRINUSE" || err.errno === "EADDRINUSE" || err.syscall === "listen")) {
       console.error(`❌ ポート ${internalPort} は既に使用されています。別のポートを指定するには --port <番号> を使ってください。`);

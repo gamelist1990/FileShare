@@ -21,6 +21,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { resolveClientIpFromHAProxy } from "./haproxy";
+import { getModuleSettings, registerSettingsModule, updateModuleSettings } from "./settings";
 
 // ── Types ──────────────────────────────────────────────
 export type UserStatus = "pending" | "approved" | "denied";
@@ -519,3 +520,29 @@ export function resetUsername(oldName: string, newName: string): boolean {
   scheduleSave();
   return true;
 }
+
+// ── Private mode (login required for all access) ────────
+
+interface PrivateSettings {
+  enabled: boolean;
+}
+
+const PRIVATE_SETTINGS_KEY = "private";
+const DEFAULT_PRIVATE_SETTINGS: PrivateSettings = { enabled: false };
+
+/** Register private mode settings module — call once before initSettings */
+export function registerPrivateSettings(): void {
+  registerSettingsModule<PrivateSettings>(PRIVATE_SETTINGS_KEY, DEFAULT_PRIVATE_SETTINGS);
+}
+
+/** Check if private mode is currently enabled */
+export function isPrivateMode(): boolean {
+  const settings = getModuleSettings<PrivateSettings>(PRIVATE_SETTINGS_KEY);
+  return settings.enabled;
+}
+
+/** Toggle private mode on/off and persist */
+export function setPrivateMode(enabled: boolean): void {
+  updateModuleSettings<PrivateSettings>(PRIVATE_SETTINGS_KEY, { enabled });
+}
+

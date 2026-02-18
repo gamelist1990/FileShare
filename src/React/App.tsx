@@ -39,6 +39,7 @@ export function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [privateMode, setPrivateMode] = useState(false);
 
   // Status modal
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -71,9 +72,18 @@ export function App() {
   // Disk info
   const [disk, setDisk] = useState<DiskInfo | null>(null);
 
-  // Check auth status on mount
+  // Check auth status and private mode on mount
   useEffect(() => {
     (async () => {
+      // Check private mode status
+      try {
+        const pmRes = await fetch("/api/auth/private-mode");
+        if (pmRes.ok) {
+          const pmData = await pmRes.json();
+          setPrivateMode(!!pmData.privateMode);
+        }
+      } catch { /* ignore */ }
+
       const t = getToken();
       if (t) {
         try {
@@ -93,7 +103,7 @@ export function App() {
   // Fetch disk info periodically
   const fetchDisk = useCallback(async () => {
     try {
-      const res = await fetch("/api/disk");
+      const res = await fetch("/api/disk", { headers: authHeaders() });
       if (res.ok) setDisk(await res.json());
     } catch { /* ignore */ }
   }, []);
@@ -138,7 +148,9 @@ export function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`, {
+        headers: authHeaders(),
+      });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || "Failed to fetch");
@@ -198,6 +210,11 @@ export function App() {
     clearToken();
     setLoggedInUser(null);
     setOplevel(0);
+    // In private mode, refetch to trigger auth-required state
+    if (privateMode) {
+      setEntries([]);
+      setError(null);
+    }
   };
 
   const handleContextMenu = (e: React.MouseEvent, entry: FileEntry) => {
@@ -280,7 +297,9 @@ export function App() {
     setMoveModalLoading(true);
     setMoveModalError(null);
     try {
-      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`, {
+        headers: authHeaders(),
+      });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || "移動先フォルダの取得に失敗しました");
@@ -372,8 +391,36 @@ export function App() {
       {/* Disk quota */}
       <DiskQuotaBar disk={disk} onRetry={fetchDisk} />
 
-      {/* Auth modal */}
-      {showAuthPanel && !loggedInUser && (
+      {/* Auth modal — forced in private mode when not logged in */}
+      {authChecked && privateMode && !loggedInUser ? (
+        <div style={{
+          ...modalStyles.overlay,
+          background: "rgba(0,0,0,0.72)",
+          backdropFilter: "blur(6px)",
+        }}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <div style={{ textAlign: "center", marginBottom: 12, color: "#fff" }}>
+              <Icon name="fa-solid fa-lock" style={{ fontSize: 28, marginBottom: 8 }} />
+              <div style={{ fontSize: 16, fontWeight: 600 }}>プライベートモード</div>
+              <div style={{ fontSize: 13, color: "#ccc", marginTop: 4 }}>このサーバーはログインが必要です</div>
+            </div>
+            <AuthPanel onLogin={(u) => {
+              setLoggedInUser(u);
+              // Fetch oplevel after login
+              const t = getToken();
+              if (t) {
+                fetch("/api/auth/status", { headers: { Authorization: `Bearer ${t}` } })
+                  .then(r => r.json())
+                  .then(d => { if (d.oplevel) setOplevel(d.oplevel); })
+                  .catch(() => {});
+              }
+              // Refetch entries now that we're authenticated
+              const params = new URL(window.location.href).searchParams;
+              fetchEntries(params.get("path") ?? "");
+            }} />
+          </div>
+        </div>
+      ) : showAuthPanel && !loggedInUser ? (
         <div style={modalStyles.overlay} onClick={() => setShowAuthPanel(false)}>
           <div onClick={(e) => e.stopPropagation()}>
             <AuthPanel onLogin={(u) => {
@@ -387,10 +434,12 @@ export function App() {
                   .then(d => { if (d.oplevel) setOplevel(d.oplevel); })
                   .catch(() => {});
               }
+              // Refetch entries now
+              fetchEntries(currentPath);
             }} />
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Status modal */}
       {showStatusModal && (
