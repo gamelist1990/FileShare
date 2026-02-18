@@ -202,6 +202,7 @@ function startConsoleCLI() {
   console.log("  ftp start                         … FTPサーバー起動");
   console.log("  ftp stop                          … FTPサーバー停止");
   console.log("  ftp port <number>                 … FTPポート変更");
+  console.log("  ftp pasv-address <ip|host|''>      … PASV応答のアドレス指定（空で自動検出）");
   console.log("  block <path>                      … パスをブロック");
   console.log("  unblock <path>                    … ブロック解除");
   console.log("  blocks                            … ブロックリスト表示");
@@ -446,7 +447,7 @@ function startConsoleCLI() {
           console.log(`\n📁 FTPサーバー:`);
           console.log(`  状態: ${isFtpRunning() ? "✅ 起動中" : "⏹️ 停止中"}`);
           console.log(`  ポート: ${settings.port}`);
-          console.log(`  PASVアドレス: ${settings.pasvAddress || "(自動検出)"}`);
+          console.log(`  PASVアドレス: ${settings.pasvAddress || "(自動: 外部=グローバルIPv4取得 / 内部=LAN)"}`);
           console.log(`  匿名アクセス: ${settings.anonymousRead ? "有効 (読み取りのみ)" : "無効"}`);
           console.log(`  PASVポート: ${settings.pasvPortMin}-${settings.pasvPortMax}\n`);
         }
@@ -468,6 +469,7 @@ function startConsoleCLI() {
         console.log("  ftp start                         … FTPサーバー起動");
         console.log("  ftp stop                          … FTPサーバー停止");
         console.log("  ftp port <number>                 … FTPポート変更");
+        console.log("  ftp pasv-address <ip|host|''>      … PASV応答のアドレス指定（空で自動検出）");
         console.log("  block <path>                      … パスをブロック");
         console.log("  unblock <path>                    … ブロック解除");
         console.log("  blocks                            … ブロックリスト表示");

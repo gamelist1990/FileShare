@@ -91,19 +91,102 @@ function getLocalIp(): string {
     return "127.0.0.1";
 }
 
-function isAddressLocal(addr: string): boolean {
-    if (!addr) return false;
-    const nets = networkInterfaces();
-    for (const name of Object.keys(nets)) {
-        for (const net of nets[name] ?? []) {
-            if (net.family === "IPv4" && net.address === addr) return true;
-            if (net.family === "IPv4" && addr === `::ffff:${net.address}`) return true;
-        }
-    }
-    return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+function normalizeIpv4(addr: string): string {
+    // Bun/Node may present IPv4-mapped IPv6 addresses like ::ffff:192.168.0.10
+    if (addr.startsWith("::ffff:")) return addr.slice("::ffff:".length);
+    return addr;
+}
+
+function isIpv4(addr: string): boolean {
+    return /^\d+\.\d+\.\d+\.\d+$/.test(addr);
+}
+
+function isPrivateClientAddress(addr: string): boolean {
+    const a = normalizeIpv4(addr);
+    if (!a) return false;
+    if (a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1") return true;
+    // Only handle IPv4 here; if IPv6 client, we conservatively treat as external.
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(a)) return false;
+    const [o1, o2] = a.split(".").map((n) => Number(n));
+    if (!Number.isFinite(o1) || !Number.isFinite(o2)) return false;
+
+    // RFC1918 + CGNAT + link-local
+    if (o1 === 10) return true; // 10.0.0.0/8
+    if (o1 === 192 && o2 === 168) return true; // 192.168.0.0/16
+    if (o1 === 172 && o2 >= 16 && o2 <= 31) return true; // 172.16.0.0/12
+    if (o1 === 100 && o2 >= 64 && o2 <= 127) return true; // 100.64.0.0/10 (CGNAT)
+    if (o1 === 169 && o2 === 254) return true; // 169.254.0.0/16 (link-local)
+    return false;
 }
 
 let cachedServerIp = "127.0.0.1";
+
+type CachedPublicIp = { ip: string; fetchedAt: number };
+let cachedPublicIpv4: CachedPublicIp | null = null;
+let inflightPublicIpv4: Promise<string | null> | null = null;
+
+async function fetchPublicIpv4(): Promise<string | null> {
+    // Cache for 10 minutes (avoid hammering external services)
+    const now = Date.now();
+    if (cachedPublicIpv4 && now - cachedPublicIpv4.fetchedAt < 10 * 60 * 1000) {
+        return cachedPublicIpv4.ip;
+    }
+    if (inflightPublicIpv4) return inflightPublicIpv4;
+
+    const urlList: string[] = [
+        // ipinfo: token not required for this basic endpoint; returns JSON with { ip: "..." }
+        "https://ipinfo.io/json",
+        // Fallbacks (plain text)
+        "https://ipv4.icanhazip.com/",
+        "https://api.ipify.org/",
+    ];
+
+    inflightPublicIpv4 = (async () => {
+        for (const url of urlList) {
+            try {
+                const controller = new AbortController();
+                const t = setTimeout(() => controller.abort(), 2500);
+                const res = await fetch(url, {
+                    method: "GET",
+                    headers: {
+                        "Accept": "application/json, text/plain, */*",
+                        "User-Agent": "FileShare-FTP-PASV/1.0",
+                    },
+                    signal: controller.signal,
+                });
+                clearTimeout(t);
+                if (!res.ok) continue;
+
+                const text = (await res.text()).trim();
+                let ip = text;
+                if (text.startsWith("{")) {
+                    try {
+                        const json = JSON.parse(text) as { ip?: unknown };
+                        if (typeof json.ip === "string") ip = json.ip.trim();
+                    } catch {
+                        // ignore JSON parse errors; try treat as raw
+                    }
+                }
+
+                ip = ip.replace(/\s+/g, "").replace(/\r?\n/g, "");
+                if (isIpv4(ip)) {
+                    cachedPublicIpv4 = { ip, fetchedAt: Date.now() };
+                    return ip;
+                }
+            } catch {
+                // try next URL
+                continue;
+            }
+        }
+        return null;
+    })();
+
+    try {
+        return await inflightPublicIpv4;
+    } finally {
+        inflightPublicIpv4 = null;
+    }
+}
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -384,11 +467,30 @@ async function handleFtpCommand(
                 const { port: pasvPort } = await setupPasvListener(session, settings);
                 const remoteAddr = (socket as any).remoteAddress ?? "";
 
-                // If client is local to the server, prefer local interface IP (avoids NAT/hairpin issues)
-                let pasvIp = isAddressLocal(remoteAddr) ? getLocalIp() : session.serverIp;
+                // Windows Explorer tends to use PASV (227) and will try to connect to the IP we return.
+                // For external clients, we should return the configured public IP/hostname.
+                // For private/LAN clients, returning the server's LAN IP is often necessary unless
+                // the router supports NAT loopback/hairpin.
+                let pasvIp: string;
+                if (isPrivateClientAddress(remoteAddr)) {
+                    pasvIp = getLocalIp();
+                } else if (settings.pasvAddress && settings.pasvAddress.trim() !== "") {
+                    pasvIp = settings.pasvAddress.trim();
+                } else {
+                    // Auto-detect public IPv4 for external clients (helps Windows Explorer which uses PASV)
+                    pasvIp = (await fetchPublicIpv4()) ?? session.serverIp;
+                    if (!isIpv4(pasvIp)) {
+                        // session.serverIp may be a LAN address; this will likely fail for external clients.
+                        // We still respond with something sane, but log a hint.
+                        console.warn(
+                            `[FTP] PASV auto-detect failed. Configure ftp.pasvAddress to your public IP/hostname to support external PASV clients.`
+                        );
+                        pasvIp = getLocalIp();
+                    }
+                }
 
                 // If pasvIp is a hostname (not dotted quad), try to resolve to IPv4
-                if (!/^\d+\.\d+\.\d+\.\d+$/.test(pasvIp)) {
+                if (!isIpv4(pasvIp)) {
                     try {
                         const res = await dns.lookup(pasvIp, { family: 4 });
                         pasvIp = res.address;
