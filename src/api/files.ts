@@ -115,7 +115,7 @@ function buildDownloadPreviewHtml(request: Request, relPath: string, filePath: s
   const normalizedRelPath = relPath.replace(/\\/g, "/");
   const downloadCount = getFileDownloadCount(normalizedRelPath);
   const title = `${fileName} | FileShare`;
-  const description = `ダウンロード共有ファイル: ${normalizedRelPath}（ダウンロード: ${downloadCount}回）`;
+  const description = `ダウンロード共有ファイル: ${fileName}（ダウンロード: ${downloadCount}回）`;
   const canonicalUrl = `${url.origin}${url.pathname}${url.search}`;
 
   const escapedTitle = escapeHtml(title);
