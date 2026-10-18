@@ -80,14 +80,6 @@ export async function authRoute(
           .toLowerCase();
     if (!/^[a-z0-9_-]{2,32}$/.test(name))
       throw new HttpError(400, "ユーザー名は英数字・_・-の2〜32文字です");
-    if (
-      !store.limit(
-        "register:" + ip,
-        store.config.registration.attemptsPerHour,
-        3_600_000,
-      )
-    )
-      throw new HttpError(429, "登録回数の上限です。時間をおいてください");
     let setupHash: string | null = null;
     if (!enroll && data.bootstrap) {
       setupHash = digestToken(String(data.bootstrap));
@@ -98,6 +90,17 @@ export async function authRoute(
       )
         throw new HttpError(403, "初期設定キーが無効または期限切れです");
     }
+    // A verified bootstrap key authorizes first-admin setup independently of
+    // ordinary signup attempts. The shared auth/request rate limits still apply.
+    if (
+      !setupHash &&
+      !store.limit(
+        "register:" + ip,
+        store.config.registration.attemptsPerHour,
+        3_600_000,
+      )
+    )
+      throw new HttpError(429, "登録回数の上限です。時間をおいてください");
     if (!enroll && store.db.query("SELECT 1 FROM users WHERE name=?").get(name))
       throw new HttpError(409, "登録できないユーザー名です");
     if (!enroll && !setupHash) checkIp(store, ip);
