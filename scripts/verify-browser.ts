@@ -106,11 +106,11 @@ try {
     .locator('select[name="visibility"]')
     .selectOption("public");
   await page.getByRole("button", { name: "設定を保存" }).click();
-  await page.getByRole("button", { name: "管理ページ", exact: true }).click();
+  await page.getByRole("button", { name: "Admin", exact: true }).click();
   await page.getByRole("heading", { name: "ユーザーと権限" }).waitFor();
   await page.screenshot({ path: ".artifacts/admin.png", fullPage: true });
   await page
-    .getByRole("button", { name: "共有ストレージ", exact: true })
+    .getByRole("button", { name: "FileShare", exact: true })
     .click();
   await page
     .getByRole("button", { name: "プライベートフォルダ", exact: false })

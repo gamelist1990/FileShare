@@ -392,19 +392,19 @@ export function App() {
           </span>
         </a>
         <nav aria-label="メインナビゲーション">
-          <a href="https://pexserver.com">ホーム</a>
+          <a href="https://pexserver.com">Home</a>
           <button
             className={!admin ? "active" : ""}
             onClick={() => navigateAdmin(false)}
           >
-            共有ストレージ
+            FileShare
           </button>
           {user?.level === 4 && (
             <button
               className={admin ? "active" : ""}
               onClick={() => navigateAdmin(true)}
             >
-              管理ページ
+              Admin
             </button>
           )}
         </nav>

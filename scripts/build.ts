@@ -19,6 +19,10 @@ const files = [
   ["/index.js", "application/javascript; charset=utf-8"],
   ["/theme.css", "text/css; charset=utf-8"],
   ["/server.png", "image/png"],
+  ["/fonts/plus-jakarta-sans-latin-v12.woff2", "font/woff2"],
+  ["/fonts/space-grotesk-latin-700-v22.woff2", "font/woff2"],
+  ["/fonts/PlusJakartaSans-OFL.txt", "text/plain; charset=utf-8"],
+  ["/fonts/SpaceGrotesk-OFL.txt", "text/plain; charset=utf-8"],
 ];
 const assets: Record<string, { type: string; body: string }> = {};
 for (const [name, type] of files)
