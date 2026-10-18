@@ -386,7 +386,6 @@ export function App() {
         </a>
         <nav aria-label="メインナビゲーション">
           <a href="https://pexserver.com">ホーム</a>
-          <a href="https://play.pexserver.com">プレイ</a>
           <button
             className={!admin ? "active" : ""}
             onClick={() => navigateAdmin(false)}
