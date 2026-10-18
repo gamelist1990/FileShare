@@ -67,6 +67,8 @@ try {
   await page
     .getByRole("button", { name: "パスキーでログイン", exact: true })
     .click();
+  if (await page.getByText("管理者の初期設定", { exact: true }).count())
+    throw new Error("Completed administrator setup must not remain visible");
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "パスキーでログイン", exact: true })

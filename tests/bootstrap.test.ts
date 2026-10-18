@@ -17,6 +17,9 @@ test("first-admin setup survives exhausted signup attempts but retains auth thro
   config.rate.authPerMinute = 8;
   const app = await createApp(config);
   try {
+    expect((await (await fetch(origin + "/api/me")).json()).setupRequired).toBe(
+      true,
+    );
     const key = (await readFile(join(dir, "bootstrap.token"), "utf8")).trim();
     const options = (bootstrap?: string) =>
       fetch(origin + "/api/auth/register/options", {
@@ -40,6 +43,20 @@ test("first-admin setup survives exhausted signup attempts but retains auth thro
     config.registration.enabled = false;
     expect((await options(key)).status).toBe(200);
     expect((await options(key)).status).toBe(429);
+    app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
+      "admin-id",
+      "existingadmin",
+      4,
+      "approved",
+      config.vipQuotaBytes,
+      "127.0.0.1",
+      Date.now(),
+    ]);
+    expect((await (await fetch(origin + "/api/me")).json()).setupRequired).toBe(
+      false,
+    );
+    app.store.db.run("DELETE FROM limits WHERE key LIKE ?", ["auth:%"]);
+    expect((await options(key)).status).toBe(403);
   } finally {
     app.close();
     await rm(dir, { recursive: true, force: true });

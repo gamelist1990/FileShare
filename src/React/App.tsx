@@ -57,6 +57,7 @@ export function App() {
     [message, setMessage] = useState(""),
     [authOpen, setAuthOpen] = useState(false),
     [registration, setRegistration] = useState(true),
+    [setupRequired, setSetupRequired] = useState(false),
     [name, setName] = useState(""),
     [bootstrap, setBootstrap] = useState(""),
     [busy, setBusy] = useState(false),
@@ -81,6 +82,8 @@ export function App() {
     const d = await api("/api/me");
     setUser(d.user);
     setRegistration(d.registration);
+    setSetupRequired(d.setupRequired === true);
+    if (!d.setupRequired) setBootstrap("");
     setReady(true);
     return d.user;
   };
@@ -109,6 +112,9 @@ export function App() {
   useEffect(() => {
     run(refreshMe);
   }, []);
+  useEffect(() => {
+    if (authOpen) run(refreshMe);
+  }, [authOpen]);
   useEffect(() => {
     const id = new URLSearchParams(location.search).get("item");
     if (!ready || !id || admin) return;
@@ -176,6 +182,7 @@ export function App() {
         const response = await startRegistration({ optionsJSON: opts });
         const d = await api("/api/auth/" + route + "/verify", "POST", response);
         setBootstrap("");
+        await refreshMe();
         setMessage(d.message);
         setAuthOpen(false);
       } finally {
@@ -989,28 +996,33 @@ export function App() {
                 </button>
               </>
             )}
-            <details>
-              <summary>管理者の初期設定</summary>
-              <label>
-                ユーザー名
-                <input value={name} onChange={(e) => setName(e.target.value)} />
-              </label>
-              <label>
-                初期設定キー
-                <input
-                  type="password"
-                  autoComplete="off"
-                  value={bootstrap}
-                  onChange={(e) => setBootstrap(e.target.value)}
-                />
-              </label>
-              <button
-                disabled={busy || !bootstrap || !name}
-                onClick={() => register()}
-              >
-                管理者を作成
-              </button>
-            </details>
+            {setupRequired && (
+              <details>
+                <summary>管理者の初期設定</summary>
+                <label>
+                  ユーザー名
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </label>
+                <label>
+                  初期設定キー
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={bootstrap}
+                    onChange={(e) => setBootstrap(e.target.value)}
+                  />
+                </label>
+                <button
+                  disabled={busy || !bootstrap || !name}
+                  onClick={() => register()}
+                >
+                  管理者を作成
+                </button>
+              </details>
+            )}
           </section>
         </div>
       )}

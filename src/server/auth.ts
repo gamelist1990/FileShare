@@ -82,6 +82,8 @@ export async function authRoute(
       throw new HttpError(400, "ユーザー名は英数字・_・-の2〜32文字です");
     let setupHash: string | null = null;
     if (!enroll && data.bootstrap) {
+      if (store.db.query("SELECT 1 FROM users WHERE level=4 LIMIT 1").get())
+        throw new HttpError(403, "初期設定は完了しています");
       setupHash = digestToken(String(data.bootstrap));
       if (
         !store.db

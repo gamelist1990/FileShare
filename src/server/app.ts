@@ -110,6 +110,9 @@ export async function createApp(config: Config) {
             user: publicUser(user),
             capacity: config.capacityBytes,
             registration: config.registration.enabled,
+            setupRequired: !store.db
+              .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
+              .get(),
             preview: config.preview.enabled,
           });
           return;
