@@ -1,1072 +1,1246 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { CURRENT_FILESHARE_VERSION } from "../version";
-
-// -- Types
-import type { FileEntry, DiskInfo } from "./types";
-
-// -- Helpers
+import React, { useState, useEffect, useRef } from "react";
 import {
-  formatSize, formatDate, getFileIconClass, getFileIconColor,
-  fileUrl, isPreviewable, isMarkdown,
-} from "./helpers/fileHelpers";
-import { getToken, clearToken, authHeaders } from "./helpers/auth";
-
-// -- Components
-import { Icon } from "./components/Icon";
-import { AuthPanel } from "./components/AuthPanel";
-import { DiskQuotaBar } from "./components/DiskQuotaBar";
-import { UploadPanel } from "./components/UploadPanel";
-import { PreviewModal } from "./components/PreviewModal";
-import { MarkdownPreviewModal } from "./components/MarkdownPreviewModal";
-import { StatusModal } from "./components/StatusModal";
-import { ContextMenu } from "./components/ContextMenu";
-import { modalStyles } from "./components/modalStyles";
-
-function getErrorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  startRegistration,
+  startAuthentication,
+} from "@simplewebauthn/browser";
+import { nextChunk } from "./transfer";
+type User = {
+  id: string;
+  name: string;
+  level: number;
+  quota: number;
+  status: string;
+};
+type Item = {
+  id: string;
+  parent: string | null;
+  owner: string | null;
+  name: string;
+  folder: number;
+  size: number;
+  mime: string;
+  visibility: string;
+  min_level: number;
+  created: number;
+};
+const levels = ["一般", "VIP", "招待", "スタッフ", "管理者"];
+const size = (n: number) =>
+  n >= 1e9
+    ? (n / 1e9).toFixed(2) + " GB"
+    : n >= 1e6
+      ? (n / 1e6).toFixed(1) + " MB"
+      : n >= 1e3
+        ? (n / 1e3).toFixed(1) + " KB"
+        : n + " B";
+async function api(path: string, method = "GET", body?: unknown) {
+  const r = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error ?? "処理できませんでした");
+  return d;
 }
-
 export function App() {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [currentPath, setCurrentPath] = useState("");
-  const [pathHistory, setPathHistory] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null);
-
-  // Auth state
-  const [authChecked, setAuthChecked] = useState(false);
-  const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
-  const [showAuthPanel, setShowAuthPanel] = useState(false);
-  const [privateMode, setPrivateMode] = useState(false);
-
-  // Status modal
-  const [showStatusModal, setShowStatusModal] = useState(false);
-
-  // Context menu
-  const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
-
-  // Drag & move (oplevel 2)
-  const [draggedEntry, setDraggedEntry] = useState<FileEntry | null>(null);
-  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
-  const [touchDragPoint, setTouchDragPoint] = useState<{ x: number; y: number } | null>(null);
-  const [isTouchDragging, setIsTouchDragging] = useState(false);
-  const [isTouchDevice, setIsTouchDevice] = useState(false);
-  const [moveModalSource, setMoveModalSource] = useState<FileEntry | null>(null);
-  const [moveModalPath, setMoveModalPath] = useState("");
-  const [moveModalEntries, setMoveModalEntries] = useState<FileEntry[]>([]);
-  const [moveModalLoading, setMoveModalLoading] = useState(false);
-  const [moveModalError, setMoveModalError] = useState<string | null>(null);
-  const [moveBusy, setMoveBusy] = useState(false);
-  const [moveMsg, setMoveMsg] = useState<{ text: string; ok: boolean } | null>(null);
-
-  // Long-press refs
-  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
-  const touchStartPos = useRef<{ x: number; y: number } | null>(null);
-  const touchStartAt = useRef(0);
-
-  // User op level
-  const [oplevel, setOplevel] = useState(0);
-
-  // Disk info
-  const [disk, setDisk] = useState<DiskInfo | null>(null);
-
-  // Check auth status and private mode on mount
+  const [user, setUser] = useState<User | null>(null),
+    [ready, setReady] = useState(false),
+    [items, setItems] = useState<Item[]>([]),
+    [parent, setParent] = useState<string | null>(null),
+    [crumbs, setCrumbs] = useState<{ id: string; name: string }[]>([]),
+    [space, setSpace] = useState("shared"),
+    [writable, setWritable] = useState(false),
+    [usage, setUsage] = useState({ used: 0, reserved: 0 }),
+    [capacity, setCapacity] = useState(200e9),
+    [error, setError] = useState(""),
+    [message, setMessage] = useState(""),
+    [authOpen, setAuthOpen] = useState(false),
+    [registration, setRegistration] = useState(true),
+    [name, setName] = useState(""),
+    [bootstrap, setBootstrap] = useState(""),
+    [busy, setBusy] = useState(false),
+    [progress, setProgress] = useState<{
+      name: string;
+      percent: number;
+      speed: number;
+    } | null>(null),
+    [selected, setSelected] = useState<string[]>([]),
+    [query, setQuery] = useState(""),
+    [preview, setPreview] = useState<Item | null>(null),
+    [previewUrl, setPreviewUrl] = useState(""),
+    [settings, setSettings] = useState<Item | null>(null),
+    [invite, setInvite] = useState({ id: "", key: "" }),
+    [admin, setAdmin] = useState(location.pathname === "/admin"),
+    [overview, setOverview] = useState<any>(null),
+    [trashSelection, setTrashSelection] = useState<string[]>([]),
+    [cancelled, setCancelled] = useState(false);
+  const stop = useRef(false),
+    fileInput = useRef<HTMLInputElement>(null);
+  const refreshMe = async () => {
+    const d = await api("/api/me");
+    setUser(d.user);
+    setRegistration(d.registration);
+    setReady(true);
+    return d.user;
+  };
+  const refresh = async () => {
+    const d = await api(
+      "/api/items?space=" + space + (parent ? "&parent=" + parent : ""),
+    );
+    setItems(d.items);
+    setWritable(d.writable);
+    setUsage(d.usage);
+    setCapacity(d.capacity);
+    setSelected([]);
+  };
+  const loadAdmin = async () => {
+    setOverview(await api("/api/admin/overview"));
+  };
+  const run = async (fn: () => Promise<unknown>) => {
+    setError("");
+    setMessage("");
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "処理できませんでした");
+    }
+  };
   useEffect(() => {
-    (async () => {
-      // Check private mode status
-      try {
-        const pmRes = await fetch("/api/auth/private-mode");
-        if (pmRes.ok) {
-          const pmData = await pmRes.json();
-          setPrivateMode(!!pmData.privateMode);
-        }
-      } catch { /* ignore */ }
-
-      const t = getToken();
-      if (t) {
-        try {
-          const res = await fetch("/api/auth/status", { headers: { Authorization: `Bearer ${t}` } });
-          const data = await res.json();
-          if (data.authenticated) {
-            setLoggedInUser(data.username);
-            setOplevel(data.oplevel ?? 1);
-          }
-          else clearToken();
-        } catch { clearToken(); }
-      }
-      setAuthChecked(true);
-    })();
+    run(refreshMe);
   }, []);
-
-  // Fetch disk info periodically
-  const fetchDisk = useCallback(async () => {
-    try {
-      const res = await fetch("/api/disk", { headers: authHeaders() });
-      if (res.ok) setDisk(await res.json());
-    } catch { /* ignore */ }
-  }, []);
-
   useEffect(() => {
-    fetchDisk();
-    const iv = setInterval(fetchDisk, 30000);
-    return () => clearInterval(iv);
-  }, [fetchDisk]);
-
-  useEffect(() => {
-    if (loggedInUser) fetchDisk();
-  }, [loggedInUser, fetchDisk]);
-
-  useEffect(() => {
-    const query = "(pointer: coarse)";
-    const media = window.matchMedia(query);
-    const update = () => {
-      setIsTouchDevice(("ontouchstart" in window) || navigator.maxTouchPoints > 0 || media.matches);
-    };
-    update();
-    if (typeof media.addEventListener === "function") {
-      media.addEventListener("change", update);
-      return () => media.removeEventListener("change", update);
-    }
-    media.addListener(update);
-    return () => media.removeListener(update);
-  }, []);
-
-  const updateUrlPath = (path: string) => {
-    try {
-      const url = new URL(window.location.href);
-      if (path) url.searchParams.set("path", path);
-      else url.searchParams.delete("path");
-      window.history.replaceState({}, "", url.toString());
-    } catch {
-      // ignore (e.g. non-browser env)
-    }
-  };
-
-  const fetchEntries = useCallback(async (path: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to fetch");
-      }
-      const data: FileEntry[] = await res.json();
-      setEntries(data);
-      setCurrentPath(path);
-      updateUrlPath(path);
-    } catch (e: unknown) {
-      setError(getErrorMessage(e));
-      setEntries([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // On mount: respect ?path=... URL so shared folder links open correctly
-  useEffect(() => {
-    const params = new URL(window.location.href).searchParams;
-    const startPath = params.get("path") ?? "";
-    fetchEntries(startPath);
-    // keep auth check independent
-  }, [fetchEntries]);
-
-  const navigateTo = (entry: FileEntry) => {
-    if (entry.isDir) {
-      setPathHistory((prev) => [...prev, currentPath]);
-      fetchEntries(entry.path);
-    }
-  };
-
-  const goBack = () => {
-    const prev = pathHistory[pathHistory.length - 1] ?? "";
-    setPathHistory((h) => h.slice(0, -1));
-    fetchEntries(prev);
-  };
-
-  const goHome = () => {
-    setPathHistory([]);
-    fetchEntries("");
-  };
-
-  const downloadFile = (entry: FileEntry) => {
-    const a = document.createElement("a");
-    a.href = `${fileUrl(entry)}&download=1`;
-    a.download = entry.name;
-    a.click();
-  };
-
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-    } catch { /* ignore */ }
-    clearToken();
-    setLoggedInUser(null);
-    setOplevel(0);
-    // In private mode, refetch to trigger auth-required state
-    if (privateMode) {
-      setEntries([]);
-      setError(null);
-    }
-  };
-
-  const handleContextMenu = (e: React.MouseEvent, entry: FileEntry) => {
-    if (!loggedInUser) return; // Only for logged-in users
-    e.preventDefault();
-    setContextMenu({ entry, x: e.clientX, y: e.clientY });
-  };
-
-  const handleLongPress = (entry: FileEntry, x: number, y: number) => {
-    if (!loggedInUser) return; // Only for logged-in users
-    setContextMenu({ entry, x, y });
-  };
-
-  const canDragMove = Boolean(loggedInUser) && oplevel >= 2;
-  const canDesktopDragMove = canDragMove && !isTouchDevice;
-  const canMoveModal = canDragMove;
-
-  const getParentPath = (path: string): string => {
-    const idx = path.lastIndexOf("/");
-    return idx >= 0 ? path.slice(0, idx) : "";
-  };
-
-  const canDropToFolder = (source: FileEntry | null, target: FileEntry): boolean => {
-    if (!source || !target.isDir) return false;
-    if (source.path === target.path) return false;
-    if (getParentPath(source.path) === target.path) return false;
-    if (source.isDir && (target.path === source.path || target.path.startsWith(`${source.path}/`))) {
-      return false;
-    }
-    return true;
-  };
-
-  const canMoveToPath = (source: FileEntry | null, targetPath: string): boolean => {
-    if (!source) return false;
-    if (source.path === targetPath) return false;
-    if (getParentPath(source.path) === targetPath) return false;
-    if (source.isDir && (targetPath === source.path || targetPath.startsWith(`${source.path}/`))) {
-      return false;
-    }
-    return true;
-  };
-
-  const moveEntryToFolder = useCallback(async (source: FileEntry, targetDirPath: string) => {
-    if (!canDragMove || moveBusy) return;
-    setMoveBusy(true);
-    setMoveMsg(null);
-    try {
-      const res = await fetch("/api/move", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ sourcePath: source.path, targetDirPath }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setMoveMsg({ text: data.message || `「${source.name}」を移動しました`, ok: true });
-        await fetchEntries(currentPath);
+    const id = new URLSearchParams(location.search).get("item");
+    if (!ready || !id || admin) return;
+    run(async () => {
+      setInvite((value) => ({ ...value, id }));
+      const item: Item = await api("/api/items/" + encodeURIComponent(id));
+      if (item.folder) {
+        setParent(item.id);
+        setCrumbs([{ id: item.id, name: item.name }]);
       } else {
-        setMoveMsg({ text: data.error || data.message || "移動に失敗しました", ok: false });
+        setPreview(item);
+        setPreviewUrl("/api/content/" + item.id);
       }
-    } catch {
-      setMoveMsg({ text: "通信エラーで移動できませんでした", ok: false });
-    } finally {
-      setMoveBusy(false);
-    }
-  }, [canDragMove, moveBusy, fetchEntries, currentPath]);
-
-  const detectTouchDropFolder = useCallback((x: number, y: number, source: FileEntry | null): string | null => {
-    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-    const row = hit?.closest("tr[data-entry-path]") as HTMLElement | null;
-    if (!row) return null;
-    const path = row.dataset.entryPath ?? "";
-    const isDir = row.dataset.isDir === "true";
-    if (!path || !isDir || !source) return null;
-    const target = entries.find((e) => e.path === path);
-    if (!target || !canDropToFolder(source, target)) return null;
-    return path;
-  }, [entries]);
-
-  const loadMoveModalEntries = useCallback(async (path: string) => {
-    setMoveModalLoading(true);
-    setMoveModalError(null);
-    try {
-      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "移動先フォルダの取得に失敗しました");
-      }
-      const data: FileEntry[] = await res.json();
-      setMoveModalEntries(data.filter((e) => e.isDir));
-      setMoveModalPath(path);
-    } catch (err: unknown) {
-      setMoveModalEntries([]);
-      setMoveModalError(getErrorMessage(err));
-    } finally {
-      setMoveModalLoading(false);
-    }
+    });
+  }, [ready, user?.id]);
+  useEffect(() => {
+    if (ready) run(admin ? loadAdmin : refresh);
+  }, [ready, parent, space, admin, user?.id]);
+  useEffect(() => {
+    const pop = () => {
+      setAdmin(location.pathname === "/admin");
+      setParent(null);
+      setCrumbs([]);
+    };
+    addEventListener("popstate", pop);
+    return () => removeEventListener("popstate", pop);
   }, []);
-
-  const openMoveModal = useCallback((entry: FileEntry) => {
-    setContextMenu(null);
-    setMoveModalSource(entry);
-    void loadMoveModalEntries(currentPath);
-  }, [currentPath, loadMoveModalEntries]);
-
-  const closeMoveModal = () => {
-    setMoveModalSource(null);
-    setMoveModalPath("");
-    setMoveModalEntries([]);
-    setMoveModalError(null);
-    setMoveModalLoading(false);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPreview(null);
+        setSettings(null);
+        setAuthOpen(false);
+      }
+    };
+    addEventListener("keydown", key);
+    return () => removeEventListener("keydown", key);
+  }, []);
+  const navigateAdmin = (on: boolean) => {
+    history.pushState({}, "", on ? "/admin" : "/");
+    setAdmin(on);
   };
-
-  const breadcrumbs = currentPath ? currentPath.split("/") : [];
-  const moveModalOverlayStyle: React.CSSProperties = isTouchDevice
-    ? styles.moveModalOverlay
-    : {
-      ...styles.moveModalOverlay,
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20,
-    };
-  const moveModalPanelStyle: React.CSSProperties = isTouchDevice
-    ? styles.moveModalPanel
-    : {
-      ...styles.moveModalPanel,
-      width: "min(860px, 94vw)",
-      height: "min(82vh, 760px)",
-      borderRadius: 14,
-      boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
-      padding: "14px 14px 16px",
-    };
-
+  const login = () =>
+    run(async () => {
+      setBusy(true);
+      try {
+        const opts = await api("/api/auth/login/options", "POST", {});
+        const response = await startAuthentication({ optionsJSON: opts });
+        await api("/api/auth/login/verify", "POST", response);
+        await refreshMe();
+        setAuthOpen(false);
+      } finally {
+        setBusy(false);
+      }
+    });
+  const register = (enroll = false) =>
+    run(async () => {
+      setBusy(true);
+      try {
+        const route = enroll ? "enroll" : "register";
+        const opts = await api("/api/auth/" + route + "/options", "POST", {
+          name,
+          bootstrap,
+        });
+        const response = await startRegistration({ optionsJSON: opts });
+        const d = await api("/api/auth/" + route + "/verify", "POST", response);
+        setBootstrap("");
+        setMessage(d.message);
+        setAuthOpen(false);
+      } finally {
+        setBusy(false);
+      }
+    });
+  const switchSpace = (value: string) => {
+    setSpace(value);
+    setParent(null);
+    setCrumbs([]);
+  };
+  const enter = (i: Item) => {
+    setParent(i.id);
+    setCrumbs([...crumbs, { id: i.id, name: i.name }]);
+  };
+  async function upload(files: FileList | null) {
+    if (!files?.length) return;
+    setBusy(true);
+    setCancelled(false);
+    stop.current = false;
+    try {
+      for (const file of Array.from(files)) {
+        const fingerprint = JSON.stringify([
+          file.name,
+          file.size,
+          file.lastModified,
+          parent,
+          space,
+          user?.id,
+        ]);
+        const resumeKey = "fs-upload:" + fingerprint;
+        let id = sessionStorage.getItem(resumeKey),
+          offset = 0;
+        if (id) {
+          try {
+            offset = (await api("/api/uploads/" + id)).offset;
+          } catch {
+            id = null;
+          }
+        }
+        if (!id) {
+          const d = await api("/api/uploads", "POST", {
+            name: file.name,
+            size: file.size,
+            mime: file.type,
+            parent,
+            space,
+          });
+          id = d.id;
+          sessionStorage.setItem(resumeKey, id!);
+        }
+        let chunkSize = 1024 * 1024,
+          retries = 0;
+        while (offset < file.size) {
+          if (stop.current) {
+            setCancelled(true);
+            setMessage(
+              "転送を中断しました。同じファイルを選ぶと続きから再開できます。",
+            );
+            return;
+          }
+          const chunk = file.slice(offset, offset + chunkSize),
+            bytes = await chunk.arrayBuffer();
+          const checksum = Array.from(
+            new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+            (b) => b.toString(16).padStart(2, "0"),
+          ).join("");
+          const start = performance.now();
+          try {
+            const r = await fetch("/api/uploads/" + id, {
+              method: "PATCH",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "Upload-Offset": String(offset),
+                "Upload-Checksum": checksum,
+              },
+              body: bytes,
+            });
+            const d = await r.json();
+            if (!r.ok) {
+              if (r.status === 403 || r.status === 401 || r.status === 507)
+                throw Object.assign(new Error(d.error), { fatal: true });
+              throw new Error(d.error);
+            }
+            offset = d.offset;
+            const elapsed = performance.now() - start;
+            chunkSize = nextChunk(chunkSize, bytes.byteLength, elapsed);
+            retries = 0;
+            setProgress({
+              name: file.name,
+              percent: (offset / file.size) * 100,
+              speed: (bytes.byteLength / elapsed) * 1000,
+            });
+          } catch (e) {
+            if ((e as any).fatal || ++retries > 6) throw e;
+            chunkSize = nextChunk(chunkSize, 0, 0, true);
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(10_000, 500 * 2 ** retries)),
+            );
+            offset = (await api("/api/uploads/" + id)).offset;
+          }
+        }
+        if (stop.current) {
+          setMessage("中断しました。同じファイルを選択すると再開できます。");
+          return;
+        }
+        await api("/api/uploads/" + id + "/complete", "POST", {});
+        sessionStorage.removeItem(resumeKey);
+        setProgress({ name: file.name, percent: 100, speed: 0 });
+      }
+      await refresh();
+      setMessage("アップロードしました。");
+    } finally {
+      setBusy(false);
+      setProgress(null);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+  const download = (i: Item) =>
+    run(async () => {
+      const d = await api("/api/items/" + i.id + "/ticket", "POST", {});
+      const a = document.createElement("a");
+      a.href = d.url;
+      a.download = i.name;
+      document.body.append(a);
+      a.click();
+      a.remove();
+    });
+  const showPreview = (i: Item) =>
+    run(async () => {
+      setPreview(i);
+      setPreviewUrl("/api/content/" + i.id);
+    });
+  const transcode = () =>
+    run(async () => {
+      if (!preview) return;
+      const id = preview.id;
+      setPreviewUrl("");
+      for (let attempt = 0; attempt < 65; attempt++) {
+        const d = await api("/api/items/" + id + "/preview", "POST", {});
+        if (d.state === "ready") {
+          setPreviewUrl("/api/content/" + id + "/preview");
+          return;
+        }
+        if (d.state === "failed") throw new Error(d.error);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      throw new Error("変換中です。しばらくして再度開いてください");
+    });
+  const mkdirAction = () =>
+    run(async () => {
+      const folderName = prompt("フォルダ名");
+      if (!folderName) return;
+      await api("/api/folders", "POST", { name: folderName, parent, space });
+      await refresh();
+    });
+  const trash = () =>
+    run(async () => {
+      if (
+        !selected.length ||
+        !confirm(selected.length + "件をごみ箱へ移動しますか？")
+      )
+        return;
+      await api("/api/trash", "POST", { ids: selected });
+      await refresh();
+    });
+  const update = (data: any) =>
+    run(async () => {
+      if (!settings) return;
+      const d = await api("/api/items/" + settings.id, "PATCH", data);
+      if (d.key)
+        setMessage(
+          "招待キー（この一度だけ表示）: " +
+            d.key +
+            " ／ ファイルID: " +
+            settings.id,
+        );
+      else setMessage("設定を保存しました");
+      setSettings(null);
+      await refresh();
+    });
+  const maintenance = (action: string) =>
+    run(async () => {
+      if (
+        action === "purge" &&
+        !confirm(
+          "選択したごみ箱のファイルを完全削除します。元に戻せません。続けますか？",
+        )
+      )
+        return;
+      await api("/api/admin/maintenance", "POST", {
+        action,
+        ids: trashSelection,
+      });
+      setTrashSelection([]);
+      await loadAdmin();
+      setMessage("処理が完了しました");
+    });
   return (
-    <div style={styles.container}>
-      {/* Header */}
-      <header style={styles.header}>
-        <div className="fs-header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <h1 className="fs-title" style={styles.title}>
-              <Icon name="fa-solid fa-folder-open" style={{ marginRight: 10, color: "#3366cc" }} />
-              FileShare
-            </h1>
-            <p style={styles.subtitle}>ファイル共有サービス</p>
-          </div>
-          <div className="fs-header-right" style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            {/* Status button */}
-            <button style={styles.navBtn} onClick={() => setShowStatusModal(true)} title="サーバーステータス">
-              <Icon name="fa-solid fa-chart-line" style={{ marginRight: 6 }} />
-              Status
+    <>
+      <header className="site-nav">
+        <a className="brand" href="https://pexserver.com">
+          <img src="/server.png" alt="" />
+          <span>
+            <strong>PEXserver</strong>
+            <small>FileShare</small>
+          </span>
+        </a>
+        <nav aria-label="メインナビゲーション">
+          <a href="https://pexserver.com">ホーム</a>
+          <a href="https://play.pexserver.com">プレイ</a>
+          <button
+            className={!admin ? "active" : ""}
+            onClick={() => navigateAdmin(false)}
+          >
+            共有ストレージ
+          </button>
+          {user?.level === 4 && (
+            <button
+              className={admin ? "active" : ""}
+              onClick={() => navigateAdmin(true)}
+            >
+              管理ページ
             </button>
-            {authChecked && loggedInUser ? (
-              <>
-                <span style={{ fontSize: 14, color: "#333", display: "inline-flex", alignItems: "center" }}>
-                  <Icon name="fa-solid fa-user" style={{ marginRight: 6, color: "#3366cc" }} />
-                  {loggedInUser}
-                </span>
-                <button style={styles.navBtn} onClick={handleLogout}>
-                  <Icon name="fa-solid fa-right-from-bracket" style={{ marginRight: 6 }} />
-                  ログアウト
-                </button>
-              </>
-            ) : authChecked ? (
-              <button style={styles.navBtn} onClick={() => setShowAuthPanel(true)}>
-                <Icon name="fa-solid fa-key" style={{ marginRight: 6 }} />
-                ログイン
+          )}
+        </nav>
+        <div className="account">
+          {user ? (
+            <>
+              <span>
+                {user.name}
+                <small>
+                  Level {user.level} · {levels[user.level]}
+                </small>
+              </span>
+              <button onClick={() => register(true)}>パスキー追加</button>
+              <button
+                onClick={() =>
+                  run(async () => {
+                    await api("/api/auth/logout", "POST", {});
+                    await refreshMe();
+                    navigateAdmin(false);
+                    switchSpace("shared");
+                  })
+                }
+              >
+                ログアウト
               </button>
-            ) : null}
-          </div>
+            </>
+          ) : (
+            <button className="primary" onClick={() => setAuthOpen(true)}>
+              パスキーでログイン
+            </button>
+          )}
         </div>
       </header>
-
-      {/* Disk quota */}
-      <DiskQuotaBar disk={disk} onRetry={fetchDisk} />
-
-      {/* Auth modal — forced in private mode when not logged in */}
-      {authChecked && privateMode && !loggedInUser ? (
-        <div style={{
-          ...modalStyles.overlay,
-          background: "rgba(0,0,0,0.72)",
-          backdropFilter: "blur(6px)",
-        }}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <div style={{ textAlign: "center", marginBottom: 12, color: "#fff" }}>
-              <Icon name="fa-solid fa-lock" style={{ fontSize: 28, marginBottom: 8 }} />
-              <div style={{ fontSize: 16, fontWeight: 600 }}>プライベートモード</div>
-              <div style={{ fontSize: 13, color: "#ccc", marginTop: 4 }}>このサーバーはログインが必要です</div>
-            </div>
-            <AuthPanel onLogin={(u) => {
-              setLoggedInUser(u);
-              // Fetch oplevel after login
-              const t = getToken();
-              if (t) {
-                fetch("/api/auth/status", { headers: { Authorization: `Bearer ${t}` } })
-                  .then(r => r.json())
-                  .then(d => { if (d.oplevel) setOplevel(d.oplevel); })
-                  .catch(() => {});
-              }
-              // Refetch entries now that we're authenticated
-              const params = new URL(window.location.href).searchParams;
-              fetchEntries(params.get("path") ?? "");
-            }} />
+      <main>
+        <section className="hero">
+          <div>
+            <p className="eyebrow">
+              PEXSERVER / {admin ? "ADMINISTRATION" : "SHARED STORAGE"}
+            </p>
+            <h1>{admin ? "ストレージ管理" : "ファイルを、つなぐ。"}</h1>
+            <p className="sub">
+              {admin
+                ? "ユーザーと容量、共有ファイルをひとつの場所で管理。"
+                : "みんなで使う共有フォルダと、あなただけのプライベート空間。"}
+            </p>
           </div>
-        </div>
-      ) : showAuthPanel && !loggedInUser ? (
-        <div style={modalStyles.overlay} onClick={() => setShowAuthPanel(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <AuthPanel onLogin={(u) => {
-              setLoggedInUser(u);
-              setShowAuthPanel(false);
-              // Fetch oplevel after login
-              const t = getToken();
-              if (t) {
-                fetch("/api/auth/status", { headers: { Authorization: `Bearer ${t}` } })
-                  .then(r => r.json())
-                  .then(d => { if (d.oplevel) setOplevel(d.oplevel); })
-                  .catch(() => {});
-              }
-              // Refetch entries now
-              fetchEntries(currentPath);
-            }} />
+          <div className="hero-note">
+            <strong>{admin ? "管理者専用" : "200 GB"}</strong>
+            <span>{admin ? "Level 4" : "共有ストレージ"}</span>
           </div>
-        </div>
-      ) : null}
-
-      {/* Status modal */}
-      {showStatusModal && (
-        <StatusModal onClose={() => setShowStatusModal(false)} />
-      )}
-
-      {/* Breadcrumb / Navigation */}
-      <nav className="fs-nav" style={styles.nav}>
-        <button onClick={goHome} style={styles.navBtn} title="ルートへ">
-          <Icon name="fa-solid fa-house" style={{ marginRight: 6 }} />
-          ルート
-        </button>
-        {currentPath && (
-          <button onClick={goBack} style={styles.navBtn} title="戻る">
-            <Icon name="fa-solid fa-arrow-left" style={{ marginRight: 6 }} />
-            戻る
-          </button>
-        )}
-        <span className="fs-breadcrumb" style={styles.breadcrumb}>
-          <span style={styles.breadcrumbItem} onClick={goHome}>/</span>
-          {breadcrumbs.map((segment, i) => {
-            const path = breadcrumbs.slice(0, i + 1).join("/");
-            return (
-              <span key={path}>
-                <span
-                  style={styles.breadcrumbItem}
-                  onClick={() => { setPathHistory((prev) => [...prev, currentPath]); fetchEntries(path); }}
-                >
-                  {segment}
-                </span>
-                {i < breadcrumbs.length - 1 && " / "}
-              </span>
-            );
-          })}
-        </span>
-      </nav>
-
-      {/* Upload area (logged-in only) */}
-      {loggedInUser && (
-        <UploadPanel
-          currentPath={currentPath}
-          disk={disk}
-          onUploaded={() => { fetchEntries(currentPath); fetchDisk(); }}
-        />
-      )}
-
-      {/* Content */}
-      <main style={styles.main}>
-        {moveMsg && (
-          <div style={moveMsg.ok ? styles.moveMsgOk : styles.moveMsgErr}>
-            <Icon name={moveMsg.ok ? "fa-solid fa-circle-check" : "fa-solid fa-triangle-exclamation"} style={{ marginRight: 8 }} />
-            {moveMsg.text}
-          </div>
-        )}
-        {loading && (
-          <div style={styles.loading}>
-            <Icon name="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />
-            読み込み中...
-          </div>
-        )}
+        </section>
         {error && (
-          <div style={styles.error}>
-            <Icon name="fa-solid fa-circle-exclamation" style={{ marginRight: 8 }} />
+          <div role="alert" className="notice error">
             {error}
+            <button aria-label="閉じる" onClick={() => setError("")}>
+              ×
+            </button>
           </div>
         )}
-        {!loading && !error && entries.length === 0 && (
-          <div style={styles.empty}>
-            <Icon name="fa-regular fa-folder-open" style={{ marginRight: 8, fontSize: 20 }} />
-            このフォルダは空です
+        {message && (
+          <div role="status" className="notice">
+            {message}
+            <button aria-label="閉じる" onClick={() => setMessage("")}>
+              ×
+            </button>
           </div>
         )}
-        {!loading && !error && entries.length > 0 && (
-          <table className="fs-file-table" style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}></th>
-                <th style={{ ...styles.th, textAlign: "left" as const }}>名前</th>
-                <th style={styles.th}>サイズ</th>
-                <th style={styles.th}>更新日時</th>
-                <th className="fs-dl-cell" style={styles.th}>DL</th>
-                <th style={styles.th}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry) => (
-                <tr
-                  key={entry.path || entry.name}
-                  data-entry-path={entry.path}
-                  data-is-dir={entry.isDir ? "true" : "false"}
-                  style={{ ...styles.row, ...(dropTargetPath === entry.path ? styles.dropTargetRow : {}) }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f0f4ff"; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ""; }}
-                  draggable={canDesktopDragMove}
-                  onDragStart={(e) => {
-                    if (!canDesktopDragMove) {
-                      e.preventDefault();
-                      return;
+        {admin ? (
+          user?.level === 4 && overview ? (
+            <>
+              <section className="metrics">
+                <article>
+                  <span>使用容量（ごみ箱を含む）</span>
+                  <strong>
+                    {size(overview.usage.used)} / {size(overview.capacity)}
+                  </strong>
+                </article>
+                <article>
+                  <span>転送予約 / プレビュー</span>
+                  <strong>
+                    {size(overview.usage.reserved)} /{" "}
+                    {size(overview.cacheBytes)}
+                  </strong>
+                </article>
+                <article>
+                  <span>AI監視</span>
+                  <strong>
+                    {overview.aiEnabled ? "有効" : "オプション・無効"}
+                  </strong>
+                </article>
+              </section>
+              <section className="panel">
+                <div className="section-title">
+                  <h2>ユーザーと権限</h2>
+                  <button onClick={() => run(loadAdmin)}>更新</button>
+                </div>
+                <p className="muted">
+                  0 一般 · 1 VIP · 2 招待 · 3 スタッフ · 4
+                  管理者。招待ファイルには対象キーも必要です。
+                </p>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>ユーザー</th>
+                        <th>登録IP</th>
+                        <th>権限</th>
+                        <th>容量 (GB)</th>
+                        <th>承認</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {overview.users.map((u: User & { ip: string }) => (
+                        <UserRow
+                          key={u.id}
+                          u={u}
+                          save={async (data: any) => {
+                            await api("/api/admin/users", "PATCH", data);
+                            await loadAdmin();
+                            if (u.id === user.id) await refreshMe();
+                          }}
+                          run={run}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              <section className="panel">
+                <div className="section-title">
+                  <h2>ごみ箱とストレージ整理</h2>
+                  <div className="actions">
+                    <button onClick={() => maintenance("cleanup")}>
+                      期限切れ転送・不要データを整理
+                    </button>
+                    <button
+                      disabled={!trashSelection.length}
+                      onClick={() => maintenance("restore")}
+                    >
+                      復元
+                    </button>
+                    <button
+                      className="danger"
+                      disabled={!trashSelection.length}
+                      onClick={() => maintenance("purge")}
+                    >
+                      完全削除
+                    </button>
+                  </div>
+                </div>
+                <p className="muted">
+                  自動整理は期限切れの転送と未登録データが対象です。ごみ箱のファイルは完全削除するまで容量に含まれます。フォルダは親から順に復元してください。
+                </p>
+                {overview.trash.length ? (
+                  <ul className="trash-list">
+                    {overview.trash.map((i: any) => (
+                      <li key={i.id}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={trashSelection.includes(i.id)}
+                            onChange={(e) =>
+                              setTrashSelection(
+                                e.target.checked
+                                  ? [...trashSelection, i.id]
+                                  : trashSelection.filter((id) => id !== i.id),
+                              )
+                            }
+                          />
+                          {i.folder ? "▱" : "▤"} {i.name}{" "}
+                          <small>{size(i.size)}</small>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="empty">ごみ箱は空です</p>
+                )}
+              </section>
+              <section className="panel">
+                <h2>未完了の転送</h2>
+                {overview.uploads.map((u: any) => (
+                  <p key={u.id}>
+                    {u.name} · {size(u.offset)} / {size(u.size)}
+                  </p>
+                ))}
+                {!overview.uploads.length && (
+                  <p className="muted">未完了の転送はありません</p>
+                )}
+              </section>
+              <section className="panel">
+                <h2>監査ログ</h2>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>時刻</th>
+                        <th>操作</th>
+                        <th>IP</th>
+                        <th>対象</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {overview.audit.map((a: any) => (
+                        <tr key={a.id}>
+                          <td>{new Date(a.time).toLocaleString("ja-JP")}</td>
+                          <td>{a.action}</td>
+                          <td>{a.ip}</td>
+                          <td className="mono">{a.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              <section className="panel">
+                <h2>AI監視レポート</h2>
+                <p className="muted">
+                  数値化した操作件数をGemmaへ送信し、管理者向けの所見を作ります。判断は参考情報です。
+                </p>
+                {overview.reports.map((r: any) => (
+                  <article key={r.id}>
+                    <small>{new Date(r.time).toLocaleString("ja-JP")}</small>
+                    <p className="pre-wrap">{r.report}</p>
+                  </article>
+                ))}
+              </section>
+            </>
+          ) : (
+            <section className="panel">
+              <h2>管理者のみアクセスできます</h2>
+              <p>Level 4のアカウントでログインしてください。</p>
+              <button className="primary" onClick={() => setAuthOpen(true)}>
+                ログイン
+              </button>
+            </section>
+          )
+        ) : (
+          <div className="workspace">
+            <aside>
+              <p className="eyebrow">YOUR WORKSPACE</p>
+              <button
+                className={space === "shared" ? "space active" : "space"}
+                onClick={() => switchSpace("shared")}
+              >
+                <span>▱</span>メイン共有フォルダ
+              </button>
+              {user && user.level >= 1 && (
+                <button
+                  className={space === "private" ? "space active" : "space"}
+                  onClick={() => switchSpace("private")}
+                >
+                  <span>⌑</span>プライベートフォルダ
+                </button>
+              )}
+              <div className="quota">
+                <span>
+                  {space === "private" ? "個人ストレージ" : "共有ストレージ"}
+                </span>
+                <strong>
+                  {size(usage.used)} <small>/ {size(capacity)}</small>
+                </strong>
+                <progress value={usage.used + usage.reserved} max={capacity} />
+                <small>転送予約: {size(usage.reserved)}</small>
+              </div>
+              <details className="invite-box">
+                <summary>招待ファイルを開く</summary>
+                <label>
+                  ファイルID
+                  <input
+                    value={invite.id}
+                    onChange={(e) =>
+                      setInvite({ ...invite, id: e.target.value })
                     }
-                    setContextMenu(null);
-                    setDraggedEntry(entry);
-                    setDropTargetPath(null);
-                    e.dataTransfer.effectAllowed = "move";
-                    e.dataTransfer.setData("text/plain", entry.path);
-                  }}
-                  onDragOver={(e) => {
-                    if (!canDropToFolder(draggedEntry, entry)) return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                    setDropTargetPath(entry.path);
-                  }}
-                  onDragLeave={() => {
-                    if (dropTargetPath === entry.path) {
-                      setDropTargetPath(null);
+                  />
+                </label>
+                <label>
+                  招待キー
+                  <input
+                    type="password"
+                    value={invite.key}
+                    onChange={(e) =>
+                      setInvite({ ...invite, key: e.target.value })
                     }
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    if (!draggedEntry || !canDropToFolder(draggedEntry, entry)) return;
-                    void moveEntryToFolder(draggedEntry, entry.path);
-                    setDraggedEntry(null);
-                    setDropTargetPath(null);
-                  }}
-                  onDragEnd={() => {
-                    setDraggedEntry(null);
-                    setDropTargetPath(null);
-                  }}
-                  onContextMenu={(e) => handleContextMenu(e, entry)}
-                  onTouchStart={(e) => {
-                    if (!loggedInUser) return;
-                    const touch = e.touches[0];
-                    touchStartPos.current = { x: touch.clientX, y: touch.clientY };
-                    touchStartAt.current = Date.now();
-                    if (canDesktopDragMove) {
-                      setTouchDragPoint(null);
-                      setIsTouchDragging(false);
-                      setDropTargetPath(null);
-                      setDraggedEntry(null);
-                    }
-                    longPressTimer.current = setTimeout(() => {
-                      handleLongPress(entry, touch.clientX, touch.clientY);
-                    }, 420);
-                  }}
-                  onTouchEnd={() => {
-                    if (longPressTimer.current) {
-                      clearTimeout(longPressTimer.current);
-                      longPressTimer.current = null;
-                    }
-
-                    if (canDesktopDragMove && draggedEntry && isTouchDragging && dropTargetPath) {
-                      void moveEntryToFolder(draggedEntry, dropTargetPath);
-                    }
-
-                    if (canDesktopDragMove) {
-                      setDraggedEntry(null);
-                      setDropTargetPath(null);
-                      setTouchDragPoint(null);
-                      setIsTouchDragging(false);
-                    }
-                    touchStartPos.current = null;
-                    touchStartAt.current = 0;
-                  }}
-                  onTouchMove={(e) => {
-                    if (!canDesktopDragMove) return;
-                    const touch = e.touches[0];
-                    let movedEnough = false;
-                    if (touchStartPos.current) {
-                      const dx = touch.clientX - touchStartPos.current.x;
-                      const dy = touch.clientY - touchStartPos.current.y;
-                      movedEnough = Math.hypot(dx, dy) > 12;
-                      if (movedEnough && longPressTimer.current) {
-                        clearTimeout(longPressTimer.current);
-                        longPressTimer.current = null;
-                      }
-                    }
-
-                    if (!isTouchDragging && movedEnough) {
-                      const heldMs = Date.now() - touchStartAt.current;
-                      if (heldMs >= 140) {
-                        setDraggedEntry(entry);
-                        setIsTouchDragging(true);
-                      }
-                    }
-
-                    if (draggedEntry && isTouchDragging) {
-                      setTouchDragPoint({ x: touch.clientX, y: touch.clientY });
-                      setDropTargetPath(detectTouchDropFolder(touch.clientX, touch.clientY, draggedEntry));
-                    }
-
-                    if (longPressTimer.current) {
-                      clearTimeout(longPressTimer.current);
-                      longPressTimer.current = null;
-                    }
-                  }}
-                  onTouchCancel={() => {
-                    if (longPressTimer.current) {
-                      clearTimeout(longPressTimer.current);
-                      longPressTimer.current = null;
-                    }
-                    if (canDesktopDragMove) {
-                      setDraggedEntry(null);
-                      setDropTargetPath(null);
-                      setTouchDragPoint(null);
-                      setIsTouchDragging(false);
-                    }
-                    touchStartPos.current = null;
-                    touchStartAt.current = 0;
+                  />
+                </label>
+                <button
+                  onClick={() =>
+                    run(async () => {
+                      await api("/api/items/" + invite.id + "/unlock", "POST", {
+                        key: invite.key,
+                      });
+                      const i = await api("/api/items/" + invite.id);
+                      setInvite({ id: "", key: "" });
+                      if (i.folder) {
+                        setParent(i.id);
+                        setCrumbs([{ id: i.id, name: i.name }]);
+                      } else await showPreview(i);
+                    })
+                  }
+                >
+                  閲覧権を取得
+                </button>
+              </details>
+              <p className="aside-note">
+                パスキーで安全にログイン。
+                <br />
+                転送は中断した位置から再開できます。
+              </p>
+            </aside>
+            <section className="panel browser">
+              <div className="section-title">
+                <div>
+                  <p className="eyebrow">
+                    {space === "private" ? "PRIVATE SPACE" : "SHARED SPACE"}
+                  </p>
+                  <h2>
+                    {space === "private"
+                      ? "プライベートフォルダ"
+                      : "メイン共有フォルダ"}
+                  </h2>
+                </div>
+                <button
+                  onClick={() => run(refresh)}
+                  aria-label="ファイル一覧を更新"
+                >
+                  ↻ 更新
+                </button>
+              </div>
+              <div className="toolbar">
+                <label className="search">
+                  <span>⌕</span>
+                  <input
+                    aria-label="ファイルを検索"
+                    placeholder="ファイルを検索…"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                </label>
+                {writable && (
+                  <div className="actions">
+                    <button disabled={busy} onClick={mkdirAction}>
+                      ＋ フォルダ
+                    </button>
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() => fileInput.current?.click()}
+                    >
+                      ↑ アップロード
+                    </button>
+                  </div>
+                )}
+                <input
+                  hidden
+                  ref={fileInput}
+                  type="file"
+                  multiple
+                  onChange={(e) => run(() => upload(e.target.files))}
+                />
+              </div>
+              <nav className="breadcrumb" aria-label="現在のフォルダ">
+                <button
+                  onClick={() => {
+                    setParent(null);
+                    setCrumbs([]);
                   }}
                 >
-                  <td className="fs-icon-cell" style={styles.iconCell}>
-                    <Icon name={getFileIconClass(entry)} style={{ color: getFileIconColor(entry), fontSize: 18 }} />
-                  </td>
-                  <td className="fs-name-cell" style={styles.nameCell}>
-                    {entry.isDir ? (
-                      <span style={styles.dirLink} onClick={() => navigateTo(entry)}>{entry.name}</span>
-                    ) : isMarkdown(entry) ? (
-                      <span style={styles.previewLink} onClick={() => setPreviewEntry(entry)} title="クリックでプレビュー">
-                        <Icon name="fa-brands fa-markdown" style={{ marginRight: 6, fontSize: 12, color: "#6cb4ee" }} />
-                        {entry.name}
-                      </span>
-                    ) : isPreviewable(entry) ? (
-                      <span style={styles.previewLink} onClick={() => setPreviewEntry(entry)} title="クリックでプレビュー">
-                        <Icon name="fa-solid fa-play" style={{ marginRight: 6, fontSize: 10 }} />
-                        {entry.name}
-                      </span>
-                    ) : (
-                      <span style={styles.fileName}>{entry.name}</span>
-                    )}
-                  </td>
-                  <td className="fs-size-cell" style={styles.sizeCell}>{formatSize(entry.size)}</td>
-                  <td className="fs-date-cell" style={styles.dateCell}>{formatDate(entry.mtime)}</td>
-                  <td className="fs-dl-cell" style={styles.dlCell}>{entry.isDir ? "-" : (entry.downloadCount ?? 0)}</td>
-                  <td className="fs-action-cell" style={styles.actionCell}>
-                    <div className="fs-action-buttons" style={styles.actionButtons}>
-                      {canMoveModal && (
-                        <button style={styles.moveBtn} onClick={() => openMoveModal(entry)} title="移動先を選択">
-                          <Icon name="fa-solid fa-right-left" />
-                        </button>
-                      )}
-                      {!entry.isDir && (
-                        <button style={styles.downloadBtn} onClick={() => downloadFile(entry)} title="ダウンロード">
-                          <Icon name="fa-solid fa-download" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  ホーム
+                </button>
+                {crumbs.map((c, n) => (
+                  <React.Fragment key={c.id}>
+                    <span>/</span>
+                    <button
+                      onClick={() => {
+                        setParent(c.id);
+                        setCrumbs(crumbs.slice(0, n + 1));
+                      }}
+                    >
+                      {c.name}
+                    </button>
+                  </React.Fragment>
+                ))}
+              </nav>
+              {progress && (
+                <div role="status" className="transfer">
+                  <strong>{progress.name}</strong>
+                  <span>
+                    {progress.percent.toFixed(1)}% · {size(progress.speed)}/秒
+                  </span>
+                  <progress value={progress.percent} max={100} />
+                  <button
+                    onClick={() => {
+                      stop.current = true;
+                    }}
+                  >
+                    一時停止
+                  </button>
+                </div>
+              )}
+              {selected.length > 0 && (
+                <div className="selection-bar">
+                  <span>{selected.length}件を選択</span>
+                  <button className="danger" onClick={trash}>
+                    ごみ箱へ移動
+                  </button>
+                </div>
+              )}
+              <div className="table-wrap">
+                <table className="file-table">
+                  <thead>
+                    <tr>
+                      <th className="check">
+                        {writable && (
+                          <input
+                            type="checkbox"
+                            aria-label="すべて選択"
+                            checked={
+                              items.length > 0 &&
+                              selected.length === items.length
+                            }
+                            onChange={(e) =>
+                              setSelected(
+                                e.target.checked ? items.map((i) => i.id) : [],
+                              )
+                            }
+                          />
+                        )}
+                      </th>
+                      <th>名前</th>
+                      <th>サイズ</th>
+                      <th>公開範囲</th>
+                      <th>更新日</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items
+                      .filter((i) =>
+                        i.name.toLowerCase().includes(query.toLowerCase()),
+                      )
+                      .map((i) => (
+                        <tr key={i.id}>
+                          <td>
+                            {writable && (
+                              <input
+                                type="checkbox"
+                                aria-label={i.name + "を選択"}
+                                checked={selected.includes(i.id)}
+                                onChange={(e) =>
+                                  setSelected(
+                                    e.target.checked
+                                      ? [...selected, i.id]
+                                      : selected.filter((id) => id !== i.id),
+                                  )
+                                }
+                              />
+                            )}
+                          </td>
+                          <td>
+                            <button
+                              className="filename"
+                              aria-label={i.name}
+                              onClick={() =>
+                                i.folder ? enter(i) : showPreview(i)
+                              }
+                            >
+                              <span
+                                className={
+                                  i.folder ? "file-icon folder" : "file-icon"
+                                }
+                              >
+                                {i.folder ? "▱" : "▤"}
+                              </span>
+                              {i.name}
+                            </button>
+                          </td>
+                          <td className="muted">
+                            {i.folder ? "—" : size(i.size)}
+                          </td>
+                          <td>
+                            <span className={"badge " + i.visibility}>
+                              {i.visibility === "private"
+                                ? "非公開"
+                                : i.visibility === "invite"
+                                  ? "招待"
+                                  : "公開"}
+                              {i.min_level > 0
+                                ? " · " + levels[i.min_level]
+                                : ""}
+                            </span>
+                          </td>
+                          <td className="muted date">
+                            {new Date(i.created).toLocaleDateString("ja-JP")}
+                          </td>
+                          <td>
+                            <div className="row-actions">
+                              {!i.folder && (
+                                <button
+                                  aria-label={i.name + "をダウンロード"}
+                                  onClick={() => download(i)}
+                                >
+                                  ↓
+                                </button>
+                              )}
+                              {writable && (
+                                <button
+                                  aria-label={i.name + "の設定"}
+                                  onClick={() => setSettings(i)}
+                                >
+                                  設定
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              {!items.length && (
+                <div className="empty">
+                  <div className="empty-icon">▱</div>
+                  <h3>まだファイルがありません</h3>
+                  <p>
+                    {writable
+                      ? "最初のファイルをアップロードしましょう。"
+                      : "公開されたファイルがここに表示されます。"}
+                  </p>
+                </div>
+              )}
+              {!user && (
+                <div className="login-note">
+                  共有ファイルを閲覧できます。個人領域の利用にはログインと権限の承認が必要です。
+                </div>
+              )}
+            </section>
+          </div>
         )}
+        <footer>
+          <span>PEXserver FileShare</span>
+          <a href="https://pexserver.com">PEXserverについて ↗</a>
+          <span>安全につながる、みんなのストレージ。</span>
+        </footer>
       </main>
-
-      {canDesktopDragMove && draggedEntry && isTouchDragging && touchDragPoint && (
-        <div
-          style={{
-            ...styles.touchDragBadge,
-            left: touchDragPoint.x + 10,
-            top: touchDragPoint.y + 10,
-          }}
-        >
-          <Icon name={draggedEntry.isDir ? "fa-solid fa-folder" : "fa-solid fa-file"} style={{ marginRight: 6 }} />
-          {draggedEntry.name}
+      {authOpen && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-title"
+          >
+            <button
+              className="close"
+              aria-label="閉じる"
+              onClick={() => setAuthOpen(false)}
+            >
+              ×
+            </button>
+            <p className="eyebrow">YOUR ACCOUNT</p>
+            <h2 id="auth-title">パスキーで、つながる。</h2>
+            <p className="muted">
+              指紋・顔認証・セキュリティキーを使ってログインします。
+            </p>
+            <button className="primary full" disabled={busy} onClick={login}>
+              パスキーでログイン
+            </button>
+            <hr />
+            {registration && (
+              <>
+                <h3>はじめての方</h3>
+                <label>
+                  ユーザー名
+                  <input
+                    autoComplete="username webauthn"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="英数字・_・-、2〜32文字"
+                  />
+                </label>
+                <button
+                  className="full"
+                  disabled={busy || !name}
+                  onClick={() => register()}
+                >
+                  パスキーを登録して承認を申請
+                </button>
+              </>
+            )}
+            <details>
+              <summary>管理者の初期設定</summary>
+              <label>
+                ユーザー名
+                <input value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+              <label>
+                初期設定キー
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={bootstrap}
+                  onChange={(e) => setBootstrap(e.target.value)}
+                />
+              </label>
+              <button
+                disabled={busy || !bootstrap || !name}
+                onClick={() => register()}
+              >
+                管理者を作成
+              </button>
+            </details>
+          </section>
         </div>
       )}
-
-      {/* Move modal */}
-      {canMoveModal && moveModalSource && (
-        <div style={moveModalOverlayStyle} onClick={closeMoveModal}>
-          <div style={moveModalPanelStyle} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.moveModalHeader}>
-              <div style={styles.moveModalTitleWrap}>
-                <div style={styles.moveModalTitle}>移動先フォルダを選択</div>
-                <div style={styles.moveModalSub}>対象: {moveModalSource.name}</div>
-              </div>
-              <button style={styles.moveModalClose} onClick={closeMoveModal}>
-                <Icon name="fa-solid fa-xmark" />
-              </button>
-            </div>
-
-            <div style={styles.moveModalPath}>/{moveModalPath || ""}</div>
-
+      {settings && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+          >
             <button
-              style={{ ...styles.moveModalSubmit, ...(canMoveToPath(moveModalSource, moveModalPath) ? {} : styles.moveModalSubmitDisabled) }}
-              disabled={moveBusy || !canMoveToPath(moveModalSource, moveModalPath)}
-              onClick={async () => {
-                if (!moveModalSource) return;
-                await moveEntryToFolder(moveModalSource, moveModalPath);
-                closeMoveModal();
+              className="close"
+              aria-label="閉じる"
+              onClick={() => setSettings(null)}
+            >
+              ×
+            </button>
+            <p className="eyebrow">FILE SETTINGS</p>
+            <h2 id="settings-title">公開範囲と整理</h2>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const d = new FormData(e.currentTarget);
+                update({
+                  name: d.get("name"),
+                  visibility: d.get("visibility"),
+                  min_level: Number(d.get("min_level")),
+                  rotateKey: d.get("rotateKey") === "on",
+                });
               }}
             >
-              {moveBusy ? "移動中..." : "このフォルダへ移動"}
-            </button>
-
-            {moveModalPath && (
-              <button style={styles.moveModalNavBtn} onClick={() => void loadMoveModalEntries(getParentPath(moveModalPath))}>
-                <Icon name="fa-solid fa-arrow-up" style={{ marginRight: 8 }} />
-                1つ上へ
+              <label>
+                名前
+                <input
+                  name="name"
+                  defaultValue={settings.name}
+                  required
+                  maxLength={180}
+                />
+              </label>
+              <label>
+                公開範囲
+                <select name="visibility" defaultValue={settings.visibility}>
+                  <option value="private">非公開</option>
+                  <option value="public">公開</option>
+                  <option value="invite">招待キーが必要</option>
+                </select>
+              </label>
+              <label>
+                閲覧に必要な階級
+                <select name="min_level" defaultValue={settings.min_level}>
+                  {levels.map((l, n) => (
+                    <option key={n} value={n}>
+                      Level {n} · {l}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline">
+                <input type="checkbox" name="rotateKey" />
+                招待キーを更新（既存の閲覧許可を失効）
+              </label>
+              <button className="primary full" type="submit">
+                設定を保存
               </button>
-            )}
-
-            <div style={styles.moveModalList}>
-              {moveModalLoading && <div style={styles.moveModalInfo}>読み込み中...</div>}
-              {!moveModalLoading && moveModalError && <div style={styles.moveModalErr}>{moveModalError}</div>}
-              {!moveModalLoading && !moveModalError && moveModalEntries.length === 0 && (
-                <div style={styles.moveModalInfo}>サブフォルダがありません</div>
-              )}
-              {!moveModalLoading && !moveModalError && moveModalEntries.map((folder) => {
-                const disabled = moveModalSource.isDir && (folder.path === moveModalSource.path || folder.path.startsWith(`${moveModalSource.path}/`));
-                return (
-                  <button
-                    key={folder.path}
-                    style={{ ...styles.moveModalFolderBtn, ...(disabled ? styles.moveModalFolderBtnDisabled : {}) }}
-                    disabled={disabled}
-                    onClick={() => void loadMoveModalEntries(folder.path)}
-                    title={disabled ? "このフォルダには移動できません" : folder.name}
-                  >
-                    <Icon name="fa-solid fa-folder" style={{ marginRight: 8, color: disabled ? "#999" : "#f0b429" }} />
-                    {folder.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+            </form>
+            <hr />
+            <label>
+              移動先フォルダID
+              <input id="move-parent" placeholder="空欄でこの領域のホームへ" />
+            </label>
+            <button
+              onClick={() =>
+                update({
+                  parent:
+                    (document.getElementById("move-parent") as HTMLInputElement)
+                      .value || null,
+                })
+              }
+            >
+              移動する
+            </button>
+            <p className="muted mono">ID: {settings.id}</p>
+            <label>
+              共有リンク
+              <input
+                readOnly
+                value={location.origin + "/?item=" + settings.id}
+                onFocus={(e) => e.target.select()}
+              />
+            </label>
+            <button
+              onClick={() =>
+                run(async () => {
+                  await navigator.clipboard.writeText(
+                    location.origin + "/?item=" + settings.id,
+                  );
+                  setMessage("共有リンクをコピーしました");
+                })
+              }
+            >
+              共有リンクをコピー
+            </button>
+          </section>
         </div>
       )}
-
-      {/* Context Menu */}
-      {contextMenu && (
-        <ContextMenu
-          entry={contextMenu.entry}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          oplevel={oplevel}
-          onClose={() => setContextMenu(null)}
-          onRefresh={() => fetchEntries(currentPath)}
-        />
+      {preview && (
+        <div className="modal-backdrop">
+          <section
+            className="modal preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preview-title"
+          >
+            <button
+              className="close"
+              aria-label="閉じる"
+              onClick={() => {
+                setPreview(null);
+                setPreviewUrl("");
+              }}
+            >
+              ×
+            </button>
+            <h2 id="preview-title">{preview.name}</h2>
+            {/\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(preview.name) ? (
+              <>
+                {previewUrl ? (
+                  <video controls src={previewUrl} preload="metadata" />
+                ) : (
+                  <p role="status">CPUでプレビューを準備しています…</p>
+                )}
+                {user && (
+                  <button onClick={transcode}>
+                    軽量プレビューを作る（先頭120秒）
+                  </button>
+                )}
+              </>
+            ) : /\.(png|jpe?g|gif|webp)$/i.test(preview.name) ? (
+              <img
+                className="preview-image"
+                src={previewUrl}
+                alt={preview.name}
+              />
+            ) : /\.(mp3|ogg|wav)$/i.test(preview.name) ? (
+              <audio controls src={previewUrl} />
+            ) : (
+              <p className="muted">
+                この形式はダウンロードして開いてください。
+              </p>
+            )}
+            <button className="primary" onClick={() => download(preview)}>
+              ダウンロード · {size(preview.size)}
+            </button>
+          </section>
+        </div>
       )}
-
-      {/* Preview Modal */}
-      {previewEntry && !isMarkdown(previewEntry) && (
-        <PreviewModal
-          entry={previewEntry}
-          entries={entries}
-          onClose={() => setPreviewEntry(null)}
-          onNavigate={(e) => setPreviewEntry(e)}
-        />
-      )}
-
-      {/* Markdown Preview Modal */}
-      {previewEntry && isMarkdown(previewEntry) && (
-        <MarkdownPreviewModal
-          entry={previewEntry}
-          onClose={() => setPreviewEntry(null)}
-        />
-      )}
-
-      {/* Footer */}
-      <footer style={styles.footer}>
-        <span>
-          <Icon name="fa-solid fa-server" style={{ marginRight: 6 }} />
-          FileShare v{CURRENT_FILESHARE_VERSION} — {entries.length} 項目
-        </span>
-      </footer>
-    </div>
+    </>
   );
 }
-
-// -- Inline Styles
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
-    maxWidth: 960,
-    margin: "0 auto",
-    padding: "0 16px",
-    color: "#1a1a2e",
-    minHeight: "100vh",
-    display: "flex",
-    flexDirection: "column",
-  },
-  header: {
-    padding: "24px 0 8px",
-    borderBottom: "2px solid #e0e0e0",
-  },
-  title: { margin: 0, fontSize: 28, fontWeight: 700, display: "flex", alignItems: "center" },
-  subtitle: { margin: "4px 0 0", fontSize: 14, color: "#666" },
-  nav: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "12px 0",
-    flexWrap: "wrap",
-  },
-  navBtn: {
-    padding: "6px 14px",
-    border: "1px solid #ccc",
-    borderRadius: 6,
-    background: "#fff",
-    cursor: "pointer",
-    fontSize: 14,
-    transition: "background 150ms",
-    display: "inline-flex",
-    alignItems: "center",
-    fontFamily: "inherit",
-  },
-  breadcrumb: { fontSize: 14, color: "#555", marginLeft: 8 },
-  breadcrumbItem: { cursor: "pointer", color: "#3366cc", textDecoration: "underline" },
-  main: { flex: 1 },
-  loading: { textAlign: "center", padding: 48, fontSize: 18, color: "#888", display: "flex", alignItems: "center", justifyContent: "center" },
-  error: { textAlign: "center", padding: 48, fontSize: 16, color: "#c00", display: "flex", alignItems: "center", justifyContent: "center" },
-  empty: { textAlign: "center", padding: 48, fontSize: 16, color: "#888", display: "flex", alignItems: "center", justifyContent: "center" },
-  moveMsgOk: {
-    marginBottom: 10,
-    padding: "8px 10px",
-    border: "1px solid #d2f2df",
-    borderRadius: 8,
-    background: "#f3fcf7",
-    color: "#1f7a45",
-    fontSize: 13,
-    display: "flex",
-    alignItems: "center",
-  },
-  moveMsgErr: {
-    marginBottom: 10,
-    padding: "8px 10px",
-    border: "1px solid #f5d5d5",
-    borderRadius: 8,
-    background: "#fff6f6",
-    color: "#b53a3a",
-    fontSize: 13,
-    display: "flex",
-    alignItems: "center",
-  },
-  table: { width: "100%", borderCollapse: "collapse", fontSize: 14 },
-  th: {
-    padding: "10px 8px",
-    borderBottom: "2px solid #ddd",
-    textAlign: "center",
-    fontWeight: 600,
-    color: "#555",
-    whiteSpace: "nowrap",
-  },
-  row: { borderBottom: "1px solid #eee", transition: "background 100ms" },
-  dropTargetRow: { backgroundColor: "#e8f2ff" },
-  iconCell: { padding: "10px 8px", textAlign: "center", width: 40, fontSize: 18 },
-  nameCell: { padding: "10px 8px", wordBreak: "break-all" },
-  dirLink: { cursor: "pointer", color: "#3366cc", fontWeight: 500, textDecoration: "none" },
-  previewLink: { cursor: "pointer", color: "#2255aa", fontWeight: 500, textDecoration: "none", display: "inline-flex", alignItems: "center" },
-  fileName: { color: "#1a1a2e" },
-  sizeCell: { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap", color: "#666", width: 100 },
-  dateCell: { padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap", color: "#666", width: 160 },
-  dlCell: { padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap", color: "#666", width: 70 },
-  actionCell: { padding: "10px 8px", textAlign: "center", width: 108, whiteSpace: "nowrap" },
-  actionButtons: {
-    display: "inline-flex",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    flexWrap: "nowrap",
-    whiteSpace: "nowrap",
-  },
-  moveBtn: {
-    padding: "4px 10px",
-    border: "1px solid #ccc",
-    borderRadius: 6,
-    background: "#fff",
-    cursor: "pointer",
-    fontSize: 14,
-    transition: "background 150ms",
-    color: "#5a67d8",
-  },
-  downloadBtn: {
-    padding: "4px 10px",
-    border: "1px solid #ccc",
-    borderRadius: 6,
-    background: "#fff",
-    cursor: "pointer",
-    fontSize: 16,
-    transition: "background 150ms",
-    color: "#3366cc",
-  },
-  touchDragBadge: {
-    position: "fixed",
-    zIndex: 12000,
-    pointerEvents: "none",
-    background: "rgba(51, 102, 204, 0.92)",
-    color: "#fff",
-    borderRadius: 8,
-    padding: "6px 10px",
-    fontSize: 12,
-    maxWidth: 220,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
-  },
-  moveModalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.55)",
-    zIndex: 12000,
-    display: "flex",
-    alignItems: "stretch",
-    justifyContent: "stretch",
-  },
-  moveModalPanel: {
-    background: "#fff",
-    width: "100%",
-    height: "100%",
-    display: "flex",
-    flexDirection: "column",
-    padding: "12px 12px 16px",
-    boxSizing: "border-box",
-  },
-  moveModalHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  moveModalTitleWrap: {
-    minWidth: 0,
-  },
-  moveModalTitle: {
-    fontSize: 16,
-    fontWeight: 700,
-    color: "#1a1a2e",
-  },
-  moveModalSub: {
-    marginTop: 2,
-    fontSize: 12,
-    color: "#666",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    maxWidth: "80vw",
-  },
-  moveModalClose: {
-    border: "1px solid #ddd",
-    background: "#fff",
-    borderRadius: 8,
-    padding: "8px 10px",
-    fontSize: 16,
-    color: "#666",
-    cursor: "pointer",
-  },
-  moveModalPath: {
-    fontSize: 12,
-    color: "#334",
-    background: "#f4f6fb",
-    border: "1px solid #e0e5f0",
-    borderRadius: 8,
-    padding: "8px 10px",
-    marginBottom: 10,
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  },
-  moveModalSubmit: {
-    border: "none",
-    background: "#3366cc",
-    color: "#fff",
-    borderRadius: 8,
-    padding: "10px 12px",
-    fontSize: 14,
-    cursor: "pointer",
-    marginBottom: 8,
-  },
-  moveModalSubmitDisabled: {
-    background: "#9aa9d1",
-    cursor: "not-allowed",
-  },
-  moveModalNavBtn: {
-    border: "1px solid #ddd",
-    background: "#fff",
-    color: "#334",
-    borderRadius: 8,
-    padding: "10px 12px",
-    fontSize: 14,
-    cursor: "pointer",
-    textAlign: "left",
-    marginBottom: 8,
-  },
-  moveModalList: {
-    flex: 1,
-    overflowY: "auto",
-    border: "1px solid #e5e7ef",
-    borderRadius: 10,
-    background: "#fafbff",
-    padding: 8,
-  },
-  moveModalInfo: {
-    color: "#667",
-    fontSize: 13,
-    textAlign: "center",
-    padding: "16px 8px",
-  },
-  moveModalErr: {
-    color: "#b53a3a",
-    fontSize: 13,
-    textAlign: "center",
-    padding: "16px 8px",
-  },
-  moveModalFolderBtn: {
-    width: "100%",
-    border: "1px solid #dde3f2",
-    background: "#fff",
-    color: "#1a1a2e",
-    borderRadius: 8,
-    padding: "10px 12px",
-    fontSize: 14,
-    cursor: "pointer",
-    textAlign: "left",
-    display: "flex",
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  moveModalFolderBtnDisabled: {
-    color: "#999",
-    background: "#f4f4f4",
-    cursor: "not-allowed",
-  },
-  footer: {
-    textAlign: "center",
-    padding: "16px 0",
-    borderTop: "1px solid #e0e0e0",
-    fontSize: 12,
-    color: "#999",
-  },
-};
+function UserRow({
+  u,
+  save,
+  run,
+}: {
+  u: User & { ip: string };
+  save: (data: any) => Promise<void>;
+  run: (fn: () => Promise<unknown>) => Promise<void>;
+}) {
+  const [level, setLevel] = useState(u.level),
+    [status, setStatus] = useState(u.status),
+    [quota, setQuota] = useState(String(u.quota / 1e9));
+  return (
+    <tr>
+      <td>{u.name}</td>
+      <td className="mono">{u.ip}</td>
+      <td>
+        <select
+          aria-label={u.name + "の権限"}
+          value={level}
+          onChange={(e) => setLevel(Number(e.target.value))}
+        >
+          {levels.map((l, n) => (
+            <option key={n} value={n}>
+              {n} · {l}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td>
+        <input
+          className="quota-input"
+          aria-label={u.name + "の容量GB"}
+          type="number"
+          min="0"
+          max="200"
+          step="0.1"
+          value={quota}
+          onChange={(e) => setQuota(e.target.value)}
+        />
+      </td>
+      <td>
+        <select
+          aria-label={u.name + "の承認状態"}
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+        >
+          <option value="pending">承認待ち</option>
+          <option value="approved">承認</option>
+          <option value="denied">拒否</option>
+        </select>
+      </td>
+      <td>
+        <button
+          onClick={() =>
+            run(() =>
+              save({
+                id: u.id,
+                level,
+                status,
+                quota: Math.round(Number(quota) * 1e9),
+              }),
+            )
+          }
+        >
+          保存
+        </button>
+      </td>
+    </tr>
+  );
+}

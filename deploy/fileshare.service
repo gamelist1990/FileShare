@@ -1,0 +1,23 @@
+[Unit]
+Description=PEXserver FileShare (PROXY v2, CPU-only preview)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/opt/pex-fileshare
+ExecStart=%h/.local/opt/pex-fileshare/FileShare --config %h/.config/pex-fileshare/config.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+Nice=10
+CPUQuota=200%
+MemoryMax=1G
+TasksMax=96
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=ROCR_VISIBLE_DEVICES=
+
+[Install]
+WantedBy=default.target

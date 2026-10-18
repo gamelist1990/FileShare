@@ -1,7 +1,13 @@
 node_modules/
 dist/
 .fileshare/
-bun.lock
-package-lock.json
 src/FileShare.exe
 FileShare.exe
+
+data/
+.artifacts/
+src/generated/v2assets.ts
+FileShare
+config.local.json
+*.key
+*.token

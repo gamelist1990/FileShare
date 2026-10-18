@@ -1,0 +1,31 @@
+{
+  "host": "127.0.0.1",
+  "port": 8100,
+  "origin": "http://localhost:8100",
+  "dataDir": "./data",
+  "capacityBytes": 200000000000,
+  "vipQuotaBytes": 5000000000,
+  "proxy": { "enabled": false, "trustedPeers": ["127.0.0.1", "::1"] },
+  "registration": { "enabled": true, "accountsPerIp": 1, "attemptsPerHour": 5 },
+  "rate": {
+    "requestsPerMinute": 600,
+    "globalRequestsPerMinute": 6000,
+    "authPerMinute": 20,
+    "concurrentTransfersPerIp": 3,
+    "maxConnections": 512,
+    "maxBytesPerSecond": 50000000
+  },
+  "preview": {
+    "enabled": true,
+    "ffmpeg": "ffmpeg",
+    "threads": 2,
+    "maxSeconds": 120,
+    "cacheBytes": 2000000000
+  },
+  "ai": {
+    "enabled": false,
+    "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
+    "model": "gemma4",
+    "intervalSeconds": 60
+  }
+}

@@ -1,0 +1,18 @@
+# Merge this listener into the existing FerrumProxy config; do not replace other services.
+# TLS ends at FerrumProxy. Backend traffic crosses the encrypted Tailscale network.
+listeners:
+  - bind: 0.0.0.0
+    tcp: 443
+    haproxy: true
+    https:
+      enabled: true
+      autoDetect: false
+      autoProvision: false
+      letsEncryptDomain: share.pexserver.com
+      certPath: /etc/letsencrypt/live/share.pexserver.com/fullchain.pem
+      keyPath: /etc/letsencrypt/live/share.pexserver.com/privkey.pem
+    targets:
+      - host: 100.69.76.52
+        tcp: 8100
+# If port 443 is already shared, add the host to the existing domain routing
+# rather than adding a second listener on the same address/port.
