@@ -132,3 +132,11 @@ CI run 39208572333（cbe7323）成功後、release-2.11をA8へ反映。実行�
 ### 2026-10-19: 選択領域の容量表示（2.12）反映済み
 
 CI run 39209196057（361107c）成功後、release-2.12を反映。実行ファイルSHA-256 `f891c3d58ff05579c2068d4b16a949df60161559e6787c8c9a38afce058eb272`。バックアップ `~/.local/opt/pex-fileshare/backups/quota-display-2.12-20261019T061915Z/`。上部の200GB固定表示を選択領域APIのcapacityに変更し、個人・共有のラベルと使用量バーを一致。取得前・切替中は容量を仮表示せず、遅延した古い応答の反映も防ぐ。CIブラウザで5GB→共有200GB→カスタム8GB、遅延した共有応答が後着する場合を検証。管理者の全容量利用は維持。配信JSと最終ビルドの完全一致、healthz成功、fileshare・ai-inference activeを確認。
+
+### 2026-10-19: 共有URLのOpen Graph（2.13）反映済み
+
+CI run 39209878811（7817bfe）成功後、release-2.13をA8へ反映。実行ファイルSHA-256 `ffbce4547a635bd82b6cb6ffd631475da555959db02e14c6178c455d35306967`。オンラインSQLite・実行ファイル・設定のバックアップ `~/.local/opt/pex-fileshare/backups/share-og-2.13-20261019T062514Z/`。最終確認のストレージは4件48,067,016 bytes、管理者1・スタッフ1、パスキー2件。HTTP/3広告443を維持し、fileshare・ai-inferenceはactive。
+
+`/?item=<ID>` と `/files/<ID>/preview` のHTMLへファイル別タイトル、説明、Open Graph、Twitter Card、canonicalをサーバーで出力。公開画像とMP4/WebMは対応コンテンツURLを指定する。メタデータの判定は常に匿名のcanReadを使い、所有者・管理者セッションでも非公開情報を埋め込まない。HTMLはno-storeで、期限や親フォルダ・閲覧権限変更を毎回確認する。通常HTML・gzip・HEAD、記号入りファイル名のエスケープ、非公開・招待・階級・期限・親権限、公開範囲変更直後をテスト。50テスト534 assertions、型検査、ブラウザ、転送、CPU動画のCI検証に成功。
+
+本番の指定共有URLをwgetで取得し、`w6n7A8MWJHovR_-i.mp4 | FileShare`、容量29.08 MB・投稿者koukunnを含む説明、正規共有URL、video/mp4のOG動画URL、Twitter Cardを確認。独立プレビューURLのOG情報も確認。公開IP経由の証明書検証付きHTTP/3で共有HTMLの200応答を確認した。個人容量表示の2.12修正も含む。
