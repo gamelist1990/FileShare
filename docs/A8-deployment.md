@@ -108,3 +108,11 @@ CI run 39205561882（fe68fc5）成功後、release-2.9をA8へ反映。実行フ
 CI run 39206943542（694ff85）成功後、release-2.10をA8へ反映。実行ファイルSHA-256 `d7a7b94099d2840572d6b737a77c34a4ac4ff189005c38c5f8ca09bd062f3eeb`。バックアップ `~/.local/opt/pex-fileshare/backups/user-search-toasts-2.10-20261019T055250Z/`。前後とも3ファイル47,998,735 bytes、管理者1・スタッフ1、登録パスキー2件を保持。公開 `/users` が200、匿名の投稿者名検索が成功。配信中の圧縮JSを展開してローカルの最終ビルドと完全一致することを確認。
 
 48テスト451 assertionsで検索の非公開親フォルダ・VIP制限・期限切れ・拒否ユーザー・投稿者表示OFF・24件のページ分割を検証。CIブラウザでUserナビからの検索と投稿一覧への遷移、320/390/700pxでの表示、コピー通知のホバー停止と自動消去、手動閉じる、動きを減らす設定、タッチ後の自動消去を確認。既存のパスキー・転送・CPU動画検証も成功。招待URL/端末登録URLは入力欄に保持し、一度だけ表示するファイル招待キーは専用画面へ移して自動消去の対象外とした。
+
+### 2026-10-19: FerrumProxy HTTP/3待受を有効化、公開UDP到達性を確認中
+
+GUIの更新確認をユーザーが閉じた後、GUIからwebインスタンスのみcore `2026.10.19-69dbb36`へ更新。HTTP/3チェックを有効化・保存し、webのみ再起動した。ARM64実行ファイルSHA-256 `0172673afcc04f3eb3eadfbeaedd7cc61334bc2dd3cf1f8d7fc97be8218e16bd`。公開エッジはUDP443を待受中で、ホストのiptables許可もnetfilter-persistentで保存済み。サバイバル・VoiceChatの既存PIDは維持。
+
+RustのHTTP/3プローブでTailscale宛てに実QUIC/TLS接続し、証明書検証付きhealthz 200と公開ファイルRange 206・1024 bytesを確認。一方、公開IP `132.145.118.98` 宛ては作業端末とA8の2台から接続タイムアウトし、公開インターフェースの同時tcpdumpではUDP443の到着0件。Oracle Cloudのセキュリティ・リスト／NSGでUDP443受信許可が必要と考えられ、ユーザーへ確認依頼中。
+
+公開QUIC接続が成功するまではA8の `http3Port` は0を維持し、Alt-Svcを広告しない。通常HTTPSのshare healthzとplayが200、wgetで公開ファイルRange 1024 bytes取得成功。fileshareと既存ai-inferenceはactive。実行ファイル・ユーザー・保存ファイルは今回変更していない。
