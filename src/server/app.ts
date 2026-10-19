@@ -160,6 +160,10 @@ export async function createApp(config: Config) {
       keepAliveTimeout: 5000,
     },
     async (req, res) => {
+      // FerrumProxy HTTP/1 path routing currently selects an origin per TCP
+      // connection. A fresh HTTP/1 connection must select A1 vs A8 again.
+      // Its HTTP/3 bridge strips hop headers and keeps the QUIC connection alive.
+      if (config.edgeSpool.enabled) res.setHeader("Connection", "close");
       const ip = (req.socket as any).clientIp ?? "";
       let user: User | null = null;
       let releaseTransfer: (() => void) | undefined;

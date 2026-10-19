@@ -822,6 +822,14 @@ class EdgeHandler(BaseHTTPRequestHandler):
     server_version = "FileShareEdge/1"
     sys_version = ""
 
+    def end_headers(self):
+        # HTTP/1 clients can next visit an A8 path on the same public hostname.
+        # The current edge router binds an origin per TCP connection, so finish
+        # this connection after its response. HTTP/3 keeps independent streams.
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        super().end_headers()
+
     def log_message(self, fmt, *args):
         # Avoid logging Authorization tickets, request bodies, or query values.
         print("edge-spool", self.command, urlsplit(self.path).path, str(args[1]) if len(args)>1 else "", flush=True)
@@ -834,7 +842,6 @@ class EdgeHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         if status >= 400:
-            self.send_header("Connection", "close")
             self.close_connection = True
         self.end_headers()
         self.wfile.write(body)

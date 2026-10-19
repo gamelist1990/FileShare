@@ -250,6 +250,7 @@ test("A1 durable publication is readable before replication, survives restart, r
       cookie,
     );
     expect(redirect.status).toBe(307);
+    expect(redirect.headers.connection).toBe("close");
     const location = String(redirect.headers.location);
     await expect(
       readDurablePrefix(app.store, id, released, 1),
@@ -268,6 +269,7 @@ test("A1 durable publication is readable before replication, survives restart, r
     ).toBe(true);
     const served = await request(edgePort, location);
     expect(served.status).toBe(200);
+    expect(served.headers.connection).toBe("close");
     expect(served.body.equals(bytes)).toBe(true);
     const textRedirect = await request(
       port,
