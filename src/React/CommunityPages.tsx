@@ -1,3 +1,6 @@
+import { SiteNav } from "./SiteNav";
+import { SearchPage } from "./SearchPage";
+import { RankingPage } from "./RankingPage";
 import { ProfilePage } from "./ProfilePage";
 import { UserDirectory } from "./UserDirectory";
 import React, { useEffect, useState } from "react";
@@ -53,7 +56,7 @@ export function CommunityPage() {
     let cancelled = false;
     (async () => {
       let result: any;
-      if (path === "/users") result = {};
+      if (path === "/users" || path === "/search") result = {};
       else if (preview) result = await api(`/api/items/${preview[1]}`);
       else if (author || path === "/profile") result = {};
       else {
@@ -75,27 +78,7 @@ export function CommunityPage() {
   const item = data?.item ?? data;
   return (
     <>
-      <header className="site-nav">
-        <a className="brand" href="/">
-          PEXserver <small>FileShare</small>
-        </a>
-        <nav>
-          <a href="https://pexserver.com">Home</a>
-          <a href="/">FileShare</a>
-          <a
-            href="/rankings"
-            aria-current={path === "/rankings" ? "page" : undefined}
-          >
-            Ranking
-          </a>
-          <a
-            href="/users"
-            aria-current={path.startsWith("/users") ? "page" : undefined}
-          >
-            User
-          </a>
-        </nav>
-      </header>
+      <SiteNav />
       <main
         className={
           preview ? "community-page standalone-preview" : "community-page"
@@ -107,6 +90,7 @@ export function CommunityPage() {
           </p>
         )}
         {path === "/users" && <UserDirectory />}
+        {path === "/search" && <SearchPage />}
         {path !== "/users" &&
           !author &&
           path !== "/profile" &&
@@ -131,30 +115,7 @@ export function CommunityPage() {
           </section>
         )}
         {data && path === "/rankings" && (
-          <>
-            <section className="panel">
-              <h1>ダウンロードランキング</h1>
-              <FileList items={data.items} />
-              {!data.items.length && <p>公開されたファイルはありません。</p>}
-            </section>
-            <section className="panel">
-              <h2>投稿者別ランキング</h2>
-              <ol className="uploader-ranking">
-                {users.map((user) => (
-                  <li key={user.id}>
-                    <a href={`/users/${encodeURIComponent(user.id)}`}>
-                      {user.name}
-                    </a>
-                    <span>
-                      {user.downloads != null &&
-                        `${compactCount(user.downloads)} DL · `}
-                      {user.files}ファイル
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </section>
-          </>
+          <RankingPage items={data.items} users={users} />
         )}
         {(author || path === "/profile") && <ProfilePage id={author?.[1]} />}
       </main>

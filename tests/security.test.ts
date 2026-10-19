@@ -350,7 +350,7 @@ test("downgrade/denial immediately invalidates access and last admin is protecte
   });
   expect((await json("/api/me", "other")).user).toBeNull();
 });
-test("global quota includes reservations across users; admin has no separate 5GB ceiling", async () => {
+test("global quota includes reservations across users and administrators respect personal allocation", async () => {
   const shared = await json("/api/uploads", "staff", "POST", {
     name: "global-reservation",
     size: 60_000_000,
@@ -366,7 +366,7 @@ test("global quota includes reservations across users; admin has no separate 5GB
   ).toBe(507);
   const admin = await json("/api/uploads", "admin", "POST", {
     name: "admin-capacity",
-    size: 20_000_000,
+    size: 5_000_000,
     space: "private",
   });
   await json("/api/uploads/" + shared.id, "staff", "DELETE");

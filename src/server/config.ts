@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 export interface Config {
   http3Port: number;
@@ -9,6 +10,7 @@ export interface Config {
   capacityBytes: number;
   vipQuotaBytes: number;
   proxy: { enabled: boolean; trustedPeers: string[] };
+  edgeSpool: { enabled: boolean; trustedIp: string; path: string };
   registration: {
     enabled: boolean;
     accountsPerIp: number;
@@ -45,6 +47,7 @@ export const defaults: Config = {
   capacityBytes: 200_000_000_000,
   vipQuotaBytes: 5_000_000_000,
   proxy: { enabled: false, trustedPeers: ["127.0.0.1", "::1"] },
+  edgeSpool: { enabled: false, trustedIp: "", path: "/edge-upload" },
   registration: { enabled: true, accountsPerIp: 1, attemptsPerHour: 5 },
   rate: {
     requestsPerMinute: 600,
@@ -74,6 +77,7 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     ...defaults,
     ...raw,
     proxy: { ...defaults.proxy, ...raw.proxy },
+    edgeSpool: { ...defaults.edgeSpool, ...raw.edgeSpool },
     registration: { ...defaults.registration, ...raw.registration },
     rate: { ...defaults.rate, ...raw.rate },
     preview: { ...defaults.preview, ...raw.preview },
@@ -97,7 +101,9 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     c.port,
     c.capacityBytes,
     c.vipQuotaBytes,
-    ...Object.entries(c.rate).filter(([name]) => name !== "maxBytesPerSecond").map(([, value]) => value),
+    ...Object.entries(c.rate)
+      .filter(([name]) => name !== "maxBytesPerSecond")
+      .map(([, value]) => value),
     c.registration.accountsPerIp,
     c.registration.attemptsPerHour,
     c.preview.threads,
@@ -107,7 +113,10 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
   ])
     if (!Number.isSafeInteger(n) || n < 1)
       throw new Error("Invalid numeric configuration");
-  if (!Number.isSafeInteger(c.rate.maxBytesPerSecond) || c.rate.maxBytesPerSecond < 0)
+  if (
+    !Number.isSafeInteger(c.rate.maxBytesPerSecond) ||
+    c.rate.maxBytesPerSecond < 0
+  )
     throw new Error("Invalid transfer bandwidth limit");
   if (
     c.port > 65535 ||
@@ -117,6 +126,18 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     throw new Error("Invalid capacity or port");
   if (c.proxy.enabled && !c.proxy.trustedPeers.length)
     throw new Error("PROXY v2 requires trustedPeers");
+  if (
+    typeof c.edgeSpool.enabled !== "boolean" ||
+    typeof c.edgeSpool.trustedIp !== "string" ||
+    (c.edgeSpool.enabled && !isIP(c.edgeSpool.trustedIp)) ||
+    typeof c.edgeSpool.path !== "string" ||
+    !/^\/[a-zA-Z0-9/_-]{1,80}$/.test(c.edgeSpool.path) ||
+    c.edgeSpool.path.endsWith("/") ||
+    (c.edgeSpool.enabled &&
+      (!c.proxy.enabled ||
+        !c.proxy.trustedPeers.includes(c.edgeSpool.trustedIp)))
+  )
+    throw new Error("Invalid edge spool configuration");
   c.dataDir = resolve(c.dataDir);
   return c;
 }

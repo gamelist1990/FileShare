@@ -1,3 +1,5 @@
+import { registerVolume } from "./volumes";
+import { encryptKey, validateEndpoint } from "./ai-key";
 import { randomUUID } from "node:crypto";
 import { randomToken, digestToken } from "@pexserver/secure-envelope";
 import type { Store, User } from "./store";
@@ -45,9 +47,69 @@ export async function adminAction(
       throw new HttpError(400, "入力形式が不正です");
     return body;
   };
+  if (path === "/api/admin/storage/volumes" && method === "GET")
+    return {
+      volumes: store.db
+        .query(
+          "SELECT v.*,COALESCE((SELECT SUM(i.size) FROM file_locations l JOIN items i ON i.id=l.item_id WHERE l.volume_id=v.id AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id AND m.purged=1)),0) AS used FROM storage_volumes v ORDER BY label",
+        )
+        .all(),
+      capacity: store.config.capacityBytes,
+    };
+  if (path === "/api/admin/storage/volumes" && method === "POST") {
+    const result = await registerVolume(store, await objectBody());
+    store.audit(ip, admin, "storage.map", result.id);
+    return result;
+  }
+  if (path === "/api/admin/storage/volumes" && method === "PATCH") {
+    const b = await objectBody();
+    if (typeof b.id !== "string" || typeof b.enabled !== "boolean")
+      throw new HttpError(400, "保存先を確認してください");
+    store.db.run("UPDATE storage_volumes SET enabled=? WHERE id=?", [
+      b.enabled ? 1 : 0,
+      b.id,
+    ]);
+    store.audit(ip, admin, "storage.map.toggle", b.id);
+    return { ok: true };
+  }
+  if (path === "/api/admin/users" && method === "GET") {
+    const q = (url.searchParams.get("q") ?? "").trim(),
+      status = url.searchParams.get("status") ?? "",
+      level = url.searchParams.get("level") ?? "",
+      offset = Number(url.searchParams.get("offset") ?? 0);
+    if (
+      q.length > 100 ||
+      !["", "approved", "pending", "denied"].includes(status) ||
+      !["", "0", "1", "2", "3", "4"].includes(level) ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      offset > 1000000
+    )
+      throw new HttpError(400, "検索条件を確認してください");
+    const pattern = "%" + q.replace(/[\\%_]/g, "\\$&") + "%",
+      where =
+        " WHERE name LIKE ? ESCAPE '\\' AND (?='' OR status=?) AND (?='' OR level=?)",
+      args = [pattern, status, status, level, level];
+    const users = store.db
+      .query(
+        "SELECT id,name,level,status,quota,created FROM users" +
+          where +
+          " ORDER BY created DESC,id DESC LIMIT 51 OFFSET ?",
+      )
+      .all(...args, offset);
+    return {
+      users: users.slice(0, 50),
+      next: users.length > 50 ? offset + 50 : null,
+      total: (
+        store.db
+          .query("SELECT COUNT(*) AS n FROM users" + where)
+          .get(...args) as any
+      ).n,
+    };
+  }
   if (path === "/api/admin/settings" && method === "GET")
     return {
-      ai: store.config.ai,
+      ai: { ...store.config.ai, keyConfigured: !!store.aiKey },
       files: store.filePolicy,
       registration: store.registrationPolicy,
       maintenanceUntil:
@@ -55,6 +117,71 @@ export async function adminAction(
           ? store.maintenanceUntil
           : null,
     };
+  if (path === "/api/admin/ai/models" && method === "POST") {
+    const body = await objectBody();
+    let endpoint: string;
+    try {
+      endpoint = validateEndpoint(body.endpoint ?? store.config.ai.endpoint);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    const key = body.apiKey === undefined ? store.aiKey : body.apiKey;
+    if (typeof key !== "string" || key.length > 4096 || /[\r\n]/.test(key))
+      throw new HttpError(400, "APIキーを確認してください");
+    let response: Response;
+    try {
+      response = await fetch(
+        endpoint.replace(/\/chat\/completions$/, "/models"),
+        {
+          headers: key ? { Authorization: "Bearer " + key } : {},
+          signal: AbortSignal.timeout(15000),
+          redirect: "error",
+        },
+      );
+    } catch {
+      throw new HttpError(502, "モデル一覧を取得できません");
+    }
+    if (!response.ok)
+      throw new HttpError(
+        502,
+        "モデル一覧の取得に失敗しました（HTTP " + response.status + "）",
+      );
+    if (Number(response.headers.get("content-length") ?? 0) > 1048576)
+      throw new HttpError(502, "モデル一覧が大きすぎます");
+    const reader = response.body!.getReader();
+    let text = "",
+      length = 0;
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        length += chunk.value.length;
+        if (length > 1048576)
+          throw new HttpError(502, "モデル一覧が大きすぎます");
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+    } finally {
+      await reader.cancel();
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new HttpError(502, "モデル一覧の形式が不正です");
+    }
+    return {
+      models: [
+        ...new Set(
+          (Array.isArray(parsed.data) ? parsed.data : [])
+            .map((m: any) => m.id)
+            .filter(
+              (id: unknown) => typeof id === "string" && id.length <= 120,
+            ),
+        ),
+      ].slice(0, 500),
+    };
+  }
   if (path === "/api/admin/settings" && method === "PATCH") {
     const body = await objectBody();
     if (
@@ -68,7 +195,18 @@ export async function adminAction(
       body.registration === undefined
         ? null
         : validateRegistrationPolicy(body.registration);
-    const ai = body.ai === undefined ? null : validateAISettings(body.ai);
+    const ai =
+      body.ai === undefined
+        ? null
+        : validateAISettings({ ...store.config.ai, ...body.ai });
+    const apiKey = body.ai?.apiKey;
+    if (
+      apiKey !== undefined &&
+      (typeof apiKey !== "string" ||
+        apiKey.length > 4096 ||
+        /[\r\n]/.test(apiKey))
+    )
+      throw new HttpError(400, "APIキーを確認してください");
     const files =
       body.files === undefined
         ? null
@@ -83,7 +221,10 @@ export async function adminAction(
             body.maintenance.minutes < 1 ||
             body.maintenance.minutes > 1440))
       )
-        throw new HttpError(400, "メンテナンス時間は1〜1440分で指定してください");
+        throw new HttpError(
+          400,
+          "メンテナンス時間は1〜1440分で指定してください",
+        );
       maintenanceUntil = body.maintenance.enabled
         ? Date.now() + body.maintenance.minutes * 60_000
         : null;
@@ -101,6 +242,11 @@ export async function adminAction(
           JSON.stringify(registration),
         );
       }
+      if (apiKey !== undefined)
+        store.db.run(
+          "INSERT INTO admin_settings VALUES ('ai-key',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          [encryptKey(apiKey, store.secret)],
+        );
       if (ai) {
         store.db.run(
           "INSERT INTO admin_settings VALUES ('ai',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -130,10 +276,12 @@ export async function adminAction(
     })();
     if (registration) store.registrationPolicy = registration;
     if (ai) Object.assign(store.config.ai, ai);
+    if (apiKey !== undefined) store.aiKey = apiKey;
     if (files) store.filePolicy = files;
-    if (maintenanceUntil !== undefined) store.maintenanceUntil = maintenanceUntil;
+    if (maintenanceUntil !== undefined)
+      store.maintenanceUntil = maintenanceUntil;
     return {
-      ai: store.config.ai,
+      ai: { ...store.config.ai, keyConfigured: !!store.aiKey },
       files: store.filePolicy,
       registration: store.registrationPolicy,
       maintenanceUntil: store.maintenanceUntil,

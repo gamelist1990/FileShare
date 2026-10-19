@@ -1,7 +1,15 @@
+import { UserManager, VolumeManager } from "./ManagerTools";
 import { PasskeyPage } from "./PasskeyPage";
 import { PreviewContent } from "./PreviewContent";
 import { compactCount } from "./CommunityPages";
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
+import {
+  deleteEdgeUpload,
+  EdgeUploadError,
+  uploadEdge,
+  waitForEdgeSync,
+  publishEdgeUpload,
+} from "./edge-upload";
 import { CopyButton } from "./CopyButton";
 import { PresetField, durationLabel } from "./PresetField";
 import { useNotice } from "./Toast";
@@ -36,6 +44,7 @@ type Item = {
   uploader_name?: string | null;
   uploaded_by?: string | null;
   expires_at?: number | null;
+  storageState?: string;
 };
 const levels = ["一般", "VIP", "招待", "スタッフ", "管理者"];
 const size = (n: number) =>
@@ -58,6 +67,10 @@ async function api(path: string, method = "GET", body?: unknown) {
   return d;
 }
 export function App() {
+  const [dropFiles, setDropFiles] = useState<File[] | null>(null),
+    [draggingFiles, setDraggingFiles] = useState(false),
+    [uploadTags, setUploadTags] = useState("");
+  const [managerTab, setManagerTab] = useState("users");
   const [keyResult, setKeyResult] = useState<{
     id: string;
     key: string;
@@ -105,6 +118,7 @@ export function App() {
       name: string;
       percent: number;
       speed: number;
+      phase?: string;
     } | null>(null),
     [selected, setSelected] = useState<string[]>([]),
     [query, setQuery] = useState(""),
@@ -115,7 +129,93 @@ export function App() {
     [admin, setAdmin] = useState(location.pathname === "/admin"),
     [overview, setOverview] = useState<any>(null),
     [trashSelection, setTrashSelection] = useState<string[]>([]),
-    [transferPhase, setTransferPhase] = useState<"uploading" | "paused" | "cancelling" | null>(null);
+    [transferPhase, setTransferPhase] = useState<
+      "uploading" | "paused" | "cancelling" | null
+    >(null);
+  useEffect(() => {
+    const raw = document.cookie
+      .split("; ")
+      .find((x) => x.startsWith("fs-retention-" + space + "="))
+      ?.split("=")[1];
+    const saved = raw === undefined ? NaN : Number(raw);
+    const privileged = !!user && [1, 3, 4].includes(user.level);
+    setRetentionMinutes(
+      Number.isFinite(saved) && (saved > 0 || (saved === 0 && privileged))
+        ? Math.min(
+            saved,
+            Math.floor((filePolicy?.maxRetentionSeconds ?? 2592000) / 60),
+          )
+        : space === "private" && privileged
+          ? 0
+          : Math.floor((filePolicy?.maxRetentionSeconds ?? 2592000) / 60),
+    );
+  }, [space, user?.id, user?.level, filePolicy?.maxRetentionSeconds]);
+  const rememberRetention = (value: number) => {
+    setRetentionMinutes(value);
+    document.cookie = `fs-retention-${space}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
+  };
+  useEffect(() => {
+    let depth = 0;
+    const external = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    const enter = (e: DragEvent) => {
+      if (!external(e) || !uploadable || admin) return;
+      e.preventDefault();
+      depth++;
+      setDraggingFiles(true);
+    };
+    const over = (e: DragEvent) => {
+      if (external(e)) {
+        e.preventDefault();
+        if (e.dataTransfer)
+          e.dataTransfer.dropEffect = uploadable && !busy ? "copy" : "none";
+      }
+    };
+    const leave = (e: DragEvent) => {
+      if (!external(e)) return;
+      depth--;
+      if (
+        depth <= 0 ||
+        e.clientX <= 0 ||
+        e.clientY <= 0 ||
+        e.clientX >= innerWidth ||
+        e.clientY >= innerHeight
+      )
+        setDraggingFiles(false);
+    };
+    const drop = (e: DragEvent) => {
+      if (!external(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDraggingFiles(false);
+      if (uploadable && !admin && !busy)
+        setDropFiles(Array.from(e.dataTransfer?.files ?? []));
+      else setError("この場所ではアップロードできません");
+    };
+    window.addEventListener("dragenter", enter);
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragenter", enter);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", drop);
+    };
+  }, [uploadable, admin, busy]);
+  const dropMove = (e: React.DragEvent, target: string | null) => {
+    if (!e.dataTransfer.types.includes("application/x-fileshare-items")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void run(async () => {
+      const ids = JSON.parse(
+        e.dataTransfer.getData("application/x-fileshare-items"),
+      );
+      await api("/api/items/move", "POST", { ids, parent: target });
+      await refresh();
+      setMessage("移動しました");
+    });
+  };
   const routePath = useRef(location.pathname);
   // Keep File objects while this tab is open: pausing must never require a second picker.
   const uploadQueue = useRef<{
@@ -125,8 +225,13 @@ export function App() {
     space: string;
     userId: string | undefined;
     retentionSeconds: number;
+    tags: string[];
   } | null>(null);
-  const activeUpload = useRef<{ id: string; key: string } | null>(null);
+  const activeUpload = useRef<{
+    id: string;
+    key: string;
+    edge?: { path: string; ticket: string; blockBytes: number };
+  } | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const stop = useRef<"pause" | "cancel" | null>(null),
     fileInput = useRef<HTMLInputElement>(null);
@@ -333,6 +438,10 @@ export function App() {
         credentials: "same-origin",
       });
       if (response.ok || response.status === 404) {
+        if (session.edge)
+          await deleteEdgeUpload(session.edge.path, session.edge.ticket).catch(
+            () => {},
+          );
         sessionStorage.removeItem(session.key);
         activeUpload.current = null;
         return;
@@ -342,7 +451,9 @@ export function App() {
         throw new Error(data.error ?? "転送をキャンセルできませんでした");
       await new Promise((resolve) => setTimeout(resolve, 250 + attempt * 150));
     }
-    throw new Error("転送終了処理が完了していません。もう一度キャンセルしてください");
+    throw new Error(
+      "転送終了処理が完了していません。もう一度キャンセルしてください",
+    );
   }
   const cancelTransfer = () => {
     stop.current = "cancel";
@@ -360,7 +471,9 @@ export function App() {
         setProgress(null);
         setTransferPhase(null);
         await refresh();
-        setMessage("転送をキャンセルしました。予約容量と途中データを解放しました。");
+        setMessage(
+          "転送をキャンセルしました。予約容量と途中データを解放しました。",
+        );
       } catch (error) {
         setTransferPhase("paused");
         throw error;
@@ -382,6 +495,10 @@ export function App() {
         space,
         userId: user?.id,
         retentionSeconds: retentionMinutes * 60,
+        tags: uploadTags
+          .split(/[,、]/)
+          .map((t) => t.trim())
+          .filter(Boolean),
       };
     }
     const queue = uploadQueue.current;
@@ -391,7 +508,8 @@ export function App() {
     setBusy(true);
     setTransferPhase("uploading");
     stop.current = null;
-    let completed = false, cancelledTransfer = false;
+    let completed = false,
+      cancelledTransfer = false;
     const interrupted = async () => {
       if (stop.current === "cancel") {
         setTransferPhase("cancelling");
@@ -400,32 +518,61 @@ export function App() {
         setProgress(null);
         cancelledTransfer = true;
         await refresh();
-        setMessage("転送をキャンセルしました。予約容量と途中データを解放しました。");
+        setMessage(
+          "転送をキャンセルしました。予約容量と途中データを解放しました。",
+        );
       } else {
         setMessage("一時停止しました。ファイルを選び直さず再開できます。");
       }
     };
     try {
       while (queue.index < queue.files.length) {
-        if (stop.current) { await interrupted(); return; }
+        if (stop.current) {
+          await interrupted();
+          return;
+        }
         const file = queue.files[queue.index];
         if (filePolicy && file.size > filePolicy.maxFileBytes)
-          throw new Error("1ファイルの上限は" + size(filePolicy.maxFileBytes) + "です");
+          throw new Error(
+            "1ファイルの上限は" + size(filePolicy.maxFileBytes) + "です",
+          );
         const fingerprint = JSON.stringify([
-          file.name, file.size, file.lastModified,
-          queue.parent, queue.space, queue.userId,
+          file.name,
+          file.size,
+          file.lastModified,
+          queue.parent,
+          queue.space,
+          queue.userId,
         ]);
         const resumeKey = "fs-upload:" + fingerprint;
-        let compressionAllowed = false, pipelineAllowed = false;
+        let compressionAllowed = false,
+          pipelineAllowed = false;
+        let edge: { path: string; ticket: string; blockBytes: number } | null =
+          null;
+        let authoritativeReceipt: {
+          start: number;
+          length: number;
+          hash: string;
+        } | null = null;
         const probeStart = performance.now();
-        let id = sessionStorage.getItem(resumeKey), offset = 0;
+        let id = sessionStorage.getItem(resumeKey),
+          offset = 0;
         if (id) {
           try {
             const resumed = await api("/api/uploads/" + id);
-            if (resumed.size !== file.size) throw new Error("サイズが一致しません");
+            if (resumed.size !== file.size)
+              throw new Error("サイズが一致しません");
+            if (resumed.completed && resumed.name === file.name) {
+              sessionStorage.removeItem(resumeKey);
+              queue.index++;
+              setProgress({ name: file.name, percent: 100, speed: 0 });
+              continue;
+            }
             offset = resumed.offset;
             compressionAllowed = resumed.encodings?.includes("gzip") === true;
             pipelineAllowed = resumed.pipeline === "fileshare-upload-v2";
+            edge = resumed.edge ?? null;
+            authoritativeReceipt = resumed.receipt ?? null;
           } catch {
             id = null;
             sessionStorage.removeItem(resumeKey);
@@ -437,26 +584,92 @@ export function App() {
             size: file.size,
             mime: file.type,
             retentionSeconds: queue.retentionSeconds,
+            tags: queue.tags,
             parent: queue.parent,
             space: queue.space,
           });
           id = d.id;
           compressionAllowed = d.encodings?.includes("gzip") === true;
           pipelineAllowed = d.pipeline === "fileshare-upload-v2";
+          edge = d.edge ?? null;
           sessionStorage.setItem(resumeKey, id!);
         }
-        activeUpload.current = { id: id!, key: resumeKey };
-        setProgress({ name: file.name, percent: file.size ? offset / file.size * 100 : 100, speed: 0 });
-        if (stop.current) { await interrupted(); return; }
+        activeUpload.current = {
+          id: id!,
+          key: resumeKey,
+          edge: edge ?? undefined,
+        };
+        setProgress({
+          name: file.name,
+          percent: file.size ? (offset / file.size) * 100 : 100,
+          speed: 0,
+        });
+        if (stop.current) {
+          await interrupted();
+          return;
+        }
         const roundTripMs = Math.max(0, performance.now() - probeStart);
         let tryCompression = compressionAllowed && compressibleName(file.name);
+        let completedByEdge = false;
+        if (edge) {
+          const controller = new AbortController();
+          activeRequest.current = controller;
+          try {
+            const received = await uploadEdge({
+              path: edge.path,
+              ticket: edge.ticket,
+              file,
+              authoritativeOffset: offset,
+              authoritativeReceipt,
+              blockBytes: edge.blockBytes,
+              compress: tryCompression,
+              stopped: () => stop.current !== null,
+              signal: controller.signal,
+              progress: (bytes, speed) =>
+                setProgress({
+                  name: file.name,
+                  percent: file.size ? (bytes / file.size) * 100 : 100,
+                  speed,
+                  phase: "A1で受信中",
+                }),
+            });
+            if (received.stopped || stop.current) {
+              await interrupted();
+              return;
+            }
+            await publishEdgeUpload(edge.path, edge.ticket);
+            completedByEdge = true;
+          } catch (error) {
+            if (stop.current) {
+              await interrupted();
+              return;
+            }
+            if (!(error instanceof EdgeUploadError && error.status === 507))
+              throw error;
+            setProgress(
+              (current) =>
+                current && {
+                  ...current,
+                  phase: "A1一時容量が満杯のため標準経路へ切替中",
+                },
+            );
+          } finally {
+            if (activeRequest.current === controller)
+              activeRequest.current = null;
+          }
+        }
         if (
-          pipelineAllowed && typeof WebSocket !== "undefined" &&
+          !completedByEdge &&
+          pipelineAllowed &&
+          typeof WebSocket !== "undefined" &&
           file.size >= 2 * 1024 * 1024
         ) {
           for (let attempt = 0; attempt < 3 && offset < file.size; attempt++) {
             try {
-              const url = new URL("/api/uploads/" + id + "/stream", location.origin);
+              const url = new URL(
+                "/api/uploads/" + id + "/stream",
+                location.origin,
+              );
               url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
               const result = await uploadPipeline({
                 url: url.href,
@@ -473,10 +686,16 @@ export function App() {
                   }),
               });
               offset = result.offset;
-              if (result.stopped || stop.current) { await interrupted(); return; }
+              if (result.stopped || stop.current) {
+                await interrupted();
+                return;
+              }
               break;
             } catch (error) {
-              if (stop.current) { await interrupted(); return; }
+              if (stop.current) {
+                await interrupted();
+                return;
+              }
               if (error instanceof PipelineError && error.fatal) throw error;
               await new Promise((resolve) =>
                 setTimeout(resolve, Math.min(4000, 500 * 2 ** attempt)),
@@ -487,15 +706,26 @@ export function App() {
             }
           }
         }
-        let chunkSize = 1024 * 1024, retries = 0;
-        while (offset < file.size) {
-          if (stop.current) { await interrupted(); return; }
+        let chunkSize = 1024 * 1024,
+          retries = 0;
+        while (!completedByEdge && offset < file.size) {
+          if (stop.current) {
+            await interrupted();
+            return;
+          }
           const prepared = await prepareChunk(
             file.slice(offset, offset + chunkSize),
             tryCompression,
           );
-          if (stop.current) { await interrupted(); return; }
-          if (tryCompression && prepared.logicalBytes >= 32768 && !prepared.compressed)
+          if (stop.current) {
+            await interrupted();
+            return;
+          }
+          if (
+            tryCompression &&
+            prepared.logicalBytes >= 32768 &&
+            !prepared.compressed
+          )
             tryCompression = false;
           const start = performance.now();
           const controller = new AbortController();
@@ -522,7 +752,11 @@ export function App() {
             offset = d.offset;
             const elapsed = performance.now() - start;
             chunkSize = nextChunk(
-              chunkSize, prepared.logicalBytes, elapsed, false, roundTripMs,
+              chunkSize,
+              prepared.logicalBytes,
+              elapsed,
+              false,
+              roundTripMs,
             );
             retries = 0;
             setProgress({
@@ -531,7 +765,10 @@ export function App() {
               speed: (prepared.logicalBytes / Math.max(1, elapsed)) * 1000,
             });
           } catch (error) {
-            if (stop.current) { await interrupted(); return; }
+            if (stop.current) {
+              await interrupted();
+              return;
+            }
             if ((error as any).fatal || ++retries > 6) throw error;
             chunkSize = nextChunk(chunkSize, 0, 0, true);
             await new Promise((resolve) =>
@@ -539,11 +776,16 @@ export function App() {
             );
             offset = (await api("/api/uploads/" + id)).offset;
           } finally {
-            if (activeRequest.current === controller) activeRequest.current = null;
+            if (activeRequest.current === controller)
+              activeRequest.current = null;
           }
         }
-        if (stop.current) { await interrupted(); return; }
-        await api("/api/uploads/" + id + "/complete", "POST", {});
+        if (stop.current) {
+          await interrupted();
+          return;
+        }
+        if (!completedByEdge)
+          await api("/api/uploads/" + id + "/complete", "POST", {});
         sessionStorage.removeItem(resumeKey);
         activeUpload.current = null;
         queue.index++;
@@ -665,6 +907,7 @@ export function App() {
           </button>
           <a href="/rankings">Ranking</a>
           <a href="/users">User</a>
+          <a href="/search">Search</a>
           {user && [1, 3, 4].includes(user.level) && (
             <a href="/profile">Profile</a>
           )}
@@ -707,7 +950,7 @@ export function App() {
           )}
         </div>
       </header>
-      <main>
+      <main data-admin-tab={admin ? managerTab : undefined}>
         <section className="hero">
           <div>
             <p className="eyebrow">
@@ -740,75 +983,62 @@ export function App() {
         {admin ? (
           user?.level === 4 && overview ? (
             <>
-              <nav className="admin-jumps" aria-label="管理メニュー">
-                <a href="#admin-users">ユーザー</a>
-                <a href="#admin-policy">容量・期限</a>
-                <a href="#admin-records">ファイル</a>
-                <a href="#admin-applications">申請</a>
-                <a href="#admin-invites">スタッフ招待</a>
-                <a href="#admin-ai">AI監視</a>
-                <a href="#admin-review">審査ログ</a>
-                <a href="#admin-cleanup">整理</a>
+              <nav
+                className="admin-jumps manager-navigation"
+                aria-label="管理メニュー"
+              >
+                {[
+                  ["all", "全体"],
+                  ["users", "ユーザー"],
+                  ["storage", "ストレージ"],
+                  ["access", "登録・招待"],
+                  ["ai", "AI監視"],
+                  ["audit", "ログ・審査"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    aria-pressed={managerTab === value}
+                    onClick={() => setManagerTab(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </nav>
-              <section className="metrics">
-                <article>
-                  <span>使用容量（ごみ箱を含む）</span>
+              <section className="manager-summary">
+                <div>
+                  <small>登録ユーザー</small>
+                  <strong>
+                    {overview.metrics?.users ?? overview.users.length}
+                  </strong>
+                </div>
+                <div>
+                  <small>承認待ち</small>
+                  <strong>
+                    {overview.metrics?.pending ??
+                      overview.users.filter((u: any) => u.status === "pending")
+                        .length}
+                  </strong>
+                </div>
+                <div>
+                  <small>使用容量</small>
                   <strong>
                     {size(overview.usage.used)} / {size(overview.capacity)}
                   </strong>
-                </article>
-                <article>
-                  <span>転送予約 / プレビュー</span>
-                  <strong>
-                    {size(overview.usage.reserved)} /{" "}
-                    {size(overview.cacheBytes)}
-                  </strong>
-                </article>
-                <article>
-                  <span>AI監視</span>
-                  <strong>
-                    {overview.aiEnabled ? "有効" : "オプション・無効"}
-                  </strong>
-                </article>
-              </section>
-              <section className="panel" id="admin-users">
-                <div className="section-title">
-                  <h2>ユーザーと権限</h2>
-                  <button onClick={() => run(loadAdmin)}>更新</button>
                 </div>
-                <p className="muted">
-                  0 一般 · 1 VIP · 2 招待 · 3 スタッフ · 4
-                  管理者。招待ファイルには対象キーも必要です。
-                </p>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>ユーザー</th>
-                        <th>登録IP</th>
-                        <th>権限</th>
-                        <th>容量 (GB)</th>
-                        <th>承認</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {overview.users.map((u: User & { ip: string }) => (
-                        <UserRow
-                          key={u.id}
-                          u={u}
-                          save={async (data: any) => {
-                            await api("/api/admin/users", "PATCH", data);
-                            await loadAdmin();
-                            if (u.id === user.id) await refreshMe();
-                          }}
-                          run={run}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
+                <div>
+                  <small>A8への保存待ち</small>
+                  <strong>{overview.metrics?.replicas ?? 0}</strong>
                 </div>
               </section>
+              <UserManager
+                request={api}
+                run={run}
+                onChange={async () => {
+                  await loadAdmin();
+                  await refreshMe();
+                }}
+              />
+              <VolumeManager request={api} run={run} />
               <AdminTools
                 users={overview.users}
                 reports={overview.reports}
@@ -891,18 +1121,29 @@ export function App() {
               </button>
             </section>
           )
-        ) : maintenanceUntil && maintenanceUntil > Date.now() && user?.level !== 4 ? (
+        ) : maintenanceUntil &&
+          maintenanceUntil > Date.now() &&
+          user?.level !== 4 ? (
           <section className="panel maintenance-view" role="status">
             <p className="eyebrow">SYSTEM MAINTENANCE</p>
             <h2>ただいまメンテナンス中です</h2>
-            <p>サービスの更新作業のため、ファイルの閲覧・転送を一時停止しています。</p>
-            <p className="muted">
-              再開予定: {new Date(maintenanceUntil).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}
+            <p>
+              サービスの更新作業のため、ファイルの閲覧・転送を一時停止しています。
             </p>
-            <p className="muted">保存済みファイルや途中まで転送されたデータは保持され、解除後に再開できます。</p>
+            <p className="muted">
+              再開予定:{" "}
+              {new Date(maintenanceUntil).toLocaleString("ja-JP", {
+                timeZone: "Asia/Tokyo",
+              })}
+            </p>
+            <p className="muted">
+              保存済みファイルや途中まで転送されたデータは保持され、解除後に再開できます。
+            </p>
             <div className="actions">
               <button onClick={() => void run(refreshMe)}>状態を再確認</button>
-              <button onClick={() => setAuthOpen(true)}>管理者としてログイン</button>
+              <button onClick={() => setAuthOpen(true)}>
+                管理者としてログイン
+              </button>
             </div>
           </section>
         ) : (
@@ -1009,14 +1250,24 @@ export function App() {
                   ↻ 更新
                 </button>
               </div>
-              {writable && filePolicy && (
+              {uploadable && filePolicy && (
                 <div className="upload-policy">
                   <PresetField
                     label="投稿からの保存期間"
                     value={retentionMinutes}
-                    onChange={setRetentionMinutes}
+                    onChange={rememberRetention}
+                    unlimited={!!user && [1, 3, 4].includes(user.level)}
                     max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
                   />
+                  <label className="upload-tags">
+                    タグ（カンマ区切り、10個まで）
+                    <input
+                      value={uploadTags}
+                      onChange={(e) => setUploadTags(e.target.value)}
+                      placeholder="minecraft, resourcepack"
+                      maxLength={329}
+                    />
+                  </label>
                   <span>
                     1分〜
                     {durationLabel(
@@ -1062,8 +1313,31 @@ export function App() {
                   onChange={(e) => run(() => upload(e.target.files))}
                 />
               </div>
-              <nav className="breadcrumb" aria-label="現在のフォルダ">
+              <nav
+                onDragOver={(e) => {
+                  if (
+                    writable &&
+                    e.dataTransfer.types.includes(
+                      "application/x-fileshare-items",
+                    )
+                  )
+                    e.preventDefault();
+                }}
+                onDrop={(e) => dropMove(e, parent)}
+                className="breadcrumb"
+                aria-label="現在のフォルダ"
+              >
                 <button
+                  onDragOver={(e) => {
+                    if (
+                      writable &&
+                      e.dataTransfer.types.includes(
+                        "application/x-fileshare-items",
+                      )
+                    )
+                      e.preventDefault();
+                  }}
+                  onDrop={(e) => dropMove(e, null)}
                   onClick={() => {
                     setParent(null);
                     setCrumbs([]);
@@ -1075,6 +1349,16 @@ export function App() {
                   <React.Fragment key={c.id}>
                     <span>/</span>
                     <button
+                      onDragOver={(e) => {
+                        if (
+                          writable &&
+                          e.dataTransfer.types.includes(
+                            "application/x-fileshare-items",
+                          )
+                        )
+                          e.preventDefault();
+                      }}
+                      onDrop={(e) => dropMove(e, c.id)}
                       onClick={() => {
                         setParent(c.id);
                         setCrumbs(crumbs.slice(0, n + 1));
@@ -1090,18 +1374,33 @@ export function App() {
                   <strong>{progress.name}</strong>
                   <span>
                     {progress.percent.toFixed(1)}% · {size(progress.speed)}/秒
+                    {progress.phase && ` · ${progress.phase}`}
                   </span>
                   <progress value={progress.percent} max={100} />
                   {transferPhase === "paused" ? (
-                    <button className="primary" onClick={() => run(() => upload(null, true))}>
+                    <button
+                      className="primary"
+                      onClick={() => run(() => upload(null, true))}
+                    >
                       ▶ 再開
                     </button>
                   ) : transferPhase === "uploading" ? (
-                    <button onClick={() => { stop.current = "pause"; activeRequest.current?.abort(); }}>
+                    <button
+                      onClick={() => {
+                        stop.current = "pause";
+                        activeRequest.current?.abort();
+                      }}
+                    >
                       Ⅱ 一時停止
                     </button>
-                  ) : <span>転送を終了中…</span>}
-                  <button className="danger" disabled={transferPhase === "cancelling"} onClick={cancelTransfer}>
+                  ) : (
+                    <span>転送を終了中…</span>
+                  )}
+                  <button
+                    className="danger"
+                    disabled={transferPhase === "cancelling"}
+                    onClick={cancelTransfer}
+                  >
                     キャンセル
                   </button>
                 </div>
@@ -1148,7 +1447,36 @@ export function App() {
                         i.name.toLowerCase().includes(query.toLowerCase()),
                       )
                       .map((i) => (
-                        <tr key={i.id}>
+                        <tr
+                          key={i.id}
+                          draggable={
+                            writable && matchMedia("(any-pointer:fine)").matches
+                          }
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData(
+                              "application/x-fileshare-items",
+                              JSON.stringify(
+                                selected.includes(i.id) ? selected : [i.id],
+                              ),
+                            );
+                            e.dataTransfer.effectAllowed = "move";
+                          }}
+                          onDragOver={(e) => {
+                            if (
+                              i.folder &&
+                              writable &&
+                              e.dataTransfer.types.includes(
+                                "application/x-fileshare-items",
+                              )
+                            ) {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }
+                          }}
+                          onDrop={(e) => {
+                            if (i.folder && writable) dropMove(e, i.id);
+                          }}
+                        >
                           <td data-label="選択">
                             {writable && (
                               <input
@@ -1178,6 +1506,8 @@ export function App() {
                                 <span>{i.name}</span>
                                 {!i.folder && (
                                   <small>
+                                    {i.storageState === "replicating" &&
+                                      "A1で利用可能・A8へ保存中 · "}
                                     {i.uploader_name && `${i.uploader_name} · `}
                                     {i.downloads != null &&
                                       `${compactCount(i.downloads)} DL`}
@@ -1265,7 +1595,8 @@ export function App() {
         </footer>
       </main>
       {task && (
-        <FullScreenPage variant="modal"
+        <FullScreenPage
+          variant="modal"
           onClose={() => {
             if (!busy) setTask(null);
           }}
@@ -1489,6 +1820,60 @@ export function App() {
           </section>
         </FullScreenPage>
       )}
+      {draggingFiles && (
+        <div className="drop-upload-overlay">
+          <div>
+            <FileIcon name="upload" />
+            <h2>ここにファイルをドロップ</h2>
+            <p>複数のファイルをまとめてアップロードできます</p>
+          </div>
+        </div>
+      )}
+      {dropFiles && (
+        <FullScreenPage variant="modal" onClose={() => setDropFiles(null)}>
+          <section className="screen-content panel drop-upload-confirm">
+            <h2>{dropFiles.length}ファイルをアップロード</h2>
+            <ul>
+              {dropFiles.map((f, n) => (
+                <li key={n}>
+                  {f.name} <small>{size(f.size)}</small>
+                </li>
+              ))}
+            </ul>
+            <PresetField
+              label="ドロップしたファイルの保存期間"
+              value={retentionMinutes}
+              onChange={rememberRetention}
+              max={Math.floor(
+                (filePolicy?.maxRetentionSeconds ?? 2592000) / 60,
+              )}
+              unlimited={!!user && [1, 3, 4].includes(user.level)}
+            />
+            <label>
+              タグ
+              <input
+                value={uploadTags}
+                onChange={(e) => setUploadTags(e.target.value)}
+                maxLength={329}
+              />
+            </label>
+            <div className="actions">
+              <button onClick={() => setDropFiles(null)}>キャンセル</button>
+              <button
+                className="primary"
+                disabled={busy || !dropFiles.length}
+                onClick={() => {
+                  const files = dropFiles;
+                  setDropFiles(null);
+                  void run(() => upload(files));
+                }}
+              >
+                アップロードを開始
+              </button>
+            </div>
+          </section>
+        </FullScreenPage>
+      )}
       {settings && (
         <FullScreenPage variant="modal" onClose={() => setSettings(null)}>
           <section
@@ -1504,6 +1889,10 @@ export function App() {
                 const d = new FormData(e.currentTarget);
                 update({
                   name: d.get("name"),
+                  tags: String(d.get("tags") ?? "")
+                    .split(/[,、]/)
+                    .map((t) => t.trim())
+                    .filter(Boolean),
                   visibility: d.get("visibility"),
                   min_level: Number(d.get("min_level")),
                   ...(d.get("retentionMinutes")
@@ -1553,6 +1942,7 @@ export function App() {
                     key={settings.id}
                     label="投稿からの保存期間"
                     name="retentionMinutes"
+                    unlimited={!!user && [1, 3, 4].includes(user.level)}
                     keepCurrent
                     max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
                   />
@@ -1564,6 +1954,14 @@ export function App() {
                   </small>
                 </div>
               )}
+              <label>
+                タグ（カンマ区切り）
+                <input
+                  name="tags"
+                  defaultValue={(settings as any).tags?.join(", ")}
+                  maxLength={329}
+                />
+              </label>
               <button className="primary full" type="submit">
                 設定を保存
               </button>
@@ -1600,7 +1998,8 @@ export function App() {
         </FullScreenPage>
       )}
       {preview && (
-        <FullScreenPage variant="modal"
+        <FullScreenPage
+          variant="modal"
           onClose={() => {
             setPreview(null);
             setPreviewUrl("");

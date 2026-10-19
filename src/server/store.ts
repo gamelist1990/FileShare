@@ -1,3 +1,4 @@
+import { decryptKey } from "./ai-key";
 import { Database } from "bun:sqlite";
 import {
   mkdirSync,
@@ -60,6 +61,7 @@ export class Store {
   secret: string;
   blobDir: string;
   tempDir: string;
+  aiKey = process.env.FILESHARE_AI_KEY ?? "";
   cacheDir: string;
   constructor(public config: Config) {
     this.filePolicy = {
@@ -109,11 +111,23 @@ export class Store {
       CREATE TABLE IF NOT EXISTS item_meta (item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE, uploaded_by TEXT REFERENCES users(id), expires_at INTEGER, downloads INTEGER NOT NULL DEFAULT 0, purged INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS upload_policies (upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE, retention_seconds INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS download_receipts (hash TEXT PRIMARY KEY, item_id TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS edge_files(item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,pending INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS storage_volumes(id TEXT PRIMARY KEY,label TEXT NOT NULL,path TEXT UNIQUE NOT NULL,capacity INTEGER NOT NULL,enabled INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS file_locations(item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,volume_id TEXT NOT NULL REFERENCES storage_volumes(id));
+      CREATE TABLE IF NOT EXISTS upload_volumes(upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE,volume_id TEXT NOT NULL REFERENCES storage_volumes(id));
+      CREATE TABLE IF NOT EXISTS item_tags(item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,tag TEXT NOT NULL,PRIMARY KEY(item_id,tag));
+      CREATE INDEX IF NOT EXISTS tags_lookup ON item_tags(tag,item_id);
+      CREATE TABLE IF NOT EXISTS upload_tags(upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE,tags TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS item_meta_uploader ON item_meta(uploaded_by);
       CREATE INDEX IF NOT EXISTS item_expiry ON item_meta(expires_at) WHERE purged=0;
       CREATE INDEX IF NOT EXISTS audit_upload_detail ON audit(detail) WHERE action='upload';
       INSERT OR IGNORE INTO item_meta(item_id,uploaded_by) SELECT i.id,COALESCE((SELECT a.user_id FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='upload' AND a.detail=i.id ORDER BY a.id DESC LIMIT 1),i.owner) FROM items i WHERE i.folder=0 AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id);
     `);
+    config.capacityBytes += (
+      this.db
+        .query("SELECT COALESCE(SUM(capacity),0) AS n FROM storage_volumes")
+        .get() as { n: number }
+    ).n;
     const profileColumns = new Set(
       (
         this.db.query("PRAGMA table_info(profiles)").all() as { name: string }[]
@@ -156,6 +170,10 @@ export class Store {
       .get() as { value: string } | null;
     if (savedAI)
       Object.assign(config.ai, validateAISettings(JSON.parse(savedAI.value)));
+    const savedKey = this.db
+      .query("SELECT value FROM admin_settings WHERE key='ai-key'")
+      .get() as { value: string } | null;
+    if (savedKey) this.aiKey = decryptKey(savedKey.value, this.secret);
     const savedMaintenance = this.db
       .query("SELECT value FROM admin_settings WHERE key='maintenance'")
       .get() as { value: string } | null;
@@ -208,6 +226,22 @@ export class Store {
       .get(key, now + window, now, now, now + window) as { count: number };
     return row.count <= max;
   }
+  blobPath(id: string) {
+    const location = this.db
+      .query(
+        "SELECT v.path FROM file_locations l JOIN storage_volumes v ON v.id=l.volume_id WHERE l.item_id=?",
+      )
+      .get(id) as { path: string } | null;
+    return join(location?.path ?? this.blobDir, id);
+  }
+  uploadPath(id: string) {
+    const v = this.db
+      .query(
+        "SELECT v.path FROM upload_volumes u JOIN storage_volumes v ON v.id=u.volume_id WHERE u.upload_id=?",
+      )
+      .get(id) as { path: string } | null;
+    return v ? join(v.path, id) : this.blobPath(id);
+  }
   usage(owner?: string) {
     const used = (
       this.db
@@ -219,7 +253,7 @@ export class Store {
     const reserved = (
       this.db
         .query(
-          `SELECT COALESCE(sum(size),0) AS n FROM uploads ${owner ? "WHERE owner=?" : ""}`,
+          `SELECT COALESCE(sum(size),0) AS n FROM uploads WHERE NOT EXISTS(SELECT 1 FROM items i WHERE i.id=uploads.id) ${owner ? "AND owner=?" : ""}`,
         )
         .get(...(owner ? [owner] : [])) as { n: number }
     ).n;

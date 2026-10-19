@@ -1,0 +1,29 @@
+[Unit]
+Description=FileShare A1 temporary upload spool
+After=network-online.target
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/.local/opt/fileshare-edge-spool
+EnvironmentFile=/home/ubuntu/.config/fileshare-edge/spool.env
+ExecStart=/usr/bin/python3 /home/ubuntu/.local/opt/fileshare-edge-spool/a1-edge-spool.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/.local/share/fileshare-edge-spool
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+MemoryMax=512M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

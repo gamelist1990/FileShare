@@ -45,6 +45,7 @@ export function PresetField({
   max,
   name,
   keepCurrent = false,
+  unlimited = false,
 }: {
   label: string;
   kind?: "duration" | "size";
@@ -54,6 +55,7 @@ export function PresetField({
   max: number;
   name?: string;
   keepCurrent?: boolean;
+  unlimited?: boolean;
 }) {
   const id = useId();
   const [internal, setInternal] = useState<number | null>(defaultValue);
@@ -78,6 +80,7 @@ export function PresetField({
   const choices: (readonly [number, string])[] = [
     ...(kind === "duration" ? durations : sizes),
   ].filter(([n]) => n <= max);
+  if (unlimited && kind === "duration") choices.unshift([0, "無期限"]);
   if (!choices.some(([n]) => n === max))
     choices.push([
       max,

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 let nextScreen = 0;
@@ -16,6 +16,41 @@ export function FullScreenPage({
   const root = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
+  useLayoutEffect(() => {
+    if (variant !== "modal") return;
+    const dialog = root.current;
+    const content = dialog?.querySelector<HTMLElement>(".screen-content");
+    if (!dialog || !content) return;
+
+    const positionCloseButton = () => {
+      const rect = content.getBoundingClientRect();
+      dialog.style.setProperty(
+        "--screen-modal-close-top",
+        `${Math.round(rect.top + 12)}px`,
+      );
+      dialog.style.setProperty(
+        "--screen-modal-close-right",
+        `${Math.round(window.innerWidth - rect.right + 12)}px`,
+      );
+    };
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(positionCloseButton);
+    observer?.observe(content);
+    window.addEventListener("resize", positionCloseButton);
+    window.visualViewport?.addEventListener("resize", positionCloseButton);
+    window.visualViewport?.addEventListener("scroll", positionCloseButton);
+    positionCloseButton();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", positionCloseButton);
+      window.visualViewport?.removeEventListener("resize", positionCloseButton);
+      window.visualViewport?.removeEventListener("scroll", positionCloseButton);
+      dialog.style.removeProperty("--screen-modal-close-top");
+      dialog.style.removeProperty("--screen-modal-close-right");
+    };
+  }, [variant]);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const app = document.getElementById("root");
@@ -48,7 +83,8 @@ export function FullScreenPage({
       role={variant === "modal" ? "dialog" : undefined}
       aria-modal={variant === "modal" ? true : undefined}
       onClick={(e) => {
-        if (variant === "modal" && e.target === e.currentTarget) close.current();
+        if (variant === "modal" && e.target === e.currentTarget)
+          close.current();
       }}
       onKeyDown={(e) => {
         if (e.key === "Escape") close.current();
@@ -63,8 +99,14 @@ export function FullScreenPage({
         </span>
       </header>
       {variant === "modal" && (
-        <button type="button" className="screen-modal-close"
-          onClick={() => close.current()} aria-label="一覧に戻る">✕</button>
+        <button
+          type="button"
+          className="screen-modal-close"
+          onClick={() => close.current()}
+          aria-label="一覧に戻る"
+        >
+          ✕
+        </button>
       )}
       {children}
     </div>,

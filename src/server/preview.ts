@@ -76,7 +76,7 @@ export class Previews {
             "-threads",
             String(config.threads),
             "-i",
-            join(this.store.blobDir, item.id),
+            this.store.blobPath(item.id),
             "-t",
             String(config.maxSeconds),
             "-map",

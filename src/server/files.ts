@@ -18,7 +18,12 @@ export function ranking(store: Store, user: User | null, admin = false) {
       .map((i) => (admin ? i : safeItem(store, i))),
   };
 }
-export function recordDownload(store: Store, id: string, ticket: string) {
+export function recordDownload(
+  store: Store,
+  id: string,
+  ticket: string,
+  ttl = 600000,
+) {
   if (!store.filePolicy.trackDownloads) return;
   store.db.transaction(() => {
     if (
@@ -26,7 +31,7 @@ export function recordDownload(store: Store, id: string, ticket: string) {
         .query(
           "INSERT OR IGNORE INTO download_receipts VALUES (?,?,?) RETURNING hash",
         )
-        .get(digestToken(ticket), id, Date.now() + 600000)
+        .get(digestToken(ticket), id, Date.now() + ttl)
     )
       return;
     store.db.run("UPDATE item_meta SET downloads=downloads+1 WHERE item_id=?", [
@@ -88,7 +93,8 @@ export async function fileAdminAction(
     )
       throw new HttpError(400, "ダウンロード数または投稿者が不正です");
     let expiry = item.expires_at ?? null;
-    if (body.retentionSeconds !== undefined) {
+    if (body.retentionSeconds === 0) expiry = null;
+    else if (body.retentionSeconds !== undefined) {
       expiry =
         item.created +
         retentionSeconds(

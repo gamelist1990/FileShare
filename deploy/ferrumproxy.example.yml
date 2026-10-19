@@ -14,5 +14,14 @@ listeners:
     targets:
       - host: 100.69.76.52
         tcp: 8100
+    # The spool service is a separate A1-local backend. Because this listener
+    # uses haproxy: true, the A1 service must accept PROXY protocol v2.
+    httpMappings:
+      - hostname: share.pexserver.com
+        path: /edge-upload
+        target: { host: 127.0.0.1, tcp: 8124 }
+      - hostname: share.pexserver.com
+        path: /
+        target: { host: 100.69.76.52, tcp: 8100 }
 # If port 443 is already shared, add the host to the existing domain routing
 # rather than adding a second listener on the same address/port.

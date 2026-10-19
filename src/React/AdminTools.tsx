@@ -31,6 +31,7 @@ const actionNames: Record<string, string> = {
 export function AdminTools({ users, reports, refresh, request, run }: Props) {
   const [selected, setSelected] = useState<string[]>([]),
     [busy, setBusy] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
   const [registration, setRegistration] = useState<any>(null);
   const [ai, setAI] = useState<any>(null),
     [invites, setInvites] = useState<any[]>([]);
@@ -44,6 +45,26 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
     [day, setDay] = useState(today());
   const [entries, setEntries] = useState<any[]>([]),
     [next, setNext] = useState<number | null>(null);
+  useEffect(() => {
+    if (!ai?.endpoint) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void request("/api/admin/ai/models", "POST", {
+        endpoint: ai.endpoint,
+        apiKey: ai.apiKey,
+      })
+        .then((d) => {
+          if (!cancelled) setModels(d.models);
+        })
+        .catch(() => {
+          if (!cancelled) setModels([]);
+        });
+    }, 800);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [ai?.endpoint, ai?.apiKey, ai?.keyConfigured]);
   const pending = users.filter((u) => u.status === "pending");
   const loadInvites = async () =>
     setInvites((await request("/api/admin/staff-invites")).invites);
@@ -144,9 +165,13 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
-                    const result = await request("/api/admin/settings", "PATCH", {
-                      maintenance: { enabled: false },
-                    });
+                    const result = await request(
+                      "/api/admin/settings",
+                      "PATCH",
+                      {
+                        maintenance: { enabled: false },
+                      },
+                    );
                     setMaintenanceUntil(result.maintenanceUntil);
                     setNotice("メンテナンスモードを解除しました");
                   })
@@ -164,7 +189,9 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                   min="1"
                   max="1440"
                   value={maintenanceMinutes}
-                  onChange={(e) => setMaintenanceMinutes(Number(e.target.value))}
+                  onChange={(e) =>
+                    setMaintenanceMinutes(Number(e.target.value))
+                  }
                 />
               </label>
               <button
@@ -172,12 +199,16 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
-                    const result = await request("/api/admin/settings", "PATCH", {
-                      maintenance: {
-                        enabled: true,
-                        minutes: maintenanceMinutes,
+                    const result = await request(
+                      "/api/admin/settings",
+                      "PATCH",
+                      {
+                        maintenance: {
+                          enabled: true,
+                          minutes: maintenanceMinutes,
+                        },
                       },
-                    });
+                    );
                     setMaintenanceUntil(result.maintenanceUntil);
                     setNotice("メンテナンスモードを開始しました");
                   })
@@ -524,13 +555,69 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
             </label>
             <div className="admin-form-grid">
               <label>
-                モデル名
+                OpenAI互換 Endpoint
                 <input
-                  value={ai.model}
-                  maxLength={120}
+                  type="url"
+                  value={ai.endpoint}
                   required
-                  onChange={(e) => setAI({ ...ai, model: e.target.value })}
+                  onChange={(e) => setAI({ ...ai, endpoint: e.target.value })}
                 />
+              </label>
+              <label>
+                APIキー
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={ai.apiKey ?? ""}
+                  placeholder={
+                    ai.keyConfigured ? "設定済み（空欄で維持）" : "未設定"
+                  }
+                  onChange={(e) =>
+                    setAI({ ...ai, apiKey: e.target.value || undefined })
+                  }
+                />
+              </label>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  act(async () => {
+                    setModels(
+                      (
+                        await request("/api/admin/ai/models", "POST", {
+                          endpoint: ai.endpoint,
+                          apiKey: ai.apiKey,
+                        })
+                      ).models,
+                    );
+                    setNotice("モデル一覧を取得しました");
+                  })
+                }
+              >
+                モデル一覧を取得
+              </button>
+              {ai.keyConfigured && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAI({ ...ai, apiKey: "", keyConfigured: false })
+                  }
+                >
+                  保存時にAPIキーを削除
+                </button>
+              )}
+              <label>
+                モデル名
+                <select
+                  value={ai.model}
+                  onChange={(e) => setAI({ ...ai, model: e.target.value })}
+                >
+                  {[...new Set([ai.model, ...models])].map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 監視間隔（秒）

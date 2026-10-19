@@ -12,6 +12,11 @@
       "::1"
     ]
   },
+  "edgeSpool": {
+    "enabled": false,
+    "trustedIp": "",
+    "path": "/edge-upload"
+  },
   "registration": {
     "enabled": true,
     "accountsPerIp": 1,

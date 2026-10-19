@@ -211,7 +211,8 @@ export function uploaderRanking(store: Store, user: User | null) {
   return {
     users: [...totals.values()]
       .sort((a, b) => (b.downloads ?? b.files) - (a.downloads ?? a.files))
-      .slice(0, 50),
+      .slice(0, 50)
+      .map((u) => ({ ...u, ...profile(store, u.id) })),
   };
 }
 

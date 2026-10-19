@@ -1,3 +1,5 @@
+import { assignVolume, moveDurable } from "./volumes";
+import { itemTags, setItemTags, validateTags } from "./tags";
 import { gunzipSync, createGzip } from "node:zlib";
 import { compressibleName, acceptsGzip } from "../shared/compression";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -53,6 +55,12 @@ export const safeItem = (store: Store, i: Item) => {
   } = i;
   return {
     ...rest,
+    tags: itemTags(store, i.id),
+    storageState: store.db
+      .query("SELECT 1 FROM edge_files WHERE item_id=? AND pending=1")
+      .get(i.id)
+      ? "replicating"
+      : "stored",
     uploaded_by: store.filePolicy.showUploaders ? (uploaded_by ?? null) : null,
     uploader_name: store.filePolicy.showUploaders
       ? (uploader_name ?? null)
@@ -85,10 +93,7 @@ export function listItems(
     writable: canWrite(user, owner, store),
     uploadable: canUpload(store, user, owner),
     usage: store.usage(owner ?? undefined),
-    capacity:
-      owner && store.user(owner)!.level !== 4
-        ? store.user(owner)!.quota
-        : store.config.capacityBytes,
+    capacity: owner ? store.user(owner)!.quota : store.config.capacityBytes,
     parent: parent ? safeItem(store, readItem(store, user, parent)) : null,
   };
 }
@@ -102,7 +107,7 @@ function reserve(store: Store, user: User, owner: string | null, size: number) {
   if (owner) {
     const usage = store.usage(owner),
       u = store.user(owner)!;
-    if (user.level !== 4 && usage.used + usage.reserved + size > u.quota)
+    if (usage.used + usage.reserved + size > u.quota)
       throw new HttpError(507, "個人ストレージの容量上限です");
   }
 }
@@ -116,8 +121,12 @@ export function initUpload(store: Store, user: User | null, data: any) {
   if (size > store.filePolicy.maxFileBytes)
     throw new HttpError(413, "1ファイルのアップロード上限を超えています");
   const retention = retentionSeconds(
-    data.retentionSeconds ?? store.filePolicy.maxRetentionSeconds,
+    data.retentionSeconds ??
+      (dest.owner && [1, 3, 4].includes(u.level)
+        ? 0
+        : store.filePolicy.maxRetentionSeconds),
     store.filePolicy.maxRetentionSeconds,
+    [1, 3, 4].includes(u.level),
   );
   const id = randomUUID();
   store.db.transaction(() => {
@@ -132,7 +141,9 @@ export function initUpload(store: Store, user: User | null, data: any) {
     if (
       (
         store.db
-          .query("SELECT count(*) AS n FROM uploads WHERE user_id=?")
+          .query(
+            "SELECT count(*) AS n FROM uploads WHERE user_id=? AND NOT EXISTS(SELECT 1 FROM items i WHERE i.id=uploads.id)",
+          )
           .get(u.id) as { n: number }
       ).n >= 5
     )
@@ -150,6 +161,11 @@ export function initUpload(store: Store, user: User | null, data: any) {
       Date.now() + UPLOAD_RESERVATION_MS,
     ]);
     store.db.run("INSERT INTO upload_policies VALUES (?,?)", [id, retention]);
+    assignVolume(store, id, size);
+    store.db.run("INSERT INTO upload_tags VALUES (?,?)", [
+      id,
+      JSON.stringify(validateTags(data.tags ?? [])),
+    ]);
   })();
   return {
     id,
@@ -160,7 +176,34 @@ export function initUpload(store: Store, user: User | null, data: any) {
   };
 }
 const busy = new Set<string>();
-export function getUpload(store: Store, user: User | null, id: string): any {
+export function getUpload(
+  store: Store,
+  user: User | null,
+  id: string,
+  replication = false,
+): any {
+  if (
+    replication &&
+    store.db
+      .query("SELECT 1 FROM edge_files WHERE item_id=? AND pending=1")
+      .get(id)
+  ) {
+    const row = store.db
+      .query("SELECT * FROM uploads WHERE id=?")
+      .get(id) as any;
+    if (!row) throw new HttpError(404, "転送が見つかりません");
+    store.db.run("UPDATE uploads SET expires=? WHERE id=?", [
+      Date.now() + UPLOAD_RESERVATION_MS,
+      id,
+    ]);
+    row.receipt =
+      store.db
+        .query(
+          "SELECT start,length,hash FROM upload_blocks WHERE upload_id=? ORDER BY start DESC LIMIT 1",
+        )
+        .get(id) ?? null;
+    return row;
+  }
   const u = requireUser(store.user(requireUser(user).id)),
     row = store.db
       .query("SELECT * FROM uploads WHERE id=? AND user_id=? AND expires>?")
@@ -206,8 +249,9 @@ export async function commitUploadBlock(
   encoding: string | undefined,
   maximum = MAX_CHUNK,
   expectedLength?: number,
+  replication = false,
 ) {
-  const row = getUpload(store, user, id);
+  const row = getUpload(store, user, id, replication);
   if (!Number.isSafeInteger(offset) || offset !== row.offset)
     throw new HttpError(409, "転送位置を再確認してください");
   if (encoded.length > maximum)
@@ -248,7 +292,7 @@ export async function commitUploadBlock(
     }
     await file.sync();
     // Permission/quota changes during disk I/O cannot commit an unauthorized block.
-    getUpload(store, user, id);
+    getUpload(store, user, id, replication);
     store.db.transaction(() => {
       store.db.run(
         "INSERT INTO upload_blocks(upload_id,start,length,hash) VALUES (?,?,?,?)",
@@ -297,24 +341,40 @@ export async function completeUpload(
   user: User | null,
   id: string,
   ip: string,
+  replication = false,
 ) {
   if (busy.has(id)) throw new HttpError(409, "転送中です");
-  const row = getUpload(store, user, id);
+  const row = getUpload(store, user, id, replication);
   if (row.offset !== row.size)
     throw new HttpError(409, "転送が完了していません");
   busy.add(id);
   const source = join(store.tempDir, id),
-    target = join(store.blobDir, id);
+    target = store.uploadPath(id);
   try {
     if (!row.size && !existsSync(source) && !existsSync(target))
       await (await open(source, "wx", 0o600)).close();
-    if (existsSync(source)) await rename(source, target);
+    if (existsSync(source)) await moveDurable(source, target);
     const file = await stat(target);
     if (file.size !== row.size)
       throw new HttpError(409, "転送データのサイズが一致しません");
     try {
       store.db.transaction(() => {
-        getUpload(store, user, id);
+        getUpload(store, user, id, replication);
+        if (
+          store.db.query("SELECT 1 FROM edge_files WHERE item_id=?").get(id)
+        ) {
+          const volume = store.db
+            .query("SELECT volume_id FROM upload_volumes WHERE upload_id=?")
+            .get(id) as any;
+          if (volume)
+            store.db.run("INSERT OR REPLACE INTO file_locations VALUES (?,?)", [
+              id,
+              volume.volume_id,
+            ]);
+          store.db.run("UPDATE edge_files SET pending=0 WHERE item_id=?", [id]);
+          store.db.run("DELETE FROM uploads WHERE id=?", [id]);
+          return;
+        }
         const policy = store.db
           .query(
             "SELECT retention_seconds FROM upload_policies WHERE upload_id=?",
@@ -326,6 +386,7 @@ export async function completeUpload(
             store.filePolicy.maxRetentionSeconds,
           ),
           store.filePolicy.maxRetentionSeconds,
+          [1, 3, 4].includes(store.user(row.user_id)!.level),
         );
         const created = Date.now();
         store.db.run(
@@ -343,15 +404,31 @@ export async function completeUpload(
         );
         store.db.run(
           "INSERT INTO item_meta(item_id,uploaded_by,expires_at) VALUES (?,?,?)",
-          [id, row.user_id, created + retention * 1000],
+          [
+            id,
+            row.user_id,
+            retention === 0 ? null : created + retention * 1000,
+          ],
         );
+        const volume = store.db
+          .query("SELECT volume_id FROM upload_volumes WHERE upload_id=?")
+          .get(id) as any;
+        if (volume)
+          store.db.run("INSERT OR REPLACE INTO file_locations VALUES (?,?)", [
+            id,
+            volume.volume_id,
+          ]);
+        const tagRow = store.db
+          .query("SELECT tags FROM upload_tags WHERE upload_id=?")
+          .get(id) as any;
+        if (tagRow) setItemTags(store, id, JSON.parse(tagRow.tags));
         store.db.run("DELETE FROM uploads WHERE id=?", [id]);
       })();
     } catch (e) {
-      await rename(target, source);
+      await moveDurable(target, source);
       throw e;
     }
-    store.audit(ip, user, "upload", id);
+    if (!replication) store.audit(ip, user, "upload", id);
     return safeItem(store, store.item(id)!);
   } finally {
     busy.delete(id);
@@ -363,13 +440,19 @@ export async function cancelUpload(
   id: string,
 ) {
   if (busy.has(id)) throw new HttpError(409, "転送中です");
+  if (
+    store.db
+      .query("SELECT 1 FROM edge_files WHERE item_id=? AND pending=1")
+      .get(id)
+  )
+    throw new HttpError(409, "公開済みファイルは一覧から削除してください");
   getUpload(store, user, id);
   busy.add(id);
   try {
     await unlink(join(store.tempDir, id)).catch((e) => {
       if (e.code !== "ENOENT") throw e;
     });
-    await unlink(join(store.blobDir, id)).catch((e) => {
+    await unlink(store.uploadPath(id)).catch((e) => {
       if (e.code !== "ENOENT") throw e;
     });
     store.db.run("DELETE FROM uploads WHERE id=?", [id]);
@@ -403,21 +486,29 @@ export function updateItem(
   ip: string,
 ) {
   const item = writeItem(store, user, id);
+  const tags = data.tags === undefined ? undefined : validateTags(data.tags);
   const name = data.name === undefined ? item.name : validName(data.name);
   const visibility = data.visibility ?? item.visibility;
   const level = data.min_level ?? item.min_level;
-  let expiry: number | undefined;
+  let expiry: number | null | undefined;
   if (data.retentionSeconds !== undefined) {
     if (item.folder)
       throw new HttpError(400, "ファイルの保存期間を指定してください");
+    const duration = retentionSeconds(
+      data.retentionSeconds,
+      store.filePolicy.maxRetentionSeconds,
+      [1, 3, 4].includes(user!.level),
+    );
     expiry =
-      item.created +
-      retentionSeconds(
-        data.retentionSeconds,
-        store.filePolicy.maxRetentionSeconds,
-      ) *
-        1000;
-    if (expiry <= Date.now())
+      duration === 0
+        ? null
+        : item.created +
+          retentionSeconds(
+            data.retentionSeconds,
+            store.filePolicy.maxRetentionSeconds,
+          ) *
+            1000;
+    if (expiry !== null && expiry <= Date.now())
       throw new HttpError(400, "指定した保存期間は投稿から既に経過しています");
   }
   if (
@@ -450,6 +541,7 @@ export function updateItem(
     keyHash = digestToken(key);
   }
   store.db.transaction(() => {
+    if (tags) setItemTags(store, id, tags);
     store.db.run(
       "UPDATE items SET name=?,parent=?,visibility=?,min_level=?,key_hash=? WHERE id=?",
       [
@@ -595,12 +687,19 @@ async function performMaintenance(
         if (!i.deleted) throw new HttpError(409, "復元済みの子項目があります");
       for (const i of tree) {
         if (!i.folder) {
-          await unlink(join(store.blobDir, i.id)).catch((e) => {
+          if (busy.has(i.id))
+            throw new HttpError(
+              409,
+              "転送データを保存中です。再試行してください",
+            );
+          await unlink(join(store.tempDir, i.id)).catch(() => {});
+          await unlink(store.blobPath(i.id)).catch((e) => {
             if (e.code !== "ENOENT") throw e;
           });
           await unlink(join(store.cacheDir, i.id + ".mp4")).catch(() => {});
         }
         store.db.transaction(() => {
+          store.db.run("DELETE FROM uploads WHERE id=?", [i.id]);
           store.db.run("DELETE FROM grants WHERE item_id=?", [i.id]);
           store.db.run("DELETE FROM items WHERE id=?", [i.id]);
         })();
@@ -624,13 +723,18 @@ export async function cleanup(store: Store, full = true) {
       .all(now) as { item_id: string }[]) {
       if (busy.has(row.item_id)) continue;
       for (const path of [
-        join(store.blobDir, row.item_id),
+        store.blobPath(row.item_id),
+        join(store.tempDir, row.item_id),
         join(store.cacheDir, row.item_id + ".mp4"),
       ])
         await unlink(path).catch((e) => {
           if (e.code !== "ENOENT") throw e;
         });
       store.db.transaction(() => {
+        store.db.run("DELETE FROM uploads WHERE id=?", [row.item_id]);
+        store.db.run("UPDATE edge_files SET pending=0 WHERE item_id=?", [
+          row.item_id,
+        ]);
         store.db.run("UPDATE item_meta SET purged=1 WHERE item_id=?", [
           row.item_id,
         ]);
@@ -644,11 +748,13 @@ export async function cleanup(store: Store, full = true) {
       expired++;
     }
     for (const row of store.db
-      .query("SELECT id FROM uploads WHERE expires<?")
+      .query(
+        "SELECT id FROM uploads WHERE expires<? AND NOT EXISTS(SELECT 1 FROM edge_files e WHERE e.item_id=uploads.id AND e.pending=1)",
+      )
       .all(now) as { id: string }[]) {
       if (busy.has(row.id)) continue;
       await unlink(join(store.tempDir, row.id)).catch(() => {});
-      await unlink(join(store.blobDir, row.id)).catch(() => {});
+      await unlink(store.uploadPath(row.id)).catch(() => {});
       store.db.run("DELETE FROM uploads WHERE id=?", [row.id]);
       uploads++;
     }
@@ -661,17 +767,26 @@ export async function cleanup(store: Store, full = true) {
       }
     }
     // Never delete registered blobs, including trash or an upload awaiting finalization.
-    for (const file of await readdir(store.blobDir)) {
-      if (!/^[a-f0-9-]{36}$/.test(file) || busy.has(file)) continue;
-      if (
-        !store.db
-          .query(
-            "SELECT 1 FROM items WHERE id=? UNION SELECT 1 FROM uploads WHERE id=?",
-          )
-          .get(file, file)
-      ) {
-        await unlink(join(store.blobDir, file));
-        orphans++;
+    for (const dir of [
+      store.blobDir,
+      ...(
+        store.db.query("SELECT path FROM storage_volumes").all() as {
+          path: string;
+        }[]
+      ).map((v) => v.path),
+    ]) {
+      for (const file of await readdir(dir).catch(() => [])) {
+        if (!/^[a-f0-9-]{36}$/.test(file) || busy.has(file)) continue;
+        if (
+          !store.db
+            .query(
+              "SELECT 1 FROM items WHERE id=? UNION SELECT 1 FROM uploads WHERE id=?",
+            )
+            .get(file, file)
+        ) {
+          await unlink(join(dir, file));
+          orphans++;
+        }
       }
     }
     store.db.run("DELETE FROM sessions WHERE expires<?", [now]);

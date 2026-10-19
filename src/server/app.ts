@@ -1,3 +1,10 @@
+import {
+  pendingEdge,
+  publishEdge,
+  contentLocation,
+  authorizeContent,
+} from "./edge-files";
+import { searchPublic } from "./search";
 import { socialHtml } from "./social";
 import {
   profile,
@@ -9,9 +16,16 @@ import {
 } from "./community";
 import { previewKind } from "../shared/preview";
 import { attachUploadPipeline } from "./upload-pipeline";
+import {
+  createEdgeUploadTicket,
+  loadEdgeSecret,
+  verifyEdgeRequestSignature,
+} from "./edge-auth";
+import { blockBytesForSize, MAX_BLOCK_BYTES } from "../shared/pipeline";
 import { gzipSync } from "node:zlib";
 import { acceptsGzip, compressibleName } from "../shared/compression";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { readFile, stat, readdir, open as openFile } from "node:fs/promises";
 import { Store, type User, type Item } from "./store";
@@ -23,13 +37,15 @@ import {
   readItem,
   canRead,
 } from "./policy";
-import { sessionUser, publicUser, authRoute } from "./auth";
+import { sessionUser, publicUser, authRoute, cookieValue } from "./auth";
 import { createTransport } from "./transport";
 import {
   readBody,
   listItems,
   initUpload,
   getUpload,
+  leaseUpload,
+  commitUploadBlock,
   appendChunk,
   completeUpload,
   cancelUpload,
@@ -45,7 +61,11 @@ import {
 } from "./storage";
 import { Previews } from "./preview";
 import { startMonitor } from "./monitor";
-import { seal, open as openEnvelope } from "@pexserver/secure-envelope";
+import {
+  seal,
+  digestToken,
+  open as openEnvelope,
+} from "@pexserver/secure-envelope";
 import { ASSETS } from "../generated/v2assets";
 import { adminAction } from "./admin";
 import { ranking, recordDownload } from "./files";
@@ -72,6 +92,7 @@ export async function createApp(config: Config) {
   const store = new Store(config),
     previews = new Previews(store),
     bandwidth = new Bandwidth(config.rate.maxBytesPerSecond),
+    edgeSecret = config.edgeSpool.enabled ? loadEdgeSecret() : null,
     active = new Map<string, number>();
   let totalTransfers = 0,
     globalWindow = Date.now(),
@@ -106,6 +127,30 @@ export async function createApp(config: Config) {
     });
     res.end(JSON.stringify(data));
   };
+  const edgeInfo = (
+    row: any,
+    user: User | null,
+    ip: string,
+    session: string,
+  ) => {
+    if (!edgeSecret || !user || !isIP(ip)) return undefined;
+    const ticket = createEdgeUploadTicket(edgeSecret, {
+      v: 1,
+      scope: "edge-upload",
+      id: row.id,
+      userId: user.id,
+      session: digestToken(session),
+      clientIp: ip,
+      size: row.size,
+      blockBytes: blockBytesForSize(row.size),
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    });
+    return {
+      path: config.edgeSpool.path + "/" + row.id,
+      ticket,
+      blockBytes: blockBytesForSize(row.size),
+    };
+  };
   const server = http.createServer(
     {
       maxHeaderSize: 16_384,
@@ -134,17 +179,23 @@ export async function createApp(config: Config) {
       try {
         if (!ip) throw new HttpError(403, "接続情報が不正です");
         req.setTimeout(90_000, () => req.destroy());
-        if (Date.now() - globalWindow >= 60_000) {
-          globalWindow = Date.now();
-          globalRequests = 0;
-        }
-        if (++globalRequests > config.rate.globalRequestsPerMinute)
-          throw new HttpError(429, "サーバーが混雑しています");
-        if (
-          !store.limit("request:" + ip, config.rate.requestsPerMinute, 60_000)
-        ) {
-          store.audit(ip, null, "rate.block");
-          throw new HttpError(429, "リクエストが多すぎます");
+        const trustedInternal =
+          config.edgeSpool.enabled &&
+          ip === config.edgeSpool.trustedIp &&
+          req.url?.startsWith("/api/internal/edge-sync/");
+        if (!trustedInternal) {
+          if (Date.now() - globalWindow >= 60_000) {
+            globalWindow = Date.now();
+            globalRequests = 0;
+          }
+          if (++globalRequests > config.rate.globalRequestsPerMinute)
+            throw new HttpError(429, "サーバーが混雑しています");
+          if (
+            !store.limit("request:" + ip, config.rate.requestsPerMinute, 60_000)
+          ) {
+            store.audit(ip, null, "rate.block");
+            throw new HttpError(429, "リクエストが多すぎます");
+          }
         }
         const url = new URL(req.url ?? "/", config.origin),
           path = url.pathname,
@@ -173,6 +224,7 @@ export async function createApp(config: Config) {
               store.registrationPolicy.publicRegistration,
             autoApprove: store.registrationPolicy.autoApprove,
             pipeline: "fileshare-upload-v2",
+            edgeSpool: config.edgeSpool.enabled,
             setupRequired: !store.db
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
               .get(),
@@ -192,7 +244,10 @@ export async function createApp(config: Config) {
           user?.level !== 4 &&
           !path.startsWith("/api/auth/")
         )
-          throw new HttpError(503, "メンテナンス中です。管理者以外は操作できません");
+          throw new HttpError(
+            503,
+            "メンテナンス中です。管理者以外は操作できません",
+          );
         if (path === "/healthz" && method === "GET") {
           json(res, 200, { ok: true });
           return;
@@ -280,8 +335,24 @@ export async function createApp(config: Config) {
             !["text", "markdown"].includes(previewKind(item.name))
           )
             throw new HttpError(400, "テキスト形式を選択してください");
+          if (edgeSecret && config.edgeSpool.enabled) {
+            res.writeHead(307, {
+              Location: contentLocation(
+                store,
+                edgeSecret,
+                item,
+                ip,
+                user,
+                cookieValue(req.headers.cookie, "fs_session"),
+                false,
+                null,
+              ).replace("/content?", "/text?"),
+            });
+            res.end();
+            return;
+          }
           enterTransfer();
-          const handle = await openFile(join(store.blobDir, item.id), "r");
+          const handle = await openFile(store.blobPath(item.id), "r");
           try {
             const buffer = Buffer.alloc(Math.min(item.size, 512 * 1024));
             const { bytesRead } = await handle.read(
@@ -326,6 +397,10 @@ export async function createApp(config: Config) {
           }
           return;
         }
+        if (path === "/api/search" && method === "GET") {
+          json(res, 200, searchPublic(store, url));
+          return;
+        }
         if (path === "/api/items" && method === "GET") {
           json(
             res,
@@ -341,6 +416,27 @@ export async function createApp(config: Config) {
         }
         const data = async () =>
           JSON.parse((await readBody(req)).toString() || "{}");
+        if (path === "/api/items/move" && method === "POST") {
+          const body = await data();
+          if (
+            !Array.isArray(body.ids) ||
+            !body.ids.length ||
+            body.ids.length > 200 ||
+            body.ids.some((x: unknown) => typeof x !== "string") ||
+            new Set(body.ids).size !== body.ids.length ||
+            (body.parent !== null && typeof body.parent !== "string")
+          )
+            throw new HttpError(
+              400,
+              "移動するファイルとフォルダを確認してください",
+            );
+          store.db.transaction(() => {
+            for (const id of body.ids)
+              updateItem(store, user, id, { parent: body.parent }, ip);
+          })();
+          json(res, 200, { ok: true });
+          return;
+        }
         if (path === "/api/folders" && method === "POST") {
           json(res, 201, mkdir(store, user, await data(), ip));
           return;
@@ -350,8 +446,156 @@ export async function createApp(config: Config) {
           return;
         }
         if (path === "/api/uploads" && method === "POST") {
-          json(res, 201, initUpload(store, user, await data()));
+          const upload = initUpload(store, user, await data()),
+            row = getUpload(store, user, upload.id),
+            edge = edgeInfo(
+              row,
+              user,
+              ip,
+              cookieValue(req.headers.cookie, "fs_session"),
+            );
+          json(res, 201, { ...upload, ...(edge ? { edge } : {}) });
           return;
+        }
+        const edgeSync =
+          /^\/api\/internal\/edge-sync\/([a-f0-9-]{36})(?:\/(chunk|publish|complete|authorize|origin))?$/.exec(
+            path,
+          );
+        if (edgeSync) {
+          if (
+            !edgeSecret ||
+            !config.edgeSpool.enabled ||
+            ip !== config.edgeSpool.trustedIp
+          )
+            throw new HttpError(403, "中継サーバーを確認できません");
+          const rawBody =
+            method === "POST"
+              ? await readBody(req, MAX_BLOCK_BYTES)
+              : Buffer.alloc(0);
+          if (
+            !verifyEdgeRequestSignature(
+              edgeSecret,
+              method,
+              req.url ?? path,
+              String(req.headers["x-fileshare-edge-time"] ?? ""),
+              rawBody,
+              String(req.headers["x-fileshare-edge-signature"] ?? ""),
+            )
+          )
+            throw new HttpError(401, "中継認証を確認できません");
+          if (edgeSync[2] === "authorize" && method === "POST") {
+            const body = JSON.parse(rawBody.toString());
+            const result = authorizeContent(store, edgeSecret, body);
+            if (result.id !== edgeSync[1])
+              throw new HttpError(403, "ファイルが一致しません");
+            json(res, 200, result);
+            return;
+          }
+          if (edgeSync[2] === "origin" && ["GET", "HEAD"].includes(method)) {
+            const item = store.item(edgeSync[1]);
+            if (!item || pendingEdge(store, item.id))
+              throw new HttpError(404, "ファイルがまだA1にあります");
+            await sendFile(
+              req,
+              res,
+              store.blobPath(item.id),
+              item,
+              bandwidth,
+              false,
+            );
+            return;
+          }
+          const uploadId = edgeSync[1],
+            row = store.db
+              .query("SELECT user_id FROM uploads WHERE id=?")
+              .get(uploadId) as { user_id: string } | null;
+          if (!row) {
+            const item = store.item(uploadId);
+            if (item && method === "POST" && edgeSync[2] === "publish") {
+              json(res, 200, safeItem(store, item));
+              return;
+            }
+            if (
+              item &&
+              ((method === "GET" && !edgeSync[2]) ||
+                (method === "POST" && edgeSync[2] === "complete"))
+            ) {
+              json(res, 200, {
+                done: true,
+                offset: item.size,
+                size: item.size,
+              });
+              return;
+            }
+            throw new HttpError(404, "転送が見つかりません");
+          }
+          const owner = store.user(row.user_id),
+            current = getUpload(store, owner, uploadId, true);
+          if (method === "POST" && edgeSync[2] === "publish") {
+            const body = JSON.parse(rawBody.toString());
+            if (
+              !store.db
+                .query(
+                  "SELECT 1 FROM sessions WHERE hash=? AND user_id=? AND expires>?",
+                )
+                .get(String(body.session ?? ""), row.user_id, Date.now())
+            )
+              throw new HttpError(
+                403,
+                "ログインし直してから転送を再開してください",
+              );
+            if (body.size !== current.size || body.offset !== current.size)
+              throw new HttpError(409, "A1の受領が完了していません");
+            json(res, 200, publishEdge(store, owner, uploadId, ip));
+            return;
+          }
+          if (method === "POST" && edgeSync[2] === "complete") {
+            json(
+              res,
+              200,
+              await completeUpload(store, owner, uploadId, ip, true),
+            );
+            return;
+          }
+          if (method === "GET" && !edgeSync[2]) {
+            json(res, 200, {
+              done: false,
+              offset: current.offset,
+              size: current.size,
+              receipt: current.receipt,
+            });
+            return;
+          }
+          if (method === "POST" && edgeSync[2] === "chunk") {
+            enterTransfer();
+            const offset = Number(req.headers["upload-offset"]),
+              checksum = String(req.headers["upload-checksum"] ?? "");
+            if (!Number.isSafeInteger(offset) || offset < 0)
+              throw new HttpError(400, "転送位置が不正です");
+            await bandwidth.acquire(rawBody.length);
+            const release = leaseUpload(uploadId);
+            try {
+              const result = await commitUploadBlock(
+                store,
+                owner,
+                uploadId,
+                offset,
+                rawBody,
+                checksum,
+                "identity",
+                MAX_BLOCK_BYTES,
+                Math.min(
+                  blockBytesForSize(current.size),
+                  current.size - offset,
+                ),
+                true,
+              );
+              json(res, 200, result);
+            } finally {
+              release();
+            }
+            return;
+          }
         }
         const streamStop =
           /^\/api\/uploads\/([a-f0-9-]{36})\/stream\/stop$/.exec(path);
@@ -371,15 +615,46 @@ export async function createApp(config: Config) {
           /^\/api\/uploads\/([a-f0-9-]{36})(?:\/(complete))?$/.exec(path);
         if (upload) {
           if (method === "GET" && !upload[2]) {
-            const row = getUpload(store, user, upload[1]);
-            json(res, 200, {
-              id: row.id,
-              offset: row.offset,
-              size: row.size,
-              encodings: ["identity", "gzip"],
-              pipeline: "fileshare-upload-v2",
-              receipt: row.receipt,
-            });
+            try {
+              const row = getUpload(store, user, upload[1]),
+                edge = edgeInfo(
+                  row,
+                  user,
+                  ip,
+                  cookieValue(req.headers.cookie, "fs_session"),
+                );
+              json(res, 200, {
+                id: row.id,
+                offset: row.offset,
+                size: row.size,
+                encodings: ["identity", "gzip"],
+                pipeline: "fileshare-upload-v2",
+                receipt: row.receipt,
+                ...(edge ? { edge } : {}),
+              });
+            } catch (error) {
+              if (!(error instanceof HttpError && error.status === 404 && user))
+                throw error;
+              const meta = store.db
+                  .query("SELECT uploaded_by FROM item_meta WHERE item_id=?")
+                  .get(upload[1]) as { uploaded_by: string | null } | null,
+                item = store.item(upload[1]);
+              if (
+                !item ||
+                item.folder ||
+                item.deleted ||
+                item.purged ||
+                meta?.uploaded_by !== user.id
+              )
+                throw error;
+              json(res, 200, {
+                id: item.id,
+                offset: item.size,
+                size: item.size,
+                name: item.name,
+                completed: true,
+              });
+            }
             return;
           }
           if (method === "DELETE" && !upload[2]) {
@@ -438,7 +713,10 @@ export async function createApp(config: Config) {
             const item = readItem(store, user, id);
             json(res, 200, {
               ...previews.status(item),
-              canCreate: !!user && config.preview.enabled,
+              canCreate:
+                !!user &&
+                config.preview.enabled &&
+                !pendingEdge(store, item.id),
               maxSeconds: config.preview.maxSeconds,
             });
             return;
@@ -446,6 +724,11 @@ export async function createApp(config: Config) {
           if (method === "POST" && action === "preview") {
             const i = readItem(store, user, id);
             requireUser(user);
+            if (pendingEdge(store, i.id))
+              throw new HttpError(
+                409,
+                "元動画は再生できます。軽量版の作成はA8への保存後に利用できます",
+              );
             const status = await previews.request(i);
             json(res, 200, status);
             return;
@@ -467,11 +750,27 @@ export async function createApp(config: Config) {
           const item = readItem(store, user, payload.id);
           if (item.folder)
             throw new HttpError(400, "ファイルを選択してください");
+          if (edgeSecret && config.edgeSpool.enabled) {
+            res.writeHead(307, {
+              Location: contentLocation(
+                store,
+                edgeSecret,
+                item,
+                ip,
+                user,
+                cookieValue(req.headers.cookie, "fs_session"),
+                true,
+                url.searchParams.get("ticket"),
+              ),
+            });
+            res.end();
+            return;
+          }
           enterTransfer();
           const sent = await sendFile(
             req,
             res,
-            join(store.blobDir, item.id),
+            store.blobPath(item.id),
             item,
             bandwidth,
             true,
@@ -493,6 +792,22 @@ export async function createApp(config: Config) {
           const item = readItem(store, user, raw[1]);
           if (item.folder)
             throw new HttpError(400, "ファイルを選択してください");
+          if (!raw[2] && edgeSecret && config.edgeSpool.enabled) {
+            res.writeHead(307, {
+              Location: contentLocation(
+                store,
+                edgeSecret,
+                item,
+                ip,
+                user,
+                cookieValue(req.headers.cookie, "fs_session"),
+                false,
+                null,
+              ),
+            });
+            res.end();
+            return;
+          }
           if (raw[2] && !(await existsPreview(raw[1])))
             throw new HttpError(404, "プレビュー準備中です");
           res.removeHeader("X-Frame-Options");
@@ -504,7 +819,7 @@ export async function createApp(config: Config) {
           await sendFile(
             req,
             res,
-            raw[2] ? previews.path(item.id) : join(store.blobDir, item.id),
+            raw[2] ? previews.path(item.id) : store.blobPath(item.id),
             raw[2] ? { ...item, name: "preview.mp4" } : item,
             bandwidth,
             false,
@@ -535,6 +850,25 @@ export async function createApp(config: Config) {
               )
             ).reduce((a, b) => a + b, 0);
             json(res, 200, {
+              metrics: {
+                users: (
+                  store.db.query("SELECT COUNT(*) AS n FROM users").get() as any
+                ).n,
+                pending: (
+                  store.db
+                    .query(
+                      "SELECT COUNT(*) AS n FROM users WHERE status='pending'",
+                    )
+                    .get() as any
+                ).n,
+                replicas: (
+                  store.db
+                    .query(
+                      "SELECT COUNT(*) AS n FROM edge_files WHERE pending=1",
+                    )
+                    .get() as any
+                ).n,
+              },
               users: store.db
                 .query(
                   "SELECT id,name,level,status,quota,ip,created FROM users ORDER BY created DESC LIMIT 1000",
@@ -636,6 +970,7 @@ export async function createApp(config: Config) {
           (path === "/" ||
             path === "/admin" ||
             path === "/rankings" ||
+            path === "/search" ||
             path === "/users" ||
             path === "/profile" ||
             /^\/users\/[^/]+$/.test(path) ||

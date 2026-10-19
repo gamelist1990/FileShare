@@ -140,3 +140,21 @@ CI run 39209878811（7817bfe）成功後、release-2.13をA8へ反映。実行�
 `/?item=<ID>` と `/files/<ID>/preview` のHTMLへファイル別タイトル、説明、Open Graph、Twitter Card、canonicalをサーバーで出力。公開画像とMP4/WebMは対応コンテンツURLを指定する。メタデータの判定は常に匿名のcanReadを使い、所有者・管理者セッションでも非公開情報を埋め込まない。HTMLはno-storeで、期限や親フォルダ・閲覧権限変更を毎回確認する。通常HTML・gzip・HEAD、記号入りファイル名のエスケープ、非公開・招待・階級・期限・親権限、公開範囲変更直後をテスト。50テスト534 assertions、型検査、ブラウザ、転送、CPU動画のCI検証に成功。
 
 本番の指定共有URLをwgetで取得し、`w6n7A8MWJHovR_-i.mp4 | FileShare`、容量29.08 MB・投稿者koukunnを含む説明、正規共有URL、video/mp4のOG動画URL、Twitter Cardを確認。独立プレビューURLのOG情報も確認。公開IP経由の証明書検証付きHTTP/3で共有HTMLの200応答を確認した。個人容量表示の2.12修正も含む。
+
+### 2026-10-20: A1一時受信・A8バックグラウンド反映を有効化
+
+A8へ実行ファイルSHA-256 `6423a6aabace003cffd7eb43f2709abdae2bfdfa37f859272e0e16062df09f2d` を配置。設定変更前のバックアップは `~/.local/opt/pex-fileshare/backups/edge-spool-enable-20261019T153247Z/config.json`（SHA-256 `d165a56eb40305d7ac48d209cf83e99e7c42a0d72eb6495eaf82cb507437ba51`）。A8の `edgeSpool.enabled` を有効化し、A1のTailnet IPだけを信頼する設定と既存のHMAC secret file設定を確認して `fileshare.service` を再起動した。保存ファイルやSQLiteデータは変更していない。
+
+A1では `fileshare-a1-edge-spool.service` が `127.0.0.1:8124` で稼働中。FerrumProxyのWeb用443インスタンスに `share.pexserver.com /edge-upload → 127.0.0.1:8124` を追加し、既存の `/ → 100.69.76.52:8100` を維持した。Web用インスタンスだけを再起動し、FerrumProxyの管理サービスや他のインスタンスは再起動していない。公開 `/edge-upload/healthz` とA8 `/healthz` が200、公開 `/api/me` が `pipeline:fileshare-upload-v2` と `edgeSpool:true` を返し、A8のFileShareサービスはactive。
+
+ブラウザーは認証・容量予約・最終確定をA8で行い、2MiB以上のファイルは最大4並列でA1へ受信する。A1は最大24GBを一時保管し、8GBの空き容量を維持する。A8への反映が完了してから通常のアップロード確定とダウンロード公開を行う。A1→A8の実測帯域は約5.8MB/sのため、この構成はA1での受信待ちを短くするが、A8への反映時間は短縮しない。実ファイルのアップロード試験は行っていない。
+
+ローカルでは `bun run typecheck`、`bun run build:exe`、Python構文検査、`git diff --check` が成功。ユニットテストは実行していない。
+
+### 2026-10-20: A1受信の詰まりと速度表示の平滑化
+
+並列PATCHの応答間隔だけで速度を計算していたため、完了応答が重なると表示値が大きく跳ねていた。ブラウザーはA1の耐久受領済みバイト数を維持したまま、1.5秒の移動窓から速度を算出し、250msごとに表示を更新する。A1では同一ファイルの別ブロックの `pwrite` と `fsync` を並行化し、同一ブロックの再送はロックで直列化する。SQLiteの受領記録は各ブロックの `fsync` 後に確定する。
+
+A8実行ファイルSHA-256 `5860fdd8f10448ccff975e791f96f3a73789b576afc7f6dd2862c36fbe0bec15` を配置し、A1 spoolのPythonソースSHA-256 `1f94a7e3ae8aa7eed3637b1d0fa3cc9aeb6cd8fc57101672f191b1881e99d785` を反映。A8の実行ファイル・設定・オンラインSQLiteバックアップは `~/.local/opt/pex-fileshare/backups/upload-stutter-fix-20261019T154843Z/`、A1の反映前ソース保全コピーは `/home/ubuntu/.local/opt/fileshare-edge-spool/backups/parallel-block-write-20261019T154744Z/a1-edge-spool.py`。両ホストで未完了アップロード予約が0件であることを再起動直前に確認した。
+
+A1の公開 `/edge-upload/healthz`、A8の `/healthz` が200、公開 `/api/me` は `pipeline:fileshare-upload-v2` と `edgeSpool:true` を返し、両サービスはactive。公開 `/index.js` のSHA-256 `99472a3a44f53ec152e0a46c12fcb12c51e7ef6f747a7fbb379c2bb05718b62f` はローカルビルドと一致。実ファイルのアップロードは行っていない。

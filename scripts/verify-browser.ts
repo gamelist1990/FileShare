@@ -137,6 +137,9 @@ try {
       }
     };
   });
+  await page
+    .getByLabel("タグ（カンマ区切り、10個まで）", { exact: true })
+    .fill("browser, demo");
   await page.locator("input[type=file]").setInputFiles({
     name: "browser-proof.txt",
     mimeType: "text/plain",
@@ -170,37 +173,64 @@ try {
     mimeType: "application/octet-stream",
     buffer: Buffer.alloc(12 * 1024 * 1024, 37),
   });
-  await page.waitForFunction(() => {
-    const progress = document.querySelector<HTMLProgressElement>(".transfer progress");
-    return !!progress && progress.value > 0 && progress.value < 100;
-  }, undefined, { timeout: 30000 });
-  const firstOffset = (app.store.db.query(
-    "SELECT offset FROM uploads WHERE name='pause-resume-cancel.bin'",
-  ).get() as any).offset as number;
+  await page.waitForFunction(
+    () => {
+      const progress =
+        document.querySelector<HTMLProgressElement>(".transfer progress");
+      return !!progress && progress.value > 0 && progress.value < 100;
+    },
+    undefined,
+    { timeout: 30000 },
+  );
+  const firstOffset = (
+    app.store.db
+      .query("SELECT offset FROM uploads WHERE name='pause-resume-cancel.bin'")
+      .get() as any
+  ).offset as number;
   await page.getByRole("button", { name: /一時停止/ }).click();
   await page.getByRole("button", { name: /再開/ }).waitFor();
-  const pausedOffset = (app.store.db.query(
-    "SELECT offset FROM uploads WHERE name='pause-resume-cancel.bin'",
-  ).get() as any).offset as number;
+  const pausedOffset = (
+    app.store.db
+      .query("SELECT offset FROM uploads WHERE name='pause-resume-cancel.bin'")
+      .get() as any
+  ).offset as number;
   if (pausedOffset < firstOffset || !pausedOffset)
     throw new Error("Pause discarded durable transfer bytes");
   await page.getByRole("button", { name: /再開/ }).click();
-  await page.waitForFunction((previous) => {
-    const progress = document.querySelector<HTMLProgressElement>(".transfer progress");
-    return !!progress && progress.value > previous && progress.value < 100;
-  }, (pausedOffset / (12 * 1024 * 1024)) * 100, { timeout: 30000 });
+  await page.waitForFunction(
+    (previous) => {
+      const progress =
+        document.querySelector<HTMLProgressElement>(".transfer progress");
+      return !!progress && progress.value > previous && progress.value < 100;
+    },
+    (pausedOffset / (12 * 1024 * 1024)) * 100,
+    { timeout: 30000 },
+  );
   await page.getByRole("button", { name: /一時停止/ }).click();
   await page.getByRole("button", { name: /再開/ }).waitFor();
   await page.getByRole("button", { name: "キャンセル", exact: true }).click();
-  await page.getByText("予約容量と途中データを解放しました").waitFor({ timeout: 30000 });
-  if ((app.store.db.query(
-    "SELECT count(*) AS n FROM uploads WHERE name='pause-resume-cancel.bin'",
-  ).get() as any).n !== 0)
+  await page
+    .getByText("予約容量と途中データを解放しました")
+    .waitFor({ timeout: 30000 });
+  if (
+    (
+      app.store.db
+        .query(
+          "SELECT count(*) AS n FROM uploads WHERE name='pause-resume-cancel.bin'",
+        )
+        .get() as any
+    ).n !== 0
+  )
     throw new Error("Cancel did not release the upload reservation");
   await cdp.send("Network.emulateNetworkConditions", {
-    offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
   });
-  console.log("Browser pause/resume/cancel verified with retained File and server-side cleanup.");
+  console.log(
+    "Browser pause/resume/cancel verified with retained File and server-side cleanup.",
+  );
   const downloadReady = page.waitForEvent("download");
   await page
     .getByRole("button", {
@@ -219,7 +249,8 @@ try {
     .selectOption("public");
   await page.getByRole("button", { name: "設定を保存" }).click();
   await page.getByRole("button", { name: "Admin", exact: true }).click();
-  await page.getByRole("heading", { name: "ユーザーと権限" }).waitFor();
+  await page.getByRole("heading", { name: /ユーザー管理/ }).waitFor();
+  await page.getByRole("button", { name: "全体", exact: true }).click();
   for (const name of ["review_pending_one", "review_pending_two"])
     app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
       name,
@@ -344,6 +375,22 @@ try {
     .locator(".audit-library")
     .screenshot({ path: ".artifacts/review-books.png" });
   await page.screenshot({ path: ".artifacts/admin.png", fullPage: true });
+  for (
+    let n = 0;
+    n < 3 &&
+    (await page.locator(".toast:not(.toast-leaving) .toast-dismiss").count());
+    n++
+  )
+    await page
+      .locator(".toast:not(.toast-leaving) .toast-dismiss")
+      .first()
+      .click();
+  await page
+    .locator("#admin-users")
+    .screenshot({ path: ".artifacts/manager-users.png" });
+  await page
+    .locator("#admin-volumes")
+    .screenshot({ path: ".artifacts/manager-storage.png" });
   const staffContext = await browser.newContext();
   const staffPage = await staffContext.newPage();
   staffCheckPage = staffPage;
@@ -418,6 +465,16 @@ try {
     .getByRole("button", { name: "プライベートフォルダ", exact: false })
     .click();
   await expectStaffCapacity("5.00 GB", 5e9);
+  if (
+    (await staffPage
+      .getByLabel("投稿からの保存期間", { exact: true })
+      .inputValue()) !== "0"
+  )
+    throw new Error("Private storage must default to unlimited");
+  await staffPage
+    .getByLabel("投稿からの保存期間", { exact: true })
+    .selectOption("60");
+
   await staffPage.screenshot({
     path: ".artifacts/private-quota-5gb.png",
     fullPage: true,
@@ -464,6 +521,67 @@ try {
   await staffPage.waitForLoadState("networkidle");
   await staffPage.unroute("**/api/items?space=shared");
   await expectStaffCapacity("8.00 GB", 8e9);
+  if (
+    (await staffPage
+      .getByLabel("投稿からの保存期間", { exact: true })
+      .inputValue()) !== "60"
+  )
+    throw new Error("Private retention cookie was not restored");
+  await staffPage.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(
+      new File(["dragged content"], "drag-one.txt", { type: "text/plain" }),
+    );
+    dt.items.add(
+      new File(["second content"], "drag-two.txt", { type: "text/plain" }),
+    );
+    window.dispatchEvent(
+      new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }),
+    );
+    window.dispatchEvent(
+      new DragEvent("drop", {
+        dataTransfer: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+  await staffPage
+    .getByRole("heading", { name: "2ファイルをアップロード", exact: true })
+    .waitFor();
+  await staffPage.screenshot({
+    path: ".artifacts/drop-upload.png",
+    fullPage: true,
+  });
+  await staffPage
+    .getByRole("button", { name: "アップロードを開始", exact: true })
+    .click();
+  await staffPage
+    .getByRole("button", { name: "drag-one.txt", exact: true })
+    .waitFor();
+  await staffPage
+    .getByRole("button", { name: "drag-two.txt", exact: true })
+    .waitFor();
+  await staffPage
+    .getByRole("button", { name: "＋ フォルダ", exact: true })
+    .click();
+  await staffPage.getByLabel("フォルダ名", { exact: true }).fill("drag-target");
+  await staffPage
+    .getByRole("button", { name: "作成する", exact: true })
+    .click();
+  await staffPage
+    .getByRole("button", { name: "drag-target", exact: true })
+    .waitFor();
+  const from = staffPage.getByRole("row").filter({
+    has: staffPage.getByRole("button", { name: "drag-one.txt", exact: true }),
+  });
+  const to = staffPage.getByRole("row").filter({
+    has: staffPage.getByRole("button", { name: "drag-target", exact: true }),
+  });
+  await from.dragTo(to);
+  await staffPage
+    .getByRole("button", { name: "drag-one.txt", exact: true })
+    .waitFor({ state: "detached" });
 
   if (
     await staffPage.getByRole("button", { name: "Admin", exact: true }).count()
@@ -564,6 +682,9 @@ try {
     mimeType: "image/png",
     buffer: profilePng,
   });
+  await page
+    .getByRole("button", { name: "この範囲を使う", exact: true })
+    .click();
   await page.locator("img.social-avatar").waitFor();
 
   await page
@@ -676,9 +797,13 @@ try {
     fullPage: true,
   });
   await page.goto(origin + "/rankings");
+  await page.getByRole("link", { name: "Admin", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Profile", exact: true }).waitFor();
+
   await page
     .getByRole("heading", { name: "ダウンロードランキング", exact: true })
     .waitFor();
+  await page.getByRole("button", { name: "投稿者", exact: true }).click();
   await page
     .getByRole("heading", { name: "投稿者別ランキング", exact: true })
     .waitFor();

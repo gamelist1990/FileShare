@@ -1,3 +1,4 @@
+import { validateEndpoint } from "./ai-key";
 import { HttpError } from "./policy";
 export interface FilePolicy {
   maxFileBytes: number;
@@ -44,7 +45,12 @@ export function validateFilePolicy(value: any, capacity: number): FilePolicy {
     rankingEnabled: value.rankingEnabled,
   };
 }
-export function retentionSeconds(value: unknown, maximum: number) {
+export function retentionSeconds(
+  value: unknown,
+  maximum: number,
+  unlimited = false,
+) {
+  if (value === 0 && unlimited) return 0;
   if (
     !Number.isSafeInteger(value) ||
     Number(value) < 60 ||
@@ -69,7 +75,16 @@ export function validateAISettings(value: any) {
       400,
       "AI設定を確認してください（監視間隔は60〜3600秒）",
     );
+  let endpoint: string | undefined;
+  if (value.endpoint !== undefined) {
+    try {
+      endpoint = validateEndpoint(value.endpoint);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+  }
   return {
+    ...(endpoint ? { endpoint } : {}),
     enabled: value.enabled,
     model: value.model,
     intervalSeconds: value.intervalSeconds,

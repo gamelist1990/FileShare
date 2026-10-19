@@ -165,7 +165,7 @@ test("uploader pages, rankings, preview documents and direct content consistentl
   const files = await (await request("/api/users/vip/files")).json();
   expect(files.items.map((i: any) => i.id)).toEqual([visible]);
   const ranking = await (await request("/api/rankings/uploaders")).json();
-  expect(ranking.users).toEqual([
+  expect(ranking.users).toMatchObject([
     { id: "vip", name: "vip", downloads: 1234, files: 1 },
   ]);
   for (const id of [hidden, child, expired])

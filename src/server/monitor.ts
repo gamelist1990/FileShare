@@ -27,9 +27,7 @@ export function startMonitor(store: Store) {
         redirect: "error",
         headers: {
           "Content-Type": "application/json",
-          ...(process.env.FILESHARE_AI_KEY
-            ? { Authorization: "Bearer " + process.env.FILESHARE_AI_KEY }
-            : {}),
+          ...(store.aiKey ? { Authorization: "Bearer " + store.aiKey } : {}),
         },
         body: JSON.stringify({
           model: settings.model,
@@ -44,8 +42,9 @@ export function startMonitor(store: Store) {
               content: JSON.stringify({ windowMinutes: 10, events: rows }),
             },
           ],
-          max_tokens: 400,
-          temperature: 0.1,
+          ...(new URL(settings.endpoint).hostname === "api.openai.com"
+            ? { max_completion_tokens: 400 }
+            : { max_tokens: 400, temperature: 0.1 }),
         }),
       });
       if (!response.ok) throw new Error("AI HTTP " + response.status);

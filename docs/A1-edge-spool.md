@@ -1,0 +1,33 @@
+# A1 reception, background replication, and download cache
+
+A8 owns authentication, permissions, storage allocations and file metadata. A1 owns a bounded durable receive spool and an expendable download cache. FerrumProxy routes `/edge-upload` to the existing loopback receiver on A1 (`127.0.0.1:8124`), and `/` to A8. Existing HTTP/3, HTTPS/TCP, PROXY v2 and wget clients are retained.
+
+## Upload lifecycle
+
+1. A8 reserves capacity and issues a signed upload ticket, scoped to the upload, size, account, login session, client IP and expiry.
+2. The browser sends multiple checksummed blocks to A1. A1 validates hashes, uses positional writes and fsync, and records durable receipts in SQLite. Receiving and A8 replication run concurrently. Disconnects can resume from the confirmed prefix.
+3. After **all** blocks are durable on A1, `/finish` asks A8 to publish the file metadata. A8 rechecks the session, current role and permissions. Users can now use the file; the browser does not wait for the bulk A8 transfer. Published bytes count once toward quota, even while the replication reservation exists.
+4. The worker continues in the background, including after the browser closes. A8 checks every replicated block and atomically installs the completed blob, including across mapped drives. Metadata changes made during replication are retained. A1 retains the original until A8 acknowledges completion, then moves it into the expendable cache.
+5. The UI marks files still being replicated. A1 failure before A8 completes affects that file's availability: this is a durable spool, not synchronous replication to two machines. Back up the A1 spool with its SQLite receipts consistently.
+
+Small files also use A1. Multiple selected/dropped files use the same bounded queue. If A1 refuses a new reservation for capacity reasons, the existing direct A8 path remains available. Unavailable or unknown A1 receipt state is never silently replaced with a second upload.
+
+## Downloads and previews
+
+After validating the normal FileShare session/ticket, A8 redirects content requests to a signed A1 URL. **A1 calls A8 to recheck live authorization on every request**, including session revocation, private ancestors, minimum levels, invitation grants, expiry and lockdown. Cached bytes are never public just because they exist on A1. If A8 cannot authorize, delivery fails closed.
+
+While replication is pending, content comes from the full A1 spool. Afterwards, A1 serves its cache or streams the missing content from A8; full reads can populate the bounded LRU cache while delivering data to the user. Cold partial reads stream the requested range without caching an incomplete file as complete. HEAD, byte Range, inline/attachment disposition, MIME allowlisting, sandboxing and download receipt deduplication are maintained. Text/Markdown previews read at most 512KiB and return escaped JSON text. Original video playback works immediately; CPU transcoding becomes available after A8 replication.
+
+## Limits and recovery
+
+The default spool/cache budget is 24GB with an 8GB minimum free-space reserve on A1. Pending durable uploads are not evicted to make room for download caches. Four download streams and eight upload requests are admitted concurrently; buffering uses bounded blocks. A1 cannot turn its 48GB system disk into an unlimited queue. Cache deletion is safe only after A8 completion has been confirmed. Orphan temporary cache files are aged out.
+
+Interrupted blocks are acknowledged only after fsync. Workers reconcile A8 receipts before advancing, verify hashes and retry after failures. Published pending reservations are protected from the ordinary incomplete-upload timeout. Expired or purged files lose access immediately and their pending reservations can be removed. Incomplete unpublished transfers remain cancelable; already published files are removed through the regular file list/trash.
+
+## Deployment
+
+Use the supplied service and environment examples under `deploy/`. Both machines read the same random 32-byte hexadecimal secret from a protected file named by `FILESHARE_EDGE_SECRET_FILE`; it is never committed or embedded in the browser. The receiver binds to loopback, parses PROXY v2 only from its local proxy, and checks the signed ticket against the forwarded client IP. A8 only accepts signed internal requests from A1's configured Tailscale address. Internal signatures cover method, path, timestamp and SHA-256 of the body. Logs omit authorization headers, content tokens and query strings.
+
+Configure `edgeSpool.enabled`, its trusted A1 IP and `/edge-upload` path on A8. Preserve the existing FerrumProxy hostname/path mappings and TLS settings. Updating this release does not require changing the existing route allocation. Deploy A8 before the A1 receiver so new publication and authorization endpoints exist first. The old browser can continue its existing replication-wait flow during deployment; refresh to load the new immediate-publication flow.
+
+The integration test runs the real Python receiver against the real A8 application with PROXY v2/HMAC, pauses replication, publishes and reads the file, restarts A1, resumes replication, then checks cached Range/HEAD, download counting and logout/IP revocation.

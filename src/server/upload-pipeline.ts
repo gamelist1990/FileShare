@@ -59,7 +59,10 @@ export function attachUploadPipeline(
         store.maintenanceUntil > Date.now() &&
         handshakeUser?.level !== 4
       )
-        throw new HttpError(503, "メンテナンス中です。管理者以外は操作できません");
+        throw new HttpError(
+          503,
+          "メンテナンス中です。管理者以外は操作できません",
+        );
       const match = /^\/api\/uploads\/([a-f0-9-]{36})\/stream$/.exec(
         req.url ?? "",
       );
@@ -157,9 +160,15 @@ export function attachUploadPipeline(
           const job = (async () => {
             try {
               while (queue.length && !closing) {
-                if (store.maintenanceUntil && store.maintenanceUntil > Date.now() &&
-                    sessionUser(store, req.headers.cookie)?.level !== 4)
-                  throw new HttpError(503, "メンテナンス中です。再開後に転送できます");
+                if (
+                  store.maintenanceUntil &&
+                  store.maintenanceUntil > Date.now() &&
+                  sessionUser(store, req.headers.cookie)?.level !== 4
+                )
+                  throw new HttpError(
+                    503,
+                    "メンテナンス中です。再開後に転送できます",
+                  );
                 const block = queue.shift()!,
                   start = performance.now();
                 await bandwidth.acquire(block.bytes.length);
@@ -206,9 +215,15 @@ export function attachUploadPipeline(
           if (closing) return;
           try {
             // An already open WebSocket must not bypass a newly enabled lockdown.
-            if (store.maintenanceUntil && store.maintenanceUntil > Date.now() &&
-                sessionUser(store, req.headers.cookie)?.level !== 4)
-              throw new HttpError(503, "メンテナンス中です。再開後に転送できます");
+            if (
+              store.maintenanceUntil &&
+              store.maintenanceUntil > Date.now() &&
+              sessionUser(store, req.headers.cookie)?.level !== 4
+            )
+              throw new HttpError(
+                503,
+                "メンテナンス中です。再開後に転送できます",
+              );
             if (!binary) {
               if (!store.limit("pipeline-control:" + ip, 120, 60000))
                 throw new HttpError(429, "転送操作が多すぎます");
@@ -239,11 +254,7 @@ export function attachUploadPipeline(
                 ? raw
                 : Buffer.concat(raw as Buffer[]),
               block = unpackBlock(buffer);
-            getUpload(
-              store,
-              sessionUser(store, req.headers.cookie),
-              id,
-            );
+            getUpload(store, sessionUser(store, req.headers.cookie), id);
             if (
               block.offset !== expected ||
               block.offset + block.logicalBytes > row.size ||

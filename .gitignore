@@ -11,3 +11,16 @@ FileShare
 config.local.json
 *.key
 *.token
+
+# Generated bundles and local experiments
+public/index.js
+public/index.html
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+/test-share/
+/実験/

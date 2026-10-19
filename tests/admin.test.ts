@@ -369,7 +369,7 @@ test("revoked, expired and issuer-demoted invites cannot authorize registration,
   ).toBe(403);
   app.store.db.run("UPDATE users SET level=4 WHERE id='admin'");
 });
-test("AI settings persist, never allow endpoint overrides, and dynamically start aggregate-only monitoring", async () => {
+test("AI settings persist, permit configured endpoints and dynamically start aggregate-only monitoring", async () => {
   const bodies: any[] = [];
   const server = Bun.serve({
     port: 0,
@@ -385,7 +385,7 @@ test("AI settings persist, never allow endpoint overrides, and dynamically start
     enabled: true,
     model: "gemma4-test",
     intervalSeconds: 60,
-    endpoint: "http://169.254.169.254/",
+    endpoint: app.store.config.ai.endpoint,
   };
   try {
     expect(
@@ -418,7 +418,7 @@ test("AI settings persist, never allow endpoint overrides, and dynamically start
     try {
       expect(cloned.ai.enabled).toBe(false);
       expect(cloned.ai.model).toBe("gemma4-test");
-      expect(cloned.ai.endpoint).toBe(defaults.ai.endpoint);
+      expect(cloned.ai.endpoint).toBe(config.endpoint);
     } finally {
       reopened.db.close();
     }
