@@ -152,6 +152,7 @@ export function initUpload(store: Store, user: User | null, data: any) {
     offset: 0,
     maxChunk: MAX_CHUNK,
     encodings: ["identity", "gzip"],
+    pipeline: "fileshare-upload-v1",
   };
 }
 const busy = new Set<string>();
@@ -165,7 +166,95 @@ export function getUpload(store: Store, user: User | null, id: string): any {
     throw new HttpError(413, "1ファイルのアップロード上限が変更されています");
   if (!canWrite(u, row.owner)) throw new HttpError(403, "転送権限がありません");
   if (row.parent) writeItem(store, u, row.parent);
+  row.receipt =
+    store.db
+      .query(
+        "SELECT start,length,hash FROM upload_blocks WHERE upload_id=? ORDER BY start DESC LIMIT 1",
+      )
+      .get(id) ?? null;
   return row;
+}
+/** Exclusive lease shared by REST and WebSocket writers and storage maintenance. */
+export function leaseUpload(id: string) {
+  if (busy.has(id)) throw new HttpError(409, "この転送を処理中です");
+  busy.add(id);
+  let released = false;
+  return () => {
+    if (!released) {
+      released = true;
+      busy.delete(id);
+    }
+  };
+}
+/** Caller owns leaseUpload(id). The database offset is the durable contiguous receipt. */
+export async function commitUploadBlock(
+  store: Store,
+  user: User | null,
+  id: string,
+  offset: number,
+  encoded: Buffer,
+  checksum: string,
+  encoding: string | undefined,
+  maximum = MAX_CHUNK,
+  expectedLength?: number,
+) {
+  const row = getUpload(store, user, id);
+  if (!Number.isSafeInteger(offset) || offset !== row.offset)
+    throw new HttpError(409, "転送位置を再確認してください");
+  if (encoded.length > maximum)
+    throw new HttpError(413, "転送ブロックが大きすぎます");
+  if (encoding && encoding !== "identity" && encoding !== "gzip")
+    throw new HttpError(400, "未対応の転送圧縮形式です");
+  let body = encoded;
+  if (encoding === "gzip") {
+    try {
+      body = gunzipSync(encoded, { maxOutputLength: maximum });
+    } catch (error) {
+      throw new HttpError(
+        (error as any).code === "ERR_BUFFER_TOO_LARGE" ? 413 : 400,
+        "圧縮データが不正、または展開後の上限を超えています",
+      );
+    }
+  }
+  if (expectedLength !== undefined && body.length !== expectedLength)
+    throw new HttpError(400, "展開後のサイズが一致しません");
+  if (!body.length || row.offset + body.length > row.size)
+    throw new HttpError(400, "転送サイズが不正です");
+  if (!equalDigest(createHash("sha256").update(body).digest("hex"), checksum))
+    throw new HttpError(400, "チェックサムが一致しません");
+  const path = join(store.tempDir, id),
+    file = await open(path, existsSync(path) ? "r+" : "wx", 0o600);
+  try {
+    await file.truncate(row.offset);
+    let written = 0;
+    while (written < body.length) {
+      const r = await file.write(
+        body,
+        written,
+        body.length - written,
+        row.offset + written,
+      );
+      if (!r.bytesWritten) throw new Error("Short write");
+      written += r.bytesWritten;
+    }
+    await file.sync();
+    // Permission/quota changes during disk I/O cannot commit an unauthorized block.
+    getUpload(store, user, id);
+    store.db.transaction(() => {
+      store.db.run(
+        "INSERT INTO upload_blocks(upload_id,start,length,hash) VALUES (?,?,?,?)",
+        [id, row.offset, body.length, checksum],
+      );
+      store.db.run("UPDATE uploads SET offset=?,expires=? WHERE id=?", [
+        row.offset + body.length,
+        Date.now() + 86_400_000,
+        id,
+      ]);
+    })();
+  } finally {
+    await file.close();
+  }
+  return { offset: row.offset + body.length };
 }
 export async function appendChunk(
   store: Store,
@@ -174,62 +263,24 @@ export async function appendChunk(
   req: IncomingMessage,
   bandwidth?: Bandwidth,
 ) {
-  if (busy.has(id)) throw new HttpError(409, "この転送を処理中です");
-  const row = getUpload(store, user, id),
-    offset = Number(req.headers["upload-offset"]);
-  if (!Number.isSafeInteger(offset) || offset !== row.offset)
-    throw new HttpError(409, "転送位置を再確認してください");
-  busy.add(id);
+  const release = leaseUpload(id);
   try {
-    const encoding = req.headers["upload-encoding"];
-    if (encoding && encoding !== "identity" && encoding !== "gzip")
-      throw new HttpError(400, "未対応の転送圧縮形式です");
+    const row = getUpload(store, user, id),
+      offset = Number(req.headers["upload-offset"]);
+    if (!Number.isSafeInteger(offset) || offset !== row.offset)
+      throw new HttpError(409, "転送位置を再確認してください");
     const encoded = await readBody(req, MAX_CHUNK, bandwidth);
-    let body = encoded;
-    if (encoding === "gzip") {
-      try {
-        body = gunzipSync(encoded, { maxOutputLength: MAX_CHUNK });
-      } catch (error) {
-        throw new HttpError(
-          (error as any).code === "ERR_BUFFER_TOO_LARGE" ? 413 : 400,
-          "圧縮データが不正、または展開後の上限を超えています",
-        );
-      }
-    }
-    if (!body.length || row.offset + body.length > row.size)
-      throw new HttpError(400, "転送サイズが不正です");
-    const checksum = String(req.headers["upload-checksum"] ?? "");
-    if (!equalDigest(createHash("sha256").update(body).digest("hex"), checksum))
-      throw new HttpError(400, "チェックサムが一致しません");
-    getUpload(store, user, id);
-    const path = join(store.tempDir, id),
-      file = await open(path, existsSync(path) ? "r+" : "wx", 0o600);
-    try {
-      // A crash may leave uncommitted tail bytes. The database offset is authoritative.
-      await file.truncate(row.offset);
-      let written = 0;
-      while (written < body.length) {
-        const r = await file.write(
-          body,
-          written,
-          body.length - written,
-          row.offset + written,
-        );
-        if (!r.bytesWritten) throw new Error("Short write");
-        written += r.bytesWritten;
-      }
-      await file.sync();
-      store.db.run("UPDATE uploads SET offset=?,expires=? WHERE id=?", [
-        row.offset + body.length,
-        Date.now() + 86_400_000,
-        id,
-      ]);
-    } finally {
-      await file.close();
-    }
-    return { offset: row.offset + body.length };
+    return await commitUploadBlock(
+      store,
+      user,
+      id,
+      offset,
+      encoded,
+      String(req.headers["upload-checksum"] ?? ""),
+      req.headers["upload-encoding"] as string | undefined,
+    );
   } finally {
-    busy.delete(id);
+    release();
   }
 }
 export async function completeUpload(

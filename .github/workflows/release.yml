@@ -55,6 +55,11 @@ jobs:
           bunx playwright install --with-deps chromium
           bun run verify:browser
 
+      - name: Verify native WebSocket pipeline
+        run: |
+          bun run build:exe
+          bun scripts/verify-pipeline-binary.ts
+
       - name: Verify CPU video preview isolation
         run: |
           sudo apt-get update -qq

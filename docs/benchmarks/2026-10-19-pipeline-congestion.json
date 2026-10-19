@@ -1,0 +1,12 @@
+[
+  {
+    "mode": "pipeline",
+    "scenario": "5→1→5Mbps, 300ms RTT",
+    "bytes": 8388608,
+    "uploadMs": 30507,
+    "maxInFlight": 2,
+    "minWindow": 1,
+    "maxWindow": 2,
+    "backoffs": 1
+  }
+]

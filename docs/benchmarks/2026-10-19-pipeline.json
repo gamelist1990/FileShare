@@ -1,0 +1,90 @@
+[
+  {
+    "mode": "rest",
+    "kbps": 1000,
+    "rttMs": 600,
+    "type": "random-binary",
+    "bytes": 4194304,
+    "uploadMs": 37950,
+    "wireUp": 4197116,
+    "wireDown": 5145,
+    "maxInFlight": 0
+  },
+  {
+    "mode": "rest",
+    "kbps": 1000,
+    "rttMs": 600,
+    "type": "repeated-text",
+    "bytes": 4194304,
+    "uploadMs": 3358,
+    "wireUp": 30803,
+    "wireDown": 3783,
+    "maxInFlight": 0
+  },
+  {
+    "mode": "rest",
+    "kbps": 5000,
+    "rttMs": 300,
+    "type": "random-binary",
+    "bytes": 4194304,
+    "uploadMs": 8294,
+    "wireUp": 4196278,
+    "wireDown": 3785,
+    "maxInFlight": 0
+  },
+  {
+    "mode": "rest",
+    "kbps": 5000,
+    "rttMs": 300,
+    "type": "repeated-text",
+    "bytes": 4194304,
+    "uploadMs": 1661,
+    "wireUp": 30803,
+    "wireDown": 3783,
+    "maxInFlight": 0
+  },
+  {
+    "mode": "pipeline",
+    "kbps": 1000,
+    "rttMs": 600,
+    "type": "random-binary",
+    "bytes": 4194304,
+    "uploadMs": 36702,
+    "wireUp": 4196618,
+    "wireDown": 3503,
+    "maxInFlight": 2
+  },
+  {
+    "mode": "pipeline",
+    "kbps": 1000,
+    "rttMs": 600,
+    "type": "repeated-text",
+    "bytes": 4194304,
+    "uploadMs": 2708,
+    "wireUp": 32351,
+    "wireDown": 3497,
+    "maxInFlight": 16
+  },
+  {
+    "mode": "pipeline",
+    "kbps": 5000,
+    "rttMs": 300,
+    "type": "random-binary",
+    "bytes": 4194304,
+    "uploadMs": 7945,
+    "wireUp": 4196613,
+    "wireDown": 3505,
+    "maxInFlight": 2
+  },
+  {
+    "mode": "pipeline",
+    "kbps": 5000,
+    "rttMs": 300,
+    "type": "repeated-text",
+    "bytes": 4194304,
+    "uploadMs": 1283,
+    "wireUp": 32351,
+    "wireDown": 3502,
+    "maxInFlight": 16
+  }
+]

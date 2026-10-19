@@ -1,6 +1,6 @@
 {
   "name": "fileshare",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "FileShare APP - Bun + React file sharing service",
   "main": "src/index.ts",
   "scripts": {
@@ -10,23 +10,26 @@
     "build:exe": "bun scripts/build.ts --exe && bun build --compile dist/server.js --outfile FileShare",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "benchmark:pipeline": "bun scripts/benchmark-pipeline.ts",
     "benchmark:transfer": "bun scripts/benchmark-transfer.ts",
     "verify:browser": "bun scripts/verify-browser.ts"
   },
   "author": "koukunn",
   "license": "MIT",
   "dependencies": {
+    "@pexserver/secure-envelope": "https://github.com/gamelist1990/PEXSecureEnvelope/archive/22744fe1b23918367798f74a1efdd0f6e861f1ec.tar.gz",
+    "@simplewebauthn/browser": "^13.2.2",
+    "@simplewebauthn/server": "^13.2.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@simplewebauthn/server": "^13.2.2",
-    "@simplewebauthn/browser": "^13.2.2",
-    "@pexserver/secure-envelope": "https://github.com/gamelist1990/PEXSecureEnvelope/archive/22744fe1b23918367798f74a1efdd0f6e861f1ec.tar.gz"
+    "ws-node": "npm:ws@8.22.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/bun": "^1.3.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.2",
     "prettier": "^3.9.10",
     "typescript": "^5.7.0"
   }

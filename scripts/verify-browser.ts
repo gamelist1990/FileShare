@@ -36,11 +36,25 @@ await cdp.send("WebAuthn.addVirtualAuthenticator", {
   },
 });
 let loginPayload: unknown;
-let compressedUpload = false;
+let compressedUpload = false,
+  pipelineSockets = 0;
 const browserProof = Buffer.from(
-  "Verified browser upload with a real WebAuthn ceremony.\n".repeat(2048),
+  "Verified browser upload with a real WebAuthn ceremony.\n".repeat(100000),
 );
 let staffCheckPage: typeof page | null = null;
+page.on("websocket", (socket) => {
+  if (!socket.url().endsWith("/stream")) return;
+  pipelineSockets++;
+  socket.on("framesent", ({ payload }) => {
+    if (
+      Buffer.isBuffer(payload) &&
+      payload.length >= 56 &&
+      payload.readUInt32BE(0) === 0x46535531 &&
+      payload[4] === 1
+    )
+      compressedUpload = true;
+  });
+});
 page.on("request", (request) => {
   if (
     request.method() === "PATCH" &&
@@ -104,6 +118,24 @@ try {
   await page
     .getByLabel("投稿からの保存期間", { exact: true })
     .selectOption("1440");
+  // Drop a real browser connection after its first durable ACK; the app must resume.
+  await page.evaluate(() => {
+    const Native = window.WebSocket;
+    let interrupted = false;
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        if (String(url).endsWith("/stream"))
+          this.addEventListener("message", (event) => {
+            const message = JSON.parse(String(event.data));
+            if (message.type === "ack" && !interrupted) {
+              interrupted = true;
+              this.close(1011, "Simulated interruption");
+            }
+          });
+      }
+    };
+  });
   await page.locator("input[type=file]").setInputFiles({
     name: "browser-proof.txt",
     mimeType: "text/plain",
@@ -112,8 +144,18 @@ try {
   await page
     .getByRole("button", { name: "browser-proof.txt", exact: true })
     .waitFor();
-  if (!compressedUpload)
-    throw new Error("Browser did not negotiate compressed text upload");
+  if (!compressedUpload || pipelineSockets < 2)
+    throw new Error(
+      "Browser did not negotiate compressed pipeline upload and reconnect",
+    );
+  if (
+    (
+      app.store.db
+        .query("SELECT count(*) AS n FROM items WHERE name='browser-proof.txt'")
+        .get() as any
+    ).n !== 1
+  )
+    throw new Error("Resumption duplicated the file");
   const downloadReady = page.waitForEvent("download");
   await page
     .getByRole("button", {

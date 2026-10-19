@@ -90,6 +90,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, parent TEXT REFERENCES items(id), owner TEXT REFERENCES users(id), name TEXT NOT NULL, folder INTEGER NOT NULL, size INTEGER NOT NULL DEFAULT 0, mime TEXT NOT NULL DEFAULT '', visibility TEXT NOT NULL DEFAULT 'private', min_level INTEGER NOT NULL DEFAULT 0, key_hash TEXT, created INTEGER NOT NULL, deleted INTEGER);
       CREATE UNIQUE INDEX IF NOT EXISTS item_name ON items(COALESCE(parent,''), COALESCE(owner,''), name) WHERE deleted IS NULL;
       CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), parent TEXT, owner TEXT, name TEXT NOT NULL, size INTEGER NOT NULL, offset INTEGER NOT NULL DEFAULT 0, mime TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS upload_blocks (upload_id TEXT NOT NULL REFERENCES uploads(id) ON DELETE CASCADE, start INTEGER NOT NULL, length INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(upload_id,start));
       CREATE TABLE IF NOT EXISTS grants (user_id TEXT NOT NULL REFERENCES users(id), item_id TEXT NOT NULL REFERENCES items(id), expires INTEGER NOT NULL, PRIMARY KEY(user_id,item_id));
       CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, time INTEGER NOT NULL, ip TEXT NOT NULL, user_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);

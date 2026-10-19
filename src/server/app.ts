@@ -1,3 +1,4 @@
+import { attachUploadPipeline } from "./upload-pipeline";
 import { gzipSync } from "node:zlib";
 import { acceptsGzip, compressibleName } from "../shared/compression";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
@@ -59,6 +60,24 @@ export async function createApp(config: Config) {
   let totalTransfers = 0,
     globalWindow = Date.now(),
     globalRequests = 0;
+  const reserveTransfer = (ip: string) => {
+    if (
+      (active.get(ip) ?? 0) >= config.rate.concurrentTransfersPerIp ||
+      totalTransfers >= 32
+    )
+      throw new HttpError(429, "同時転送数の上限です");
+    active.set(ip, (active.get(ip) ?? 0) + 1);
+    totalTransfers++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const n = (active.get(ip) ?? 1) - 1;
+      if (n) active.set(ip, n);
+      else active.delete(ip);
+      totalTransfers--;
+    };
+  };
   const json = (
     res: ServerResponse,
     status: number,
@@ -81,7 +100,7 @@ export async function createApp(config: Config) {
     async (req, res) => {
       const ip = (req.socket as any).clientIp ?? "";
       let user: User | null = null;
-      let transfer = false;
+      let releaseTransfer: (() => void) | undefined;
       const security: Record<string, string> = {
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
@@ -89,8 +108,7 @@ export async function createApp(config: Config) {
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cache-Control": "no-store",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-        "Content-Security-Policy":
-          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       };
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";
@@ -133,6 +151,7 @@ export async function createApp(config: Config) {
             user: publicUser(user),
             capacity: config.capacityBytes,
             registration: config.registration.enabled,
+            pipeline: "fileshare-upload-v1",
             setupRequired: !store.db
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
               .get(),
@@ -198,6 +217,20 @@ export async function createApp(config: Config) {
           json(res, 201, initUpload(store, user, await data()));
           return;
         }
+        const streamStop =
+          /^\/api\/uploads\/([a-f0-9-]{36})\/stream\/stop$/.exec(path);
+        if (streamStop && method === "POST") {
+          const data = JSON.parse((await readBody(req)).toString());
+          if (
+            typeof data.connectionId !== "string" ||
+            data.connectionId.length > 64
+          )
+            throw new HttpError(400, "転送接続を指定してください");
+          json(res, 200, {
+            offset: await pipeline.stop(streamStop[1], user, data.connectionId),
+          });
+          return;
+        }
         const upload =
           /^\/api\/uploads\/([a-f0-9-]{36})(?:\/(complete))?$/.exec(path);
         if (upload) {
@@ -208,6 +241,8 @@ export async function createApp(config: Config) {
               offset: row.offset,
               size: row.size,
               encodings: ["identity", "gzip"],
+              pipeline: "fileshare-upload-v1",
+              receipt: row.receipt,
             });
             return;
           }
@@ -473,14 +508,7 @@ export async function createApp(config: Config) {
         }
         throw new HttpError(404, "見つかりません");
         function enterTransfer() {
-          if (
-            (active.get(ip) ?? 0) >= config.rate.concurrentTransfersPerIp ||
-            totalTransfers >= 32
-          )
-            throw new HttpError(429, "同時転送数の上限です");
-          active.set(ip, (active.get(ip) ?? 0) + 1);
-          totalTransfers++;
-          transfer = true;
+          releaseTransfer = reserveTransfer(ip);
         }
       } catch (e) {
         if (res.headersSent) {
@@ -507,12 +535,7 @@ export async function createApp(config: Config) {
         if (status === 429) res.setHeader("Retry-After", "10");
         json(res, status, { error: message });
       } finally {
-        if (transfer) {
-          const n = (active.get(ip) ?? 1) - 1;
-          if (n) active.set(ip, n);
-          else active.delete(ip);
-          totalTransfers--;
-        }
+        releaseTransfer?.();
       }
     },
   );
@@ -522,6 +545,26 @@ export async function createApp(config: Config) {
       socket.end(
         "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
       );
+  });
+  const pipeline = attachUploadPipeline(server, store, bandwidth, (ip) => {
+    if (Date.now() - globalWindow >= 60000) {
+      globalWindow = Date.now();
+      globalRequests = 0;
+    }
+    if (
+      ++globalRequests > config.rate.globalRequestsPerMinute ||
+      !store.limit("request:" + ip, config.rate.requestsPerMinute, 60000) ||
+      !store.limit(
+        "pipeline-connect:" + ip,
+        Math.max(
+          1,
+          Math.min(120, Math.floor(config.rate.requestsPerMinute / 3)),
+        ),
+        60000,
+      )
+    )
+      throw new HttpError(429, "転送接続が多すぎます");
+    return reserveTransfer(ip);
   });
   const transport = createTransport(config, server);
   await new Promise<void>((resolve, reject) => {
@@ -555,6 +598,8 @@ export async function createApp(config: Config) {
       stopMonitor();
       transport.close();
       server.close();
+      const pending = pipeline.close();
+      if (pending) return pending.finally(() => store.db.close());
       store.db.close();
     },
   };

@@ -1,3 +1,4 @@
+import { uploadPipeline, PipelineError } from "./upload-pipeline";
 import { CopyButton } from "./CopyButton";
 import { PresetField, durationLabel } from "./PresetField";
 import { createPortal } from "react-dom";
@@ -294,7 +295,8 @@ export function App() {
           user?.id,
         ]);
         const resumeKey = "fs-upload:" + fingerprint;
-        let compressionAllowed = false;
+        let compressionAllowed = false,
+          pipelineAllowed = false;
         const probeStart = performance.now();
         let id = sessionStorage.getItem(resumeKey),
           offset = 0;
@@ -303,6 +305,7 @@ export function App() {
             const resumed = await api("/api/uploads/" + id);
             offset = resumed.offset;
             compressionAllowed = resumed.encodings?.includes("gzip") === true;
+            pipelineAllowed = resumed.pipeline === "fileshare-upload-v1";
           } catch {
             id = null;
           }
@@ -318,10 +321,55 @@ export function App() {
           });
           id = d.id;
           compressionAllowed = d.encodings?.includes("gzip") === true;
+          pipelineAllowed = d.pipeline === "fileshare-upload-v1";
           sessionStorage.setItem(resumeKey, id!);
         }
         const roundTripMs = Math.max(0, performance.now() - probeStart);
         let tryCompression = compressionAllowed && compressibleName(file.name);
+        if (
+          pipelineAllowed &&
+          typeof WebSocket !== "undefined" &&
+          file.size >= 2 * 1024 * 1024
+        ) {
+          for (let attempt = 0; attempt < 3 && offset < file.size; attempt++) {
+            try {
+              const url = new URL(`/api/uploads/${id}/stream`, location.origin);
+              url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+              const result = await uploadPipeline({
+                url: url.href,
+                file,
+                offset,
+                roundTripMs,
+                compress: tryCompression,
+                stopped: () => stop.current,
+                progress: (received, speed) =>
+                  setProgress({
+                    name: file.name,
+                    percent: (received / file.size) * 100,
+                    speed,
+                  }),
+              });
+              offset = result.offset;
+              if (result.stopped) {
+                setMessage("一時停止しました。同じファイルから再開できます。");
+                return;
+              }
+              break;
+            } catch (error) {
+              if (error instanceof PipelineError && error.fatal) throw error;
+              if (stop.current) {
+                setMessage("一時停止しました。同じファイルから再開できます。");
+                return;
+              }
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.min(4000, 500 * 2 ** attempt)),
+              );
+              const resumed = await api("/api/uploads/" + id);
+              offset = resumed.offset;
+              if (resumed.pipeline !== "fileshare-upload-v1") break;
+            }
+          }
+        }
         let chunkSize = 1024 * 1024,
           retries = 0;
         while (offset < file.size) {

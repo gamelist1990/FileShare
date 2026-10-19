@@ -12,8 +12,8 @@ if (import.meta.main) {
     `PEXserver FileShare listening on ${config.host}:${config.port}; PROXY v2=${config.proxy.enabled}; origin=${config.origin}`,
   );
   for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => {
-      app.close();
+    process.once(signal, async () => {
+      await app.close();
       process.exit(0);
     });
 }
