@@ -612,10 +612,16 @@ try {
     .locator(".creator-card")
     .filter({ hasText: "browseradmin" });
   await creator.waitFor();
-  if (
-    await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
-  )
-    throw new Error("User directory overflows on mobile");
+  for (const width of [320, 390, 700]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      )
+    )
+      throw new Error(`User directory overflows at ${width}px`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: ".artifacts/user-search-mobile.png",
     fullPage: true,
