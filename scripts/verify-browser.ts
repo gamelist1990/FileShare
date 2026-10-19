@@ -36,6 +36,7 @@ await cdp.send("WebAuthn.addVirtualAuthenticator", {
   },
 });
 let loginPayload: unknown;
+let staffCheckPage: typeof page | null = null;
 page.on("request", (request) => {
   if (request.url().endsWith("/api/auth/login/verify"))
     loginPayload = request.postDataJSON();
@@ -148,6 +149,7 @@ try {
   await page.screenshot({ path: ".artifacts/admin.png", fullPage: true });
   const staffContext = await browser.newContext();
   const staffPage = await staffContext.newPage();
+  staffCheckPage = staffPage;
   staffPage.on("pageerror", (e) => errors.push(e.message));
   const staffCDP = await staffContext.newCDPSession(staffPage);
   await staffCDP.send("WebAuthn.enable");
@@ -169,12 +171,22 @@ try {
     path: ".artifacts/staff-invite.png",
     fullPage: true,
   });
+  const staffVerification = staffPage.waitForResponse(
+    (r) => r.url().endsWith("/api/auth/register/verify"),
+    { timeout: 10000 },
+  );
   await staffPage
     .getByRole("button", {
       name: "パスキーを登録してスタッフになる",
       exact: true,
     })
     .click();
+  const registrationResult = await staffVerification;
+  console.log(
+    "Staff registration response:",
+    registrationResult.status(),
+    await registrationResult.json(),
+  );
   await staffPage
     .getByText("スタッフとして登録しました。パスキーでログインしてください。", {
       exact: true,
@@ -197,6 +209,7 @@ try {
     .getByText("招待URLは無効・期限切れ・利用済みです", { exact: true })
     .waitFor();
   await staffContext.close();
+  staffCheckPage = null;
   await page.getByRole("button", { name: "FileShare", exact: true }).click();
   await page
     .getByRole("button", { name: "プライベートフォルダ", exact: false })
@@ -209,6 +222,22 @@ try {
     "Browser verified: bootstrap WebAuthn registration, passkey login, private upload, publication settings, administrator page, desktop/mobile screenshots.",
   );
 } catch (e) {
+  if (staffCheckPage && !staffCheckPage.isClosed()) {
+    console.log(
+      "Staff registration alerts:",
+      await staffCheckPage.getByRole("alert").allTextContents(),
+    );
+    console.log(
+      "Staff account state:",
+      app.store.db
+        .query("SELECT level,status FROM users WHERE name=?")
+        .get("invitedstaff"),
+    );
+    await staffCheckPage.screenshot({
+      path: ".artifacts/staff-failure.png",
+      fullPage: true,
+    });
+  }
   await page.screenshot({
     path: ".artifacts/browser-failure.png",
     fullPage: true,

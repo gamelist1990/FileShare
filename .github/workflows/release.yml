@@ -68,6 +68,7 @@ jobs:
           name: fileshare-ui
           path: .artifacts/*.png
           if-no-files-found: ignore
+          include-hidden-files: true
 
       - name: Prepare server bundle for native build (writes dist/server.js)
         run: bun scripts/build.ts --exe
