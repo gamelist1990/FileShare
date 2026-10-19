@@ -1822,3 +1822,6 @@ hr {
 @media (max-width: 720px) {
   .screen-modal-close { top: 12px; right: 12px; }
 }
+
+.screen-modal .screen-content { scrollbar-width: none; -ms-overflow-style: none; }
+.screen-modal .screen-content::-webkit-scrollbar { display: none; }
