@@ -1,7 +1,15 @@
 export const PIPELINE_PROTOCOL = "fileshare-upload-v2";
+export const MIN_BLOCK_BYTES = 256 * 1024;
 export const BLOCK_BYTES = 1024 * 1024;
+export const MAX_BLOCK_BYTES = 8 * 1024 * 1024;
 export const MAX_IN_FLIGHT = 16;
 export const FRAME_HEADER = 56;
+export function blockBytesForSize(size: number) {
+  if (size < MIN_BLOCK_BYTES) return MIN_BLOCK_BYTES;
+  if (size <= 32 * 1024 * 1024) return BLOCK_BYTES;
+  if (size < 256 * 1024 * 1024) return 2 * 1024 * 1024;
+  return MAX_BLOCK_BYTES;
+}
 const MAGIC = 0x46535531;
 export function packBlock(
   offset: number,
@@ -14,9 +22,9 @@ export function packBlock(
     !Number.isSafeInteger(offset) ||
     offset < 0 ||
     logicalBytes < 1 ||
-    logicalBytes > BLOCK_BYTES ||
+    logicalBytes > MAX_BLOCK_BYTES ||
     bytes.byteLength < 1 ||
-    bytes.byteLength > BLOCK_BYTES ||
+    bytes.byteLength > MAX_BLOCK_BYTES ||
     !/^[a-f0-9]{64}$/.test(checksum)
   )
     throw new Error("Invalid upload block");
@@ -35,7 +43,7 @@ export function packBlock(
 export function unpackBlock(frame: Uint8Array) {
   if (
     frame.byteLength < FRAME_HEADER ||
-    frame.byteLength > FRAME_HEADER + BLOCK_BYTES
+    frame.byteLength > FRAME_HEADER + MAX_BLOCK_BYTES
   )
     throw new Error("Invalid upload frame length");
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength),
@@ -52,9 +60,9 @@ export function unpackBlock(frame: Uint8Array) {
     !Number.isSafeInteger(offset) ||
     offset < 0 ||
     logicalBytes < 1 ||
-    logicalBytes > BLOCK_BYTES ||
+    logicalBytes > MAX_BLOCK_BYTES ||
     length < 1 ||
-    length > BLOCK_BYTES ||
+    length > MAX_BLOCK_BYTES ||
     frame.length !== FRAME_HEADER + length ||
     (!flag && length !== logicalBytes)
   )

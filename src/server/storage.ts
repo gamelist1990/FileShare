@@ -25,6 +25,7 @@ import {
   equalDigest,
 } from "@pexserver/secure-envelope";
 export const MAX_CHUNK = 8 * 1024 * 1024;
+export const UPLOAD_RESERVATION_MS = 30 * 60 * 1000;
 export async function readBody(
   req: IncomingMessage,
   limit = 32_768,
@@ -146,7 +147,7 @@ export function initUpload(store: Store, user: User | null, data: any) {
       size,
       0,
       String(data.mime ?? "").slice(0, 120),
-      Date.now() + 86_400_000,
+      Date.now() + UPLOAD_RESERVATION_MS,
     ]);
     store.db.run("INSERT INTO upload_policies VALUES (?,?)", [id, retention]);
   })();
@@ -255,7 +256,7 @@ export async function commitUploadBlock(
       );
       store.db.run("UPDATE uploads SET offset=?,expires=? WHERE id=?", [
         row.offset + body.length,
-        Date.now() + 86_400_000,
+        Date.now() + UPLOAD_RESERVATION_MS,
         id,
       ]);
     })();
@@ -642,7 +643,6 @@ export async function cleanup(store: Store, full = true) {
       })();
       expired++;
     }
-    if (!full) return { uploads, orphans, expired };
     for (const row of store.db
       .query("SELECT id FROM uploads WHERE expires<?")
       .all(now) as { id: string }[]) {
@@ -652,6 +652,7 @@ export async function cleanup(store: Store, full = true) {
       store.db.run("DELETE FROM uploads WHERE id=?", [row.id]);
       uploads++;
     }
+    if (!full) return { uploads, orphans, expired };
     for (const file of await readdir(store.tempDir)) {
       if (!/^[a-f0-9-]{36}$/.test(file) || busy.has(file)) continue;
       if (!store.db.query("SELECT 1 FROM uploads WHERE id=?").get(file)) {

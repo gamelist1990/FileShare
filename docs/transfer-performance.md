@@ -3,9 +3,11 @@
 ## Changes
 
 - Upload chunks account for the latency observed during initialization/resume. Growth is bounded to 2x per successful sample and 8MiB maximum; errors halve the chunk size. Uploads retain a single connection/request at a time and the existing bandwidth/concurrency limits.
+- WebSocket pipeline blocks are negotiated per upload: 256KiB for tiny streams, 1MiB for normal files, 2MiB for medium-large files, and 8MiB for 256MiB+ files. With 16 bounded in-flight blocks, the application can keep up to 128MiB in flight, enough to fill 1Gbps and 2.5Gbps links across normal WAN round-trip times without unbounded browser memory. Actual speed still depends on the link, TLS/proxy, CPU, disk and client.
 - Text-like files can use gzip per upload chunk, negotiated with the backend. SHA-256, quotas, offsets and stored bytes always refer to the original data. Both encoded and decoded chunks are limited to 8MiB. Browsers without compression support use identity transfers. Compressed/unsuitable file types retain identity transfer.
 - Full text downloads from 32KiB through 8MiB can use gzip when accepted by the client. Compressed full responses advertise `Accept-Ranges: none`. Explicit Range requests use identity bytes; larger files retain native Range downloads to support browser resumption and bound CPU work. Images, videos and archives remain unchanged.
 - Download reads use 256KiB bounded buffers and honor receiver backpressure. Existing global bandwidth and per-IP concurrency limits remain in force; this does not detect the spare capacity of other applications on a user's connection.
+- Incomplete upload reservations expire after 30 minutes. The minute-by-minute janitor removes expired reservations before returning, so abandoned large-file reservations release quota promptly instead of waiting for the hourly deep cleanup.
 - Embedded public JS/CSS/HTML/SVG assets are gzip-encoded once at startup, with `Vary: Accept-Encoding`. The local JS bundle is 271,138 bytes uncompressed / 85,085 bytes gzip, and CSS is 31,500 / 6,610 bytes.
 
 ## Reproducible measurements

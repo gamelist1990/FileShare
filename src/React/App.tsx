@@ -78,6 +78,7 @@ export function App() {
     [usage, setUsage] = useState({ used: 0, reserved: 0 }),
     [capacity, setCapacity] = useState<number | null>(null),
     [filePolicy, setFilePolicy] = useState<any>(null),
+    [maintenanceUntil, setMaintenanceUntil] = useState<number | null>(null),
     [retentionMinutes, setRetentionMinutes] = useState(43200),
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
@@ -135,6 +136,7 @@ export function App() {
     setRegistration(d.registration);
     setAutoApprove(d.autoApprove);
     setFilePolicy(d.filePolicy);
+    setMaintenanceUntil(d.maintenanceUntil ?? null);
     if (d.filePolicy)
       setRetentionMinutes((value) =>
         Math.min(value, Math.floor(d.filePolicy.maxRetentionSeconds / 60)),
@@ -240,8 +242,9 @@ export function App() {
     });
   }, [ready, user?.id]);
   useEffect(() => {
-    if (ready) run(admin ? loadAdmin : refresh);
-  }, [ready, parent, space, admin, user?.id]);
+    if (ready && (admin || !maintenanceUntil || user?.level === 4))
+      run(admin ? loadAdmin : refresh);
+  }, [ready, parent, space, admin, user?.id, user?.level, maintenanceUntil]);
   useEffect(() => {
     const pop = () => {
       // Closing a task must keep the current folder and breadcrumb intact.
@@ -888,6 +891,20 @@ export function App() {
               </button>
             </section>
           )
+        ) : maintenanceUntil && maintenanceUntil > Date.now() && user?.level !== 4 ? (
+          <section className="panel maintenance-view" role="status">
+            <p className="eyebrow">SYSTEM MAINTENANCE</p>
+            <h2>ただいまメンテナンス中です</h2>
+            <p>サービスの更新作業のため、ファイルの閲覧・転送を一時停止しています。</p>
+            <p className="muted">
+              再開予定: {new Date(maintenanceUntil).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}
+            </p>
+            <p className="muted">保存済みファイルや途中まで転送されたデータは保持され、解除後に再開できます。</p>
+            <div className="actions">
+              <button onClick={() => void run(refreshMe)}>状態を再確認</button>
+              <button onClick={() => setAuthOpen(true)}>管理者としてログイン</button>
+            </div>
+          </section>
         ) : (
           <div className="workspace">
             <aside>
@@ -1473,7 +1490,7 @@ export function App() {
         </FullScreenPage>
       )}
       {settings && (
-        <FullScreenPage onClose={() => setSettings(null)}>
+        <FullScreenPage variant="modal" onClose={() => setSettings(null)}>
           <section
             className="screen-content"
             role="region"

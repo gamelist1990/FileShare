@@ -24,6 +24,7 @@ const actionNames: Record<string, string> = {
   "staff-invite.create": "スタッフ招待を発行",
   "staff-invite.revoke": "スタッフ招待を失効",
   "ai.settings": "AI監視設定を変更",
+  "maintenance.settings": "ロックダウン設定を変更",
   login: "ログイン",
   "ai.error": "AI監視エラー",
 };
@@ -33,6 +34,8 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
   const [registration, setRegistration] = useState<any>(null);
   const [ai, setAI] = useState<any>(null),
     [invites, setInvites] = useState<any[]>([]);
+  const [maintenanceUntil, setMaintenanceUntil] = useState<number | null>(null),
+    [maintenanceMinutes, setMaintenanceMinutes] = useState(30);
   const [inviteURL, setInviteURL] = useState(""),
     [notice, setNotice] = useState("");
   const [month, setMonth] = useState(today().slice(0, 7)),
@@ -79,6 +82,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
       const settings = await request("/api/admin/settings");
       setAI(settings.ai);
       setRegistration(settings.registration);
+      setMaintenanceUntil(settings.maintenanceUntil);
       await loadInvites();
     });
   }, []);
@@ -123,6 +127,68 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
   useNotice(notice, setNotice);
   return (
     <>
+      <section className="panel" id="admin-lockdown">
+        <p className="eyebrow">LOCKDOWN MODE</p>
+        <h2>一時メンテナンスモード</h2>
+        <p className="muted">
+          有効にすると管理者以外のAPI操作と転送を停止します。公開ページとログインは維持され、指定時間後に自動解除されます。
+        </p>
+        <div className="actions">
+          {maintenanceUntil && maintenanceUntil > Date.now() ? (
+            <>
+              <strong>
+                有効中 · {new Date(maintenanceUntil).toLocaleString("ja-JP")}
+              </strong>
+              <button
+                className="danger"
+                disabled={busy}
+                onClick={() =>
+                  void act(async () => {
+                    const result = await request("/api/admin/settings", "PATCH", {
+                      maintenance: { enabled: false },
+                    });
+                    setMaintenanceUntil(result.maintenanceUntil);
+                    setNotice("メンテナンスモードを解除しました");
+                  })
+                }
+              >
+                解除
+              </button>
+            </>
+          ) : (
+            <>
+              <label>
+                継続時間（分）
+                <input
+                  type="number"
+                  min="1"
+                  max="1440"
+                  value={maintenanceMinutes}
+                  onChange={(e) => setMaintenanceMinutes(Number(e.target.value))}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() =>
+                  void act(async () => {
+                    const result = await request("/api/admin/settings", "PATCH", {
+                      maintenance: {
+                        enabled: true,
+                        minutes: maintenanceMinutes,
+                      },
+                    });
+                    setMaintenanceUntil(result.maintenanceUntil);
+                    setNotice("メンテナンスモードを開始しました");
+                  })
+                }
+              >
+                ロックダウンを開始
+              </button>
+            </>
+          )}
+        </div>
+      </section>
       <FileAdminTools
         users={users}
         request={request}

@@ -13,9 +13,19 @@ import {
   unpackBlock,
   PipelineWindow,
   BLOCK_BYTES,
+  MIN_BLOCK_BYTES,
+  MAX_BLOCK_BYTES,
+  blockBytesForSize,
   PIPELINE_PROTOCOL,
 } from "../src/shared/pipeline";
 let app: Awaited<ReturnType<typeof createApp>>, dir: string, origin: string;
+
+test("pipeline block sizing stays within the negotiated 256KiB-8MiB range", () => {
+  expect(blockBytesForSize(128 * 1024)).toBe(MIN_BLOCK_BYTES);
+  expect(blockBytesForSize(8 * 1024 * 1024)).toBe(BLOCK_BYTES);
+  expect(blockBytesForSize(64 * 1024 * 1024)).toBe(2 * 1024 * 1024);
+  expect(blockBytesForSize(1024 * 1024 * 1024)).toBe(MAX_BLOCK_BYTES);
+});
 let cookies: Record<string, string>;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "fileshare-pipeline-"));

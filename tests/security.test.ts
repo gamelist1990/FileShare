@@ -397,3 +397,25 @@ test("external share navigation is allowed but cross-site API fetching and sourc
   ])
     expect((await request(path)).status).toBe(404);
 });
+
+test("temporary lockdown is admin-only, visible on /api/me and blocks ordinary file access", async () => {
+  expect((await request("/api/admin/settings", "general", "PATCH", {
+    maintenance: { enabled: true, minutes: 30 },
+  })).status).toBe(403);
+  const enabled = await request("/api/admin/settings", "admin", "PATCH", {
+    maintenance: { enabled: true, minutes: 30 },
+  });
+  expect(enabled.status).toBe(200);
+  const state = (await enabled.json()) as any;
+  expect(state.maintenanceUntil).toBeGreaterThan(Date.now());
+  const me = await json("/api/me");
+  expect(me.maintenanceUntil).toBe(state.maintenanceUntil);
+  expect((await request("/api/items?space=shared", "general")).status).toBe(503);
+  expect((await request("/api/items?space=shared", "admin")).status).toBe(200);
+  expect((await request("/healthz")).status).toBe(200);
+  const disabled = await request("/api/admin/settings", "admin", "PATCH", {
+    maintenance: { enabled: false },
+  });
+  expect(disabled.status).toBe(200);
+  expect((await request("/api/items?space=shared", "general")).status).toBe(200);
+});

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
 import { defaults } from "../src/server/config";
+import { UPLOAD_RESERVATION_MS } from "../src/server/storage";
 import { digestToken, randomToken } from "@pexserver/secure-envelope";
 
 test("adaptive chunks account for latency without unbounded buffers or growth on failure", () => {
@@ -97,6 +98,15 @@ test("compressed uploads, ACLs, bombs, integrity, resumable offsets and encoded 
         space: "private",
       })
     ).json()) as any;
+    const uploadExpiry = app.store.db
+      .query("SELECT expires FROM uploads WHERE id=?")
+      .get(id) as { expires: number };
+    expect(uploadExpiry.expires - Date.now()).toBeGreaterThan(
+      UPLOAD_RESERVATION_MS - 5000,
+    );
+    expect(uploadExpiry.expires - Date.now()).toBeLessThanOrEqual(
+      UPLOAD_RESERVATION_MS,
+    );
     const chunk = (
       body: Buffer,
       offset = 0,

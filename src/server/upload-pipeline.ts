@@ -13,6 +13,8 @@ import {
 } from "./storage";
 import {
   BLOCK_BYTES,
+  MAX_BLOCK_BYTES,
+  blockBytesForSize,
   FRAME_HEADER,
   MAX_IN_FLIGHT,
   PIPELINE_PROTOCOL,
@@ -27,7 +29,7 @@ export function attachUploadPipeline(
 ) {
   const wss = new WebSocketServer({
     noServer: true,
-    maxPayload: FRAME_HEADER + BLOCK_BYTES,
+    maxPayload: FRAME_HEADER + MAX_BLOCK_BYTES,
     perMessageDeflate: false,
     handleProtocols: (protocols) =>
       protocols.has(PIPELINE_PROTOCOL) ? PIPELINE_PROTOCOL : false,
@@ -51,6 +53,13 @@ export function attachUploadPipeline(
         req.headers["sec-fetch-site"] === "cross-site"
       )
         throw new HttpError(403, "送信元を確認できません");
+      const handshakeUser = sessionUser(store, req.headers.cookie);
+      if (
+        store.maintenanceUntil &&
+        store.maintenanceUntil > Date.now() &&
+        handshakeUser?.level !== 4
+      )
+        throw new HttpError(503, "メンテナンス中です。管理者以外は操作できません");
       const match = /^\/api\/uploads\/([a-f0-9-]{36})\/stream$/.exec(
         req.url ?? "",
       );
@@ -65,7 +74,7 @@ export function attachUploadPipeline(
         throw new HttpError(400, "未対応の転送プロトコルです");
       releaseTransfer = reserve(ip);
       const id = match[1],
-        user = sessionUser(store, req.headers.cookie),
+        user = handshakeUser,
         row = getUpload(store, user, id);
       releaseUpload = leaseUpload(id);
       // Validate handshake fields before ws takes ownership; failed upgrades must release leases.
@@ -92,6 +101,7 @@ export function attachUploadPipeline(
         socket.off("close", abandon);
         sessions.add(ws);
         const connectionId = randomUUID();
+        const blockBytes = blockBytesForSize(row.size);
         let currentJob: Promise<void> | undefined;
         let expected = row.offset,
           processing = false,
@@ -147,6 +157,9 @@ export function attachUploadPipeline(
           const job = (async () => {
             try {
               while (queue.length && !closing) {
+                if (store.maintenanceUntil && store.maintenanceUntil > Date.now() &&
+                    sessionUser(store, req.headers.cookie)?.level !== 4)
+                  throw new HttpError(503, "メンテナンス中です。再開後に転送できます");
                 const block = queue.shift()!,
                   start = performance.now();
                 await bandwidth.acquire(block.bytes.length);
@@ -163,7 +176,7 @@ export function attachUploadPipeline(
                   ),
                   block.checksum,
                   block.compressed ? "gzip" : "identity",
-                  BLOCK_BYTES,
+                  MAX_BLOCK_BYTES,
                   block.logicalBytes,
                 );
                 if (result.offset !== block.offset + block.logicalBytes)
@@ -192,6 +205,10 @@ export function attachUploadPipeline(
           lastSeen = Date.now();
           if (closing) return;
           try {
+            // An already open WebSocket must not bypass a newly enabled lockdown.
+            if (store.maintenanceUntil && store.maintenanceUntil > Date.now() &&
+                sessionUser(store, req.headers.cookie)?.level !== 4)
+              throw new HttpError(503, "メンテナンス中です。再開後に転送できます");
             if (!binary) {
               if (!store.limit("pipeline-control:" + ip, 120, 60000))
                 throw new HttpError(429, "転送操作が多すぎます");
@@ -222,11 +239,16 @@ export function attachUploadPipeline(
                 ? raw
                 : Buffer.concat(raw as Buffer[]),
               block = unpackBlock(buffer);
+            getUpload(
+              store,
+              sessionUser(store, req.headers.cookie),
+              id,
+            );
             if (
               block.offset !== expected ||
               block.offset + block.logicalBytes > row.size ||
               block.logicalBytes !==
-                Math.min(BLOCK_BYTES, row.size - block.offset)
+                Math.min(blockBytes, row.size - block.offset)
             )
               throw new HttpError(409, "転送位置が一致しません");
             lastProgress = Date.now();
@@ -280,7 +302,7 @@ export function attachUploadPipeline(
           protocol: PIPELINE_PROTOCOL,
           offset: row.offset,
           size: row.size,
-          blockBytes: BLOCK_BYTES,
+          blockBytes,
           maxInFlight: MAX_IN_FLIGHT,
         });
       });

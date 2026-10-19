@@ -50,13 +50,18 @@ export async function adminAction(
       ai: store.config.ai,
       files: store.filePolicy,
       registration: store.registrationPolicy,
+      maintenanceUntil:
+        store.maintenanceUntil && store.maintenanceUntil > Date.now()
+          ? store.maintenanceUntil
+          : null,
     };
   if (path === "/api/admin/settings" && method === "PATCH") {
     const body = await objectBody();
     if (
       body.ai === undefined &&
       body.files === undefined &&
-      body.registration === undefined
+      body.registration === undefined &&
+      body.maintenance === undefined
     )
       throw new HttpError(400, "設定を指定してください");
     const registration =
@@ -68,6 +73,21 @@ export async function adminAction(
       body.files === undefined
         ? null
         : validateFilePolicy(body.files, store.config.capacityBytes);
+    let maintenanceUntil: number | null | undefined;
+    if (body.maintenance !== undefined) {
+      if (
+        !body.maintenance ||
+        typeof body.maintenance.enabled !== "boolean" ||
+        (body.maintenance.enabled &&
+          (!Number.isSafeInteger(body.maintenance.minutes) ||
+            body.maintenance.minutes < 1 ||
+            body.maintenance.minutes > 1440))
+      )
+        throw new HttpError(400, "メンテナンス時間は1〜1440分で指定してください");
+      maintenanceUntil = body.maintenance.enabled
+        ? Date.now() + body.maintenance.minutes * 60_000
+        : null;
+    }
     store.db.transaction(() => {
       if (registration) {
         store.db.run(
@@ -95,14 +115,28 @@ export async function adminAction(
         );
         store.audit(ip, admin, "file.settings", JSON.stringify(files));
       }
+      if (maintenanceUntil !== undefined) {
+        store.db.run(
+          "INSERT INTO admin_settings VALUES ('maintenance',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          [JSON.stringify({ until: maintenanceUntil })],
+        );
+        store.audit(
+          ip,
+          admin,
+          "maintenance.settings",
+          JSON.stringify({ until: maintenanceUntil }),
+        );
+      }
     })();
     if (registration) store.registrationPolicy = registration;
     if (ai) Object.assign(store.config.ai, ai);
     if (files) store.filePolicy = files;
+    if (maintenanceUntil !== undefined) store.maintenanceUntil = maintenanceUntil;
     return {
       ai: store.config.ai,
       files: store.filePolicy,
       registration: store.registrationPolicy,
+      maintenanceUntil: store.maintenanceUntil,
     };
   }
   if (path === "/api/admin/applications/deny" && method === "POST") {

@@ -1,5 +1,7 @@
 import {
   BLOCK_BYTES,
+  MAX_BLOCK_BYTES,
+  MIN_BLOCK_BYTES,
   FRAME_HEADER,
   MAX_IN_FLIGHT,
   PIPELINE_PROTOCOL,
@@ -47,6 +49,7 @@ export function uploadPipeline(options: {
         queuedWire = 0,
         sentAny = false;
       let compression = options.compress,
+        blockBytes = BLOCK_BYTES,
         timer: ReturnType<typeof setTimeout> | undefined;
       const flight = new Map<
         number,
@@ -114,19 +117,19 @@ export function uploadPipeline(options: {
             !options.stopped() &&
             next < options.file.size &&
             flight.size < MAX_IN_FLIGHT &&
-            queuedWire < control.window * BLOCK_BYTES
+            queuedWire < control.window * blockBytes
           ) {
             // Never put more than one bounded window into the browser/network send queue.
             if (
               ws.bufferedAmount >
-              BLOCK_BYTES * Math.max(1, control.window - 1)
+              blockBytes * Math.max(1, control.window - 1)
             ) {
               schedule();
               break;
             }
             const offset = next,
               prepared = await prepareChunk(
-                options.file.slice(offset, offset + BLOCK_BYTES),
+                options.file.slice(offset, offset + blockBytes),
                 compression,
               );
             if (
@@ -185,7 +188,14 @@ export function uploadPipeline(options: {
               ready ||
               message.protocol !== PIPELINE_PROTOCOL ||
               message.size !== options.file.size ||
-              message.blockBytes !== BLOCK_BYTES ||
+              ![
+                MIN_BLOCK_BYTES,
+                BLOCK_BYTES,
+                2 * 1024 * 1024,
+                MAX_BLOCK_BYTES,
+              ].includes(
+                message.blockBytes,
+              ) ||
               message.maxInFlight !== MAX_IN_FLIGHT ||
               !Number.isSafeInteger(message.offset) ||
               message.offset < 0 ||
@@ -195,6 +205,7 @@ export function uploadPipeline(options: {
             if (typeof message.connectionId !== "string")
               throw new PipelineError("転送接続が不正です", true);
             connectionId = message.connectionId;
+            blockBytes = message.blockBytes;
             ready = true;
             next = acknowledged = message.offset;
             if (message.receipt) {

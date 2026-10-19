@@ -1100,6 +1100,38 @@ hr {
   -webkit-overflow-scrolling: touch;
   outline: none;
 }
+.screen-modal {
+  display: flex;
+  background: rgb(37 40 46 / 45%);
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  overflow: hidden;
+}
+.screen-modal .screen-header {
+  display: none;
+}
+.screen-modal .screen-content {
+  background: var(--panel);
+  width: min(720px, 100%);
+  max-height: min(90vh, 900px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 0 24px 80px rgb(37 40 46 / 25%);
+}
+@media (max-width: 720px) {
+  .screen-modal {
+    padding: 0;
+    align-items: stretch;
+  }
+  .screen-modal .screen-content {
+    width: 100%;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+}
 .screen-header {
   position: sticky;
   top: 0;
@@ -1775,3 +1807,18 @@ hr {
 @media(prefers-reduced-motion:reduce){.social-file-card{transition:none}}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .social-post-icon{overflow:hidden;color:var(--brand);font-weight:700}.social-post-icon>img{width:100%;height:100%;object-fit:cover}
+
+.maintenance-view { max-width: 720px; margin: 36px auto; padding: clamp(24px, 5vw, 52px); }
+.maintenance-view h2 { font-size: clamp(1.5rem, 3vw, 2.3rem); }
+.screen-modal { position: fixed; }
+.screen-modal-close {
+  position: absolute;
+  top: max(38px, calc((100dvh - min(90vh, 900px)) / 2 + 12px));
+  right: max(24px, calc(50% - 360px + 12px));
+  z-index: 3;
+  min-width: 40px;
+  min-height: 40px;
+}
+@media (max-width: 720px) {
+  .screen-modal-close { top: 12px; right: 12px; }
+}

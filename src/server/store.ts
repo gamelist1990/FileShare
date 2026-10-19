@@ -54,6 +54,7 @@ export interface Item {
 }
 export class Store {
   registrationPolicy: RegistrationPolicy = { ...defaultRegistrationPolicy };
+  maintenanceUntil: number | null = null;
   filePolicy: FilePolicy;
   db: Database;
   secret: string;
@@ -155,6 +156,14 @@ export class Store {
       .get() as { value: string } | null;
     if (savedAI)
       Object.assign(config.ai, validateAISettings(JSON.parse(savedAI.value)));
+    const savedMaintenance = this.db
+      .query("SELECT value FROM admin_settings WHERE key='maintenance'")
+      .get() as { value: string } | null;
+    if (savedMaintenance) {
+      const until = Number(JSON.parse(savedMaintenance.value)?.until);
+      if (Number.isSafeInteger(until) && until > Date.now())
+        this.maintenanceUntil = until;
+    }
     const count = this.db
       .query(
         "SELECT count(*) AS n FROM users WHERE level=4 AND status='approved'",

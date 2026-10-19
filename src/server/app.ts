@@ -178,9 +178,21 @@ export async function createApp(config: Config) {
               .get(),
             preview: config.preview.enabled,
             filePolicy: store.filePolicy,
+            maintenanceUntil:
+              store.maintenanceUntil && store.maintenanceUntil > Date.now()
+                ? store.maintenanceUntil
+                : null,
           });
           return;
         }
+        if (
+          store.maintenanceUntil &&
+          store.maintenanceUntil > Date.now() &&
+          path.startsWith("/api/") &&
+          user?.level !== 4 &&
+          !path.startsWith("/api/auth/")
+        )
+          throw new HttpError(503, "メンテナンス中です。管理者以外は操作できません");
         if (path === "/healthz" && method === "GET") {
           json(res, 200, { ok: true });
           return;

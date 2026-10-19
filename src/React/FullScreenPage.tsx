@@ -7,9 +7,11 @@ let nextScreen = 0;
 export function FullScreenPage({
   children,
   onClose,
+  variant = "page",
 }: {
   children: React.ReactNode;
   onClose: () => void;
+  variant?: "page" | "modal";
 }) {
   const root = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -40,9 +42,14 @@ export function FullScreenPage({
   }, []);
   return createPortal(
     <div
-      className="screen-page"
+      className={"screen-page" + (variant === "modal" ? " screen-modal" : "")}
       ref={root}
       tabIndex={-1}
+      role={variant === "modal" ? "dialog" : undefined}
+      aria-modal={variant === "modal" ? true : undefined}
+      onClick={(e) => {
+        if (variant === "modal" && e.target === e.currentTarget) close.current();
+      }}
       onKeyDown={(e) => {
         if (e.key === "Escape") close.current();
       }}
@@ -55,6 +62,10 @@ export function FullScreenPage({
           PEXserver <strong>FileShare</strong>
         </span>
       </header>
+      {variant === "modal" && (
+        <button type="button" className="screen-modal-close"
+          onClick={() => close.current()} aria-label="一覧に戻る">✕</button>
+      )}
       {children}
     </div>,
     document.body,
