@@ -11,6 +11,10 @@ export class Previews {
   path(id: string) {
     return join(this.store.cacheDir, id + ".mp4");
   }
+  status(item: Item) {
+    if (existsSync(this.path(item.id))) return { state: "ready" };
+    return this.jobs.get(item.id) ?? { state: "original" };
+  }
   async request(item: Item) {
     if (!this.store.config.preview.enabled)
       throw new HttpError(403, "動画変換は無効です");
@@ -80,7 +84,7 @@ export class Previews {
             "-map",
             "0:a:0?",
             "-vf",
-            "scale=w=854:h=480:force_original_aspect_ratio=decrease:force_divisible_by=2",
+            "scale=w=min(640\\,iw):h=min(360\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2,fps=24,format=yuv420p",
             "-c:v",
             "libx264",
             "-preset",
@@ -88,15 +92,15 @@ export class Previews {
             "-threads",
             String(config.threads),
             "-b:v",
-            "600k",
+            "400k",
             "-maxrate",
-            "800k",
+            "480k",
             "-bufsize",
-            "1600k",
+            "960k",
             "-c:a",
             "aac",
             "-b:a",
-            "96k",
+            "64k",
             "-movflags",
             "+faststart",
             "-fs",

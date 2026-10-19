@@ -395,6 +395,15 @@ export async function createApp(config: Config) {
             });
             return;
           }
+          if (method === "GET" && action === "preview") {
+            const item = readItem(store, user, id);
+            json(res, 200, {
+              ...previews.status(item),
+              canCreate: !!user && config.preview.enabled,
+              maxSeconds: config.preview.maxSeconds,
+            });
+            return;
+          }
           if (method === "POST" && action === "preview") {
             const i = readItem(store, user, id);
             requireUser(user);

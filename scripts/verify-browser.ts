@@ -485,6 +485,57 @@ try {
     path: ".artifacts/rankings-mobile.png",
     fullPage: true,
   });
+  await page.goto(origin);
+  await page.getByRole("button", { name: "パスキー追加", exact: true }).click();
+  await page.getByText("登録済み 1 / 3 件", { exact: true }).waitFor();
+  await page
+    .getByRole("button", { name: "別端末用の登録URLを発行", exact: true })
+    .click();
+  const deviceURL = await page
+    .getByLabel("別端末用の登録URL", { exact: true })
+    .inputValue();
+  const deviceContext = await browser.newContext();
+  const devicePage = await deviceContext.newPage();
+  const deviceCDP = await deviceContext.newCDPSession(devicePage);
+  await deviceCDP.send("WebAuthn.enable");
+  await deviceCDP.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  await devicePage.goto(deviceURL);
+  await devicePage
+    .getByRole("button", { name: "この端末にパスキーを追加", exact: true })
+    .click();
+  await devicePage
+    .getByRole("status")
+    .filter({ hasText: "パスキーを追加しました" })
+    .waitFor();
+  await devicePage
+    .getByRole("button", { name: "ログイン画面へ戻る", exact: true })
+    .click();
+  await devicePage.locator(".screen-page").waitFor({ state: "detached" });
+  await devicePage
+    .getByRole("button", { name: "パスキーでログイン", exact: true })
+    .click();
+  await devicePage
+    .locator(".screen-content")
+    .getByRole("button", { name: "パスキーでログイン", exact: true })
+    .click();
+  await devicePage.getByText("Level 4 · 管理者", { exact: true }).waitFor();
+  await deviceContext.close();
+  await page.getByRole("button", { name: "一覧に戻る", exact: true }).click();
+  await page.getByRole("button", { name: "パスキー追加", exact: true }).click();
+  await page.getByText("登録済み 2 / 3 件", { exact: true }).waitFor();
+  await page.screenshot({
+    path: ".artifacts/passkey-devices.png",
+    fullPage: true,
+  });
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(
     "Browser verified: bootstrap WebAuthn registration, passkey login, private upload, publication settings, administrator page, desktop/mobile screenshots.",

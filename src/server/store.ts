@@ -89,6 +89,7 @@ export class Store {
       .exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, level INTEGER NOT NULL CHECK(level BETWEEN 0 AND 4), status TEXT NOT NULL, quota INTEGER NOT NULL, ip TEXT NOT NULL, created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), public_key BLOB NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS device_enrollments (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS challenges (id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id TEXT, challenge TEXT NOT NULL, ip TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, parent TEXT REFERENCES items(id), owner TEXT REFERENCES users(id), name TEXT NOT NULL, folder INTEGER NOT NULL, size INTEGER NOT NULL DEFAULT 0, mime TEXT NOT NULL DEFAULT '', visibility TEXT NOT NULL DEFAULT 'private', min_level INTEGER NOT NULL DEFAULT 0, key_hash TEXT, created INTEGER NOT NULL, deleted INTEGER);

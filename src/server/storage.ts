@@ -81,7 +81,7 @@ export function listItems(
     items: items
       .filter((i) => canRead(store, user, i))
       .map((i) => safeItem(store, i)),
-    writable: canWrite(user, owner),
+    writable: canWrite(user, owner, store),
     uploadable: canUpload(store, user, owner),
     usage: store.usage(owner ?? undefined),
     capacity:
@@ -675,6 +675,7 @@ export async function cleanup(store: Store, full = true) {
     }
     store.db.run("DELETE FROM sessions WHERE expires<?", [now]);
     store.db.run("DELETE FROM challenges WHERE expires<?", [now]);
+    store.db.run("DELETE FROM device_enrollments WHERE expires<?", [now]);
     store.db.run("DELETE FROM grants WHERE expires<?", [now]);
     store.db.run("DELETE FROM limits WHERE expires<?", [now]);
     store.db.run("DELETE FROM download_receipts WHERE expires<?", [now]);

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import Markdown from "react-markdown";
 import { previewKind } from "../shared/preview";
 import { CopyButton } from "./CopyButton";
@@ -33,6 +33,77 @@ export function PreviewContent({
         });
     return () => abort.abort();
   }, [item.id, kind]);
+  const [videoSource, setVideoSource] = useState(direct),
+    [videoInfo, setVideoInfo] = useState<any>(null),
+    [videoBusy, setVideoBusy] = useState(false);
+  const videoAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    videoAbort.current = controller;
+    setVideoSource(source || direct);
+    setVideoInfo(null);
+    setVideoBusy(false);
+    if (kind === "video")
+      fetch(`/api/items/${item.id}/preview`, { signal: controller.signal })
+        .then(async (r) => {
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error);
+          if (controller.signal.aborted) return;
+          setVideoInfo(data);
+          if (data.state === "ready") setVideoSource(direct + "/preview");
+        })
+        .catch((e) => {
+          if (!controller.signal.aborted) setNotice(e.message);
+        });
+    return () => controller.abort();
+  }, [item.id, source, kind]);
+  const lightweight = async () => {
+    const signal = videoAbort.current?.signal;
+    if (!signal) return;
+    setVideoBusy(true);
+    setNotice(
+      "CPUで軽量プレビューを準備しています。元の動画はそのまま再生できます。",
+    );
+    try {
+      let r = await fetch(`/api/items/${item.id}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal,
+      });
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error);
+        if (data.state === "ready") {
+          setVideoSource(direct + "/preview");
+          setVideoInfo({ ...videoInfo, state: "ready" });
+          setNotice("軽量プレビューを表示しています。");
+          return;
+        }
+        if (data.state === "failed")
+          throw new Error(data.error || "軽量プレビューを作成できませんでした");
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            signal.removeEventListener("abort", abort);
+            resolve();
+          }, 2000);
+          const abort = () => {
+            clearTimeout(timer);
+            reject(new Error("中断しました"));
+          };
+          signal.addEventListener("abort", abort, { once: true });
+          if (signal.aborted) abort();
+        });
+        r = await fetch(`/api/items/${item.id}/preview`, { signal });
+      }
+      throw new Error("変換中です。しばらくしてから再度開いてください。");
+    } catch (e) {
+      if (!signal.aborted)
+        setNotice(e instanceof Error ? e.message : "変換できませんでした");
+    } finally {
+      if (!signal.aborted) setVideoBusy(false);
+    }
+  };
   const standalone = `${location.origin}/files/${item.id}/preview`;
   return (
     <>
@@ -42,7 +113,39 @@ export function PreviewContent({
       ) : kind === "pdf" ? (
         <iframe className="pdf-preview" title={item.name} src={direct} />
       ) : kind === "video" ? (
-        <video controls src={source || direct} preload="metadata" />
+        <div className="native-video-preview">
+          <video
+            key={videoSource}
+            controls
+            playsInline
+            src={videoSource}
+            preload="metadata"
+            onError={() =>
+              setNotice(
+                "この動画を再生できない場合は、軽量プレビューを選択してください。",
+              )
+            }
+          />
+          <div className="actions">
+            {videoInfo?.state === "ready" && (
+              <>
+                <button onClick={() => setVideoSource(direct + "/preview")}>
+                  軽量プレビューで再生
+                </button>
+                <button onClick={() => setVideoSource(direct)}>
+                  元の画質で再生
+                </button>
+              </>
+            )}
+            {videoInfo?.canCreate && videoInfo.state !== "ready" && (
+              <button disabled={videoBusy} onClick={lightweight}>
+                {videoBusy
+                  ? "軽量化しています…"
+                  : `軽量プレビューを作る（先頭${videoInfo.maxSeconds}秒）`}
+              </button>
+            )}
+          </div>
+        </div>
       ) : kind === "audio" ? (
         <audio controls src={source || direct} preload="metadata" />
       ) : kind === "markdown" ? (

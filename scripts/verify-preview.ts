@@ -56,6 +56,34 @@ try {
   if (job?.state !== "ready") throw new Error(JSON.stringify(job));
   const info = await stat(previews.path(id));
   if (info.size < 100) throw new Error("Empty preview");
+  const probe = Bun.spawnSync([
+    "ffprobe",
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=codec_name,width,height,pix_fmt,r_frame_rate",
+    "-of",
+    "json",
+    previews.path(id),
+  ]);
+  if (probe.exitCode !== 0) throw new Error("Preview inspection failed");
+  const stream = JSON.parse(probe.stdout.toString()).streams[0];
+  if (
+    stream.codec_name !== "h264" ||
+    stream.width > 640 ||
+    stream.height > 360 ||
+    stream.pix_fmt !== "yuv420p"
+  )
+    throw new Error("Preview is not a bounded native-compatible video");
+  const previewBytes = await Bun.file(previews.path(id)).arrayBuffer();
+  const container = Buffer.from(previewBytes);
+  if (
+    container.indexOf("moov") < 0 ||
+    container.indexOf("moov") > container.indexOf("mdat")
+  )
+    throw new Error("MP4 metadata must precede media for fast native startup");
   const attack = randomUUID();
   await writeFile(
     join(store.blobDir, attack),

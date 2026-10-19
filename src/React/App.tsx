@@ -1,3 +1,4 @@
+import { PasskeyPage } from "./PasskeyPage";
 import { PreviewContent } from "./PreviewContent";
 import { compactCount } from "./CommunityPages";
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
@@ -57,6 +58,11 @@ async function api(path: string, method = "GET", body?: unknown) {
   return d;
 }
 export function App() {
+  const [passkeyOpen, setPasskeyOpen] = useState(false);
+  const [deviceToken, setDeviceToken] = useState(
+    () =>
+      new URLSearchParams(location.hash.slice(1)).get("device-enroll") ?? "",
+  );
   const [user, setUser] = useState<User | null>(null),
     [ready, setReady] = useState(false),
     [items, setItems] = useState<Item[]>([]),
@@ -156,6 +162,9 @@ export function App() {
     const syncInvitation = () => {
       const token =
         new URLSearchParams(location.hash.slice(1)).get("staff-invite") ?? "";
+      setDeviceToken(
+        new URLSearchParams(location.hash.slice(1)).get("device-enroll") ?? "",
+      );
       setStaffToken(token);
       if (!token) {
         setStaffInvitation(null);
@@ -475,22 +484,6 @@ export function App() {
       setPreview(i);
       setPreviewUrl("/api/content/" + i.id);
     });
-  const transcode = () =>
-    run(async () => {
-      if (!preview) return;
-      const id = preview.id;
-      setPreviewUrl("");
-      for (let attempt = 0; attempt < 65; attempt++) {
-        const d = await api("/api/items/" + id + "/preview", "POST", {});
-        if (d.state === "ready") {
-          setPreviewUrl("/api/content/" + id + "/preview");
-          return;
-        }
-        if (d.state === "failed") throw new Error(d.error);
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-      throw new Error("変換中です。しばらくして再度開いてください");
-    });
   const mkdirAction = () => {
     setFolderName("");
     setTask("folder");
@@ -597,7 +590,7 @@ export function App() {
                   Level {user.level} · {levels[user.level]}
                 </small>
               </span>
-              <button onClick={() => register(true)}>パスキー追加</button>
+              <button onClick={() => setPasskeyOpen(true)}>パスキー追加</button>
               <button
                 onClick={() =>
                   run(async () => {
@@ -1218,6 +1211,18 @@ export function App() {
           </section>
         </FullScreenPage>
       )}
+      {(passkeyOpen || deviceToken) && (
+        <PasskeyPage
+          token={deviceToken}
+          onClose={() => {
+            setPasskeyOpen(false);
+            if (deviceToken) {
+              setDeviceToken("");
+              history.replaceState({}, "", location.pathname + location.search);
+            }
+          }}
+        />
+      )}
       {authOpen && (
         <FullScreenPage onClose={() => setAuthOpen(false)}>
           <section
@@ -1465,11 +1470,6 @@ export function App() {
           >
             <h2 id="preview-title">{preview.name}</h2>
             <PreviewContent item={preview} source={previewUrl} />
-            {user && /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(preview.name) && (
-              <button onClick={transcode}>
-                軽量プレビューを作る（先頭120秒）
-              </button>
-            )}
             <button className="primary" onClick={() => download(preview)}>
               ダウンロード · {size(preview.size)}
             </button>

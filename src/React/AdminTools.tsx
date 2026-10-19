@@ -129,7 +129,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
       />
       {registration && (
         <section className="panel" id="admin-registration">
-          <h2>登録・一般ユーザーの投稿</h2>
+          <h2>登録・共有への投稿・パスキー</h2>
           <p className="muted">
             標準は招待限定です。登録済みアカウントは常にパスキーでログインできます。自動承認でもパスキー登録とIP別の登録制限は必要です。
           </p>
@@ -149,6 +149,11 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
               [
                 ["publicRegistration", "招待URLのない一般ユーザーの登録を許可"],
                 ["autoApprove", "一般ユーザーを登録時に自動承認"],
+                ["vipSharedUploads", "VIPの共有ストレージへの投稿を許可"],
+                [
+                  "vipSharedEditing",
+                  "VIPの共有ストレージの編集・削除・フォルダ作成を許可",
+                ],
                 [
                   "generalUploads",
                   "承認済み一般ユーザーの共有ストレージへの投稿を許可",
@@ -169,6 +174,24 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                 {label}
               </label>
             ))}
+            <label>
+              登録パスキー数の上限
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={registration.maxPasskeys}
+                onChange={(e) =>
+                  setRegistration({
+                    ...registration,
+                    maxPasskeys: Number(e.target.value),
+                  })
+                }
+              />
+            </label>
+            <p className="muted">
+              既定は3件です。上限を下げても登録済みパスキーは削除しません。VIPは共有への投稿・編集が標準で無効で、一般ユーザーの投稿設定から独立しています。
+            </p>
             <p className="muted">
               一般ユーザーは投稿のみ可能です。フォルダの作成、公開範囲の変更、既存ファイルの編集・削除、管理設定はできません。
             </p>

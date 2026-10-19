@@ -72,6 +72,51 @@ export async function authRoute(
       .get(invitation.id);
     return { body: row };
   }
+  if (route === "passkeys") {
+    const user = requireUser(current);
+    return {
+      body: {
+        count: passkeyCount(store, user.id),
+        max: store.registrationPolicy.maxPasskeys,
+      },
+    };
+  }
+  if (route === "device/create") {
+    const user = requireUser(current);
+    checkPasskeyLimit(store, user.id);
+    if (!store.limit("device-create:" + user.id, 10, 3600000))
+      throw new HttpError(429, "端末登録URLの発行回数が多すぎます");
+    const token = randomToken(),
+      expires = Date.now() + 600000;
+    store.db.transaction(() => {
+      store.db.run("DELETE FROM device_enrollments WHERE user_id=?", [user.id]);
+      store.db.run(
+        "INSERT INTO device_enrollments(hash,user_id,expires) VALUES (?,?,?)",
+        [digestToken(token), user.id, expires],
+      );
+    })();
+    store.audit(ip, user, "passkey.link.create");
+    return {
+      body: {
+        url:
+          store.config.origin + "/#device-enroll=" + encodeURIComponent(token),
+        expires,
+      },
+    };
+  }
+  if (route === "device/revoke") {
+    const user = requireUser(current);
+    store.db.run("DELETE FROM device_enrollments WHERE user_id=?", [user.id]);
+    store.audit(ip, user, "passkey.link.revoke");
+    return { body: { ok: true } };
+  }
+  if (route === "device/info") {
+    const user = deviceEnrollment(store, digestToken(String(data.token ?? "")));
+    checkPasskeyLimit(store, user.id);
+    return {
+      body: { name: user.name, max: store.registrationPolicy.maxPasskeys },
+    };
+  }
   if (route === "logout") {
     store.db.run("DELETE FROM sessions WHERE hash=?", [
       digestToken(cookieValue(cookie, "fs_session")),
@@ -83,7 +128,14 @@ export async function authRoute(
   }
   if (route === "register/options" || route === "enroll/options") {
     const enroll = route.startsWith("enroll");
-    if (enroll) requireUser(current);
+    const deviceHash =
+      enroll && data.deviceToken ? digestToken(String(data.deviceToken)) : null;
+    const enrollingUser = enroll
+      ? deviceHash
+        ? deviceEnrollment(store, deviceHash)
+        : requireUser(current)
+      : null;
+    if (enrollingUser) checkPasskeyLimit(store, enrollingUser.id);
     if (
       (!store.config.registration.enabled ||
         !store.registrationPolicy.publicRegistration) &&
@@ -93,7 +145,7 @@ export async function authRoute(
     )
       throw new HttpError(403, "新規登録を受け付けていません");
     const name = enroll
-      ? current!.name
+      ? enrollingUser!.name
       : String(data.name ?? "")
           .trim()
           .toLowerCase();
@@ -122,6 +174,7 @@ export async function authRoute(
     // A verified bootstrap key authorizes first-admin setup independently of
     // ordinary signup attempts. The shared auth/request rate limits still apply.
     if (
+      !enroll &&
       !setupHash &&
       !staffInviteHash &&
       !store.limit(
@@ -134,7 +187,7 @@ export async function authRoute(
     if (!enroll && store.db.query("SELECT 1 FROM users WHERE name=?").get(name))
       throw new HttpError(409, "登録できないユーザー名です");
     if (!enroll && !setupHash && !staffInviteHash) checkIp(store, ip);
-    const id = enroll ? current!.id : randomUUID();
+    const id = enroll ? enrollingUser!.id : randomUUID();
     const opts = await generateRegistrationOptions({
       rpName: "PEXserver FileShare",
       rpID,
@@ -157,7 +210,7 @@ export async function authRoute(
     store.db.run("INSERT INTO challenges VALUES (?,?,?,?,?,?)", [
       cid,
       enroll ? "enroll" : "register",
-      JSON.stringify({ id, name, setupHash, staffInviteHash }),
+      JSON.stringify({ id, name, setupHash, staffInviteHash, deviceHash }),
       opts.challenge,
       ip,
       Date.now() + 300_000,
@@ -173,7 +226,12 @@ export async function authRoute(
       ip,
     );
     const meta = JSON.parse(challenge.user_id);
-    if (enroll && requireUser(current).id !== meta.id)
+    if (
+      enroll &&
+      (meta.deviceHash
+        ? deviceEnrollment(store, meta.deviceHash).id
+        : requireUser(current).id) !== meta.id
+    )
       throw new HttpError(403, "認証をやり直してください");
     const verification = await verifyRegistrationResponse({
       response: data as RegistrationResponseJSON,
@@ -193,6 +251,24 @@ export async function authRoute(
     let invitationLevel = 0;
     let autoApproved = false;
     store.db.transaction(() => {
+      if (enroll) {
+        requireUser(store.user(meta.id));
+        checkPasskeyLimit(store, meta.id);
+        if (meta.deviceHash) {
+          if (deviceEnrollment(store, meta.deviceHash).id !== meta.id)
+            throw new HttpError(403, "端末登録URLが無効です");
+          const row = store.db
+            .query(
+              "UPDATE device_enrollments SET used=1 WHERE hash=? AND used=0 AND expires>? RETURNING hash",
+            )
+            .get(meta.deviceHash, Date.now());
+          if (!row)
+            throw new HttpError(
+              403,
+              "端末登録URLは無効・期限切れ・利用済みです",
+            );
+        }
+      }
       if (!enroll) {
         if (meta.setupHash) {
           if (
@@ -368,5 +444,30 @@ function consumeChallenge(
     .get(id) as any;
   if (!row || row.kind !== kind || row.ip !== ip || row.expires <= Date.now())
     throw new HttpError(400, "認証操作をやり直してください");
+  return row;
+}
+
+export function passkeyCount(store: Store, id: string) {
+  return (
+    store.db
+      .query("SELECT count(*) AS n FROM credentials WHERE user_id=?")
+      .get(id) as { n: number }
+  ).n;
+}
+function checkPasskeyLimit(store: Store, id: string) {
+  if (passkeyCount(store, id) >= store.registrationPolicy.maxPasskeys)
+    throw new HttpError(
+      403,
+      `登録パスキー数の上限（${store.registrationPolicy.maxPasskeys}件）です。管理者にお問い合わせください`,
+    );
+}
+function deviceEnrollment(store: Store, hash: string): User {
+  const row = store.db
+    .query(
+      "SELECT u.* FROM device_enrollments e JOIN users u ON u.id=e.user_id WHERE e.hash=? AND e.used=0 AND e.expires>? AND u.status='approved'",
+    )
+    .get(hash, Date.now()) as User | null;
+  if (!row)
+    throw new HttpError(403, "端末登録URLは無効・期限切れ・利用済みです");
   return row;
 }

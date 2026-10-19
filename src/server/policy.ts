@@ -49,13 +49,19 @@ export function canRead(
   }
   return item.visibility === "public" && (user?.level ?? 0) >= item.min_level;
 }
-export function canWrite(user: User | null, owner: string | null): boolean {
+export function canWrite(
+  user: User | null,
+  owner: string | null,
+  store: Store,
+): boolean {
   return (
     !!user &&
     user.status === "approved" &&
     (user.level === 4 ||
       (owner === user.id && user.level >= 1) ||
-      (!owner && user.level >= 3))
+      (!owner &&
+        (user.level >= 3 ||
+          (user.level === 1 && store.registrationPolicy.vipSharedEditing))))
   );
 }
 export function canUpload(
@@ -64,11 +70,12 @@ export function canUpload(
   owner: string | null,
 ): boolean {
   return (
-    canWrite(user, owner) ||
+    canWrite(user, owner, store) ||
     (!!user &&
       user.status === "approved" &&
       owner === null &&
-      store.registrationPolicy.generalUploads)
+      ((user.level === 0 && store.registrationPolicy.generalUploads) ||
+        (user.level === 1 && store.registrationPolicy.vipSharedUploads)))
   );
 }
 export function readItem(store: Store, user: User | null, id: string): Item {
@@ -79,7 +86,7 @@ export function readItem(store: Store, user: User | null, id: string): Item {
 }
 export function writeItem(store: Store, user: User | null, id: string): Item {
   const i = readItem(store, user, id);
-  if (!canWrite(user, i.owner))
+  if (!canWrite(user, i.owner, store))
     throw new HttpError(403, "編集権限がありません");
   return i;
 }
@@ -116,7 +123,7 @@ export function destination(
     owner = item.owner;
     parentId = item.id;
   }
-  if (!(uploadOnly ? canUpload(store, u, owner) : canWrite(u, owner)))
+  if (!(uploadOnly ? canUpload(store, u, owner) : canWrite(u, owner, store)))
     throw new HttpError(403, "この領域には書き込めません");
   return { owner, parent: parentId };
 }

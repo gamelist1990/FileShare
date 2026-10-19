@@ -1,3 +1,4 @@
+import { defaultRegistrationPolicy } from "../src/server/settings";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -616,6 +617,7 @@ test("registration defaults to invitation-only and rechecks disabled public sign
   const reopened = new Store(cloned);
   try {
     expect(reopened.registrationPolicy).toEqual({
+      ...defaultRegistrationPolicy,
       ...policy,
       generalUploads: false,
     });
@@ -623,8 +625,242 @@ test("registration defaults to invitation-only and rechecks disabled public sign
     reopened.db.close();
   }
   app.store.registrationPolicy = {
+    ...defaultRegistrationPolicy,
     publicRegistration: false,
     autoApprove: false,
     generalUploads: false,
   };
+});
+
+test("VIP shared permissions are opt-in and independent of general uploads, including in-flight transfers", async () => {
+  const id = "vip-shared";
+  app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
+    id,
+    id,
+    1,
+    "approved",
+    5e9,
+    "192.0.2.20",
+    Date.now(),
+  ]);
+  const token = randomToken(),
+    cookie = "fs_session=" + token;
+  app.store.db.run("INSERT INTO sessions VALUES (?,?,?)", [
+    digestToken(token),
+    id,
+    Date.now() + 60000,
+  ]);
+  const policy = { ...defaultRegistrationPolicy, generalUploads: true };
+  await request("/api/admin/settings", "PATCH", { registration: policy });
+  expect(
+    (
+      await request(
+        "/api/uploads",
+        "POST",
+        { name: "blocked.txt", size: 0 },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (await request("/api/folders", "POST", { name: "blocked" }, "", cookie))
+      .status,
+  ).toBe(403);
+  expect(
+    (
+      await request(
+        "/api/uploads",
+        "POST",
+        { name: "my-private.txt", size: 0, space: "private" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(201);
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...policy, vipSharedUploads: true },
+  });
+  const upload = await (
+    await request(
+      "/api/uploads",
+      "POST",
+      { name: "vip-shared.txt", size: 0 },
+      "",
+      cookie,
+    )
+  ).json();
+  expect(
+    (
+      await request(
+        `/api/uploads/${upload.id}/complete`,
+        "POST",
+        {},
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await request(
+        `/api/items/${upload.id}`,
+        "PATCH",
+        { name: "renamed.txt" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...policy, vipSharedEditing: true },
+  });
+  expect(
+    (
+      await request(
+        `/api/items/${upload.id}`,
+        "PATCH",
+        { name: "renamed.txt" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(200);
+  expect(
+    (await request("/api/folders", "POST", { name: "vip-folder" }, "", cookie))
+      .status,
+  ).toBe(201);
+  const pending = await (
+    await request(
+      "/api/uploads",
+      "POST",
+      { name: "in-flight.txt", size: 0 },
+      "",
+      cookie,
+    )
+  ).json();
+  await request("/api/admin/settings", "PATCH", { registration: policy });
+  expect(
+    (await request(`/api/uploads/${pending.id}`, "GET", undefined, "", cookie))
+      .status,
+  ).toBe(403);
+  expect(
+    (
+      await request(
+        `/api/items/${upload.id}`,
+        "PATCH",
+        { name: "denied.txt" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (await (await request("/api/items", "GET", undefined, "staff")).json())
+      .writable,
+  ).toBe(true);
+});
+
+test("cross-device enrollment is single-use, expires, revokes and atomically enforces configurable passkey limits", async () => {
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...defaultRegistrationPolicy, maxPasskeys: 3 },
+  });
+  const create = async () => {
+    const response = await request("/api/auth/device/create", "POST", {});
+    expect(response.status).toBe(200);
+    const { url } = await response.json();
+    return new URLSearchParams(new URL(url).hash.slice(1)).get(
+      "device-enroll",
+    )!;
+  };
+  const start = async (token?: string) => {
+    const response = await request(
+      "/api/auth/enroll/options",
+      "POST",
+      token ? { deviceToken: token } : {},
+      token ? "" : "admin",
+    );
+    expect(response.status).toBe(200);
+    return {
+      options: await response.json(),
+      cookie:
+        response.headers.get("set-cookie")!.split(";")[0] +
+        (token ? "" : "; " + cookies.admin),
+    };
+  };
+  const finish = (ceremony: any) =>
+    request(
+      "/api/auth/enroll/verify",
+      "POST",
+      registration(ceremony.options.challenge),
+      "",
+      ceremony.cookie,
+    );
+  expect(
+    (await request("/api/auth/enroll/options", "POST", {}, "")).status,
+  ).toBe(401);
+  const revoked = await create(),
+    race = await start(revoked);
+  await request("/api/auth/device/revoke", "POST", {});
+  expect((await finish(race)).status).toBe(403);
+  const expired = await create();
+  app.store.db.run("UPDATE device_enrollments SET expires=? WHERE hash=?", [
+    Date.now() - 1,
+    digestToken(expired),
+  ]);
+  expect(
+    (await request("/api/auth/device/info", "POST", { token: expired }, ""))
+      .status,
+  ).toBe(403);
+  const invalidated = await create(),
+    valid = await create();
+  expect(
+    (await request("/api/auth/device/info", "POST", { token: invalidated }, ""))
+      .status,
+  ).toBe(403);
+  const a = await start(valid),
+    b = await start(valid);
+  const outcomes = await Promise.all([finish(a), finish(b)]);
+  expect(outcomes.map((r) => r.status).sort()).toEqual([200, 403]);
+  expect(
+    (await request("/api/auth/device/info", "POST", { token: valid }, ""))
+      .status,
+  ).toBe(403);
+  expect((await finish(await start())).status).toBe(200);
+  const c = await start(),
+    d = await start();
+  expect(
+    (await Promise.all([finish(c), finish(d)])).map((r) => r.status).sort(),
+  ).toEqual([200, 403]);
+  expect(
+    (await (await request("/api/auth/passkeys", "POST", {})).json()).count,
+  ).toBe(3);
+  expect((await request("/api/auth/device/create", "POST", {})).status).toBe(
+    403,
+  );
+  expect((await request("/api/auth/enroll/options", "POST", {})).status).toBe(
+    403,
+  );
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...defaultRegistrationPolicy, maxPasskeys: 1 },
+  });
+  expect(
+    (await (await request("/api/auth/passkeys", "POST", {})).json()).count,
+  ).toBe(3);
+  expect(
+    (await request("/api/auth/login/options", "POST", {}, "")).status,
+  ).toBe(200);
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...defaultRegistrationPolicy, maxPasskeys: 4 },
+  });
+  expect((await request("/api/auth/enroll/options", "POST", {})).status).toBe(
+    200,
+  );
+  expect(
+    (
+      await request("/api/admin/settings", "PATCH", {
+        registration: { ...defaultRegistrationPolicy, maxPasskeys: 0 },
+      })
+    ).status,
+  ).toBe(400);
 });

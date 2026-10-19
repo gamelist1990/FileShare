@@ -80,21 +80,43 @@ export interface RegistrationPolicy {
   publicRegistration: boolean;
   autoApprove: boolean;
   generalUploads: boolean;
+  vipSharedUploads: boolean;
+  vipSharedEditing: boolean;
+  maxPasskeys: number;
 }
 export const defaultRegistrationPolicy: RegistrationPolicy = {
   publicRegistration: false,
   autoApprove: false,
   generalUploads: false,
+  vipSharedUploads: false,
+  vipSharedEditing: false,
+  maxPasskeys: 3,
 };
 export function validateRegistrationPolicy(value: any): RegistrationPolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new HttpError(400, "登録設定を確認してください");
+  value = { ...defaultRegistrationPolicy, ...value };
   if (
     !value ||
-    ["publicRegistration", "autoApprove", "generalUploads"].some(
-      (k) => typeof value[k] !== "boolean",
-    )
+    [
+      "publicRegistration",
+      "autoApprove",
+      "generalUploads",
+      "vipSharedUploads",
+      "vipSharedEditing",
+    ].some((k) => typeof value[k] !== "boolean")
   )
     throw new HttpError(400, "登録設定を確認してください");
+  if (
+    !Number.isSafeInteger(value.maxPasskeys) ||
+    value.maxPasskeys < 1 ||
+    value.maxPasskeys > 100
+  )
+    throw new HttpError(400, "登録パスキー数の上限は1〜100で指定してください");
   return {
+    vipSharedUploads: value.vipSharedUploads,
+    vipSharedEditing: value.vipSharedEditing,
+    maxPasskeys: value.maxPasskeys,
     publicRegistration: value.publicRegistration,
     autoApprove: value.autoApprove,
     generalUploads: value.generalUploads,
