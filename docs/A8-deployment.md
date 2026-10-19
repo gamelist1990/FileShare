@@ -96,3 +96,9 @@ CI run 39203963126成功後にrelease-2.7のLinux x64実行ファイルを反映
 CI run 39204559277成功後、release-2.8をA8へ反映。実行ファイルSHA-256 `52e078432bf3844ab6c08d2dadbfd39c50f0682fa400bfe1fee6ce2d8542f77c`、バックアップ `~/.local/opt/pex-fileshare/backups/http3-advertisement-2.8-20261019T052919Z/`。公開healthzとランキング200、wgetによる公開ファイルのRange取得1024 bytes、招待限定登録・初期設定完了を確認。fileshareと既存ai-inferenceのユーザーサービスはactive。3ファイル47,998,735 bytes、管理者1・スタッフ1を保持。
 
 **HTTP/3はまだ有効化していない。** FerrumProxy core 69dbb36のARM64リリースは公開エッジのwebインスタンスに `.next` として配置済み。GUI更新確認でCodexブラウザが操作不能となり、ユーザーへキャンセルを依頼中。GUI復旧後、GUI更新・webコア更新・`https.http3` の有効化・UDP443到達性確認が必要。GUIの自己更新確認をページ内表示へ変更する修正92cc445もpush済み。公開QUIC/TLSの実接続が成功するまでFileShareの `http3Port` は0のままとし、Alt-Svcを広告しない。
+
+### 2026-10-19: VIP共有権限・別端末パスキー・軽量動画（2.9）反映済み
+
+CI run 39205561882（fe68fc5）成功後、release-2.9をA8へ反映。実行ファイルSHA-256 `113c4ebc0f70b296517cb702458085ad3a2054c9998898ac24d8803654707826`。バックアップ `~/.local/opt/pex-fileshare/backups/vip-passkeys-video-2.9-20261019T054034Z/`。反映前後とも3ファイル47,998,735 bytes、承認済み管理者1・スタッフ1、登録パスキー2件を保持。実ユーザーのパスキー登録・登録URL発行は実施せず、device_enrollmentsは0件。既存登録設定のない環境ではVIP共有投稿・編集false、上限3件が適用される。
+
+47テスト430 assertions、型検査、依存監査、実行ファイルの転送検証に成功。CIブラウザでは別コンテキストの新規WebAuthn認証器で登録URLから既存アカウントへパスキーを追加し、そのパスキーでログインできることを検証。動画の実際のメタデータ取得、キャッシュされた軽量版選択、元画質への切替、playsinline/preloadも検証。CPU動画検証でH.264/yuv420p・最大640x360・moov先頭とプレイリスト拒否を確認。公開healthz、動画状態API（匿名で変換不可）、配信中UI内のVIP別設定・端末登録・画質切替を確認。共有権限の変更は新規・再開転送で再検証する。HTTP/3広告は従来通り無効のまま。
