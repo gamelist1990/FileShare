@@ -376,9 +376,19 @@ test("A1 durable publication is readable before replication, survives restart, r
     expect((await request(edgePort, coldLocation)).body.equals(coldBytes)).toBe(
       true,
     );
-    expect(
-      (await readFile(join(dir, "a1", coldId + ".cache"))).equals(coldBytes),
-    ).toBe(true);
+    // Delivery intentionally finishes before the optional cache fsync/rename.
+    // Wait for cache publication rather than assuming the HTTP body is its ACK.
+    let cached: Buffer | null = null;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        cached = await readFile(join(dir, "a1", coldId + ".cache"));
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      await Bun.sleep(10);
+    }
+    expect(cached?.equals(coldBytes)).toBe(true);
     app.store.maintenanceUntil = Date.now() + 60000;
     expect((await request(edgePort, coldLocation)).status).toBe(503);
     app.store.maintenanceUntil = null;
