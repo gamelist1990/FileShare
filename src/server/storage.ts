@@ -1,3 +1,5 @@
+import { gunzipSync, createGzip } from "node:zlib";
+import { compressibleName, acceptsGzip } from "../shared/compression";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { join } from "node:path";
@@ -145,7 +147,12 @@ export function initUpload(store: Store, user: User | null, data: any) {
     ]);
     store.db.run("INSERT INTO upload_policies VALUES (?,?)", [id, retention]);
   })();
-  return { id, offset: 0, maxChunk: MAX_CHUNK };
+  return {
+    id,
+    offset: 0,
+    maxChunk: MAX_CHUNK,
+    encodings: ["identity", "gzip"],
+  };
 }
 const busy = new Set<string>();
 export function getUpload(store: Store, user: User | null, id: string): any {
@@ -174,7 +181,21 @@ export async function appendChunk(
     throw new HttpError(409, "転送位置を再確認してください");
   busy.add(id);
   try {
-    const body = await readBody(req, MAX_CHUNK, bandwidth);
+    const encoding = req.headers["upload-encoding"];
+    if (encoding && encoding !== "identity" && encoding !== "gzip")
+      throw new HttpError(400, "未対応の転送圧縮形式です");
+    const encoded = await readBody(req, MAX_CHUNK, bandwidth);
+    let body = encoded;
+    if (encoding === "gzip") {
+      try {
+        body = gunzipSync(encoded, { maxOutputLength: MAX_CHUNK });
+      } catch (error) {
+        throw new HttpError(
+          (error as any).code === "ERR_BUFFER_TOO_LARGE" ? 413 : 400,
+          "圧縮データが不正、または展開後の上限を超えています",
+        );
+      }
+    }
     if (!body.length || row.offset + body.length > row.size)
       throw new HttpError(400, "転送サイズが不正です");
     const checksum = String(req.headers["upload-checksum"] ?? "");
@@ -672,6 +693,19 @@ export async function sendFile(
     "Cache-Control": "private, no-store",
     "Content-Disposition": `${download || !types[ext] ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(item.name).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16))}`,
   };
+  const compress =
+    !req.headers.range &&
+    size >= 32768 &&
+    // Large downloads retain native Range resumption and avoid repeated CPU compression.
+    size <= 8 * 1024 * 1024 &&
+    compressibleName(item.name) &&
+    acceptsGzip(req.headers["accept-encoding"]);
+  if (compressibleName(item.name)) headers.Vary = "Accept-Encoding";
+  if (compress) {
+    delete headers["Content-Length"];
+    headers["Content-Encoding"] = "gzip";
+    headers["Accept-Ranges"] = "none";
+  }
   if (range.partial)
     headers["Content-Range"] = `bytes ${range.start}-${range.end}/${size}`;
   res.writeHead(range.partial ? 206 : 200, headers);
@@ -682,12 +716,21 @@ export async function sendFile(
   const stream = createReadStream(path, {
     start: range.start,
     end: range.end,
-    highWaterMark: 64 * 1024,
+    highWaterMark: 256 * 1024,
   });
-  const close = () => stream.destroy();
+  const output = compress
+    ? stream.pipe(createGzip({ level: 1, chunkSize: 64 * 1024 }))
+    : stream;
+  const close = () => {
+    stream.destroy();
+    if (output !== stream) output.destroy();
+  };
+  const sourceError = (error: Error) => output.destroy(error);
+  if (output !== stream) stream.on("error", sourceError);
   res.once("close", close);
   try {
-    for await (const chunk of stream) {
+    for await (const chunk of output) {
+      if (res.destroyed) break;
       await bandwidth.acquire(chunk.length);
       if (res.destroyed) break;
       if (!res.write(chunk))
@@ -704,7 +747,8 @@ export async function sendFile(
     return await finishResponse(res);
   } finally {
     res.off("close", close);
-    stream.destroy();
+    stream.off("error", sourceError);
+    close();
   }
 }
 function finishResponse(res: ServerResponse): Promise<boolean> {

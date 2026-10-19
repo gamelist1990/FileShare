@@ -1,3 +1,5 @@
+import { gzipSync } from "node:zlib";
+import { acceptsGzip, compressibleName } from "../shared/compression";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { readFile, stat, readdir } from "node:fs/promises";
@@ -30,6 +32,25 @@ import { seal, open as openEnvelope } from "@pexserver/secure-envelope";
 import { ASSETS } from "../generated/v2assets";
 import { adminAction } from "./admin";
 import { ranking, recordDownload } from "./files";
+// Public assets contain no session data. Encode once, then reuse bounded buffers.
+const assetCache = Object.fromEntries(
+  Object.entries(ASSETS).map(([path, asset]) => {
+    const identity = Buffer.from(asset.body, "base64");
+    const compressed =
+      identity.length >= 1024 && compressibleName(path)
+        ? gzipSync(identity, { level: 6 })
+        : null;
+    return [
+      path,
+      {
+        type: asset.type,
+        identity,
+        gzip:
+          compressed && compressed.length < identity.length ? compressed : null,
+      },
+    ];
+  }),
+);
 export async function createApp(config: Config) {
   const store = new Store(config),
     previews = new Previews(store),
@@ -182,7 +203,12 @@ export async function createApp(config: Config) {
         if (upload) {
           if (method === "GET" && !upload[2]) {
             const row = getUpload(store, user, upload[1]);
-            json(res, 200, { id: row.id, offset: row.offset, size: row.size });
+            json(res, 200, {
+              id: row.id,
+              offset: row.offset,
+              size: row.size,
+              encodings: ["identity", "gzip"],
+            });
             return;
           }
           if (method === "DELETE" && !upload[2]) {
@@ -429,12 +455,20 @@ export async function createApp(config: Config) {
         ) {
           if (path === "/admin") requireAdmin(user);
           const asset =
-            ASSETS[path === "/" || path === "/admin" ? "/index.html" : path];
+            assetCache[
+              path === "/" || path === "/admin" ? "/index.html" : path
+            ];
           if (!asset) throw new HttpError(404, "見つかりません");
-          res.writeHead(200, { "Content-Type": asset.type });
-          res.end(
-            method === "HEAD" ? undefined : Buffer.from(asset.body, "base64"),
-          );
+          const compressed =
+            asset.gzip && acceptsGzip(req.headers["accept-encoding"]);
+          const body = compressed ? asset.gzip! : asset.identity;
+          res.writeHead(200, {
+            "Content-Type": asset.type,
+            "Content-Length": String(body.length),
+            Vary: "Accept-Encoding",
+            ...(compressed ? { "Content-Encoding": "gzip" } : {}),
+          });
+          res.end(method === "HEAD" ? undefined : body);
           return;
         }
         throw new HttpError(404, "見つかりません");

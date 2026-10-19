@@ -72,3 +72,7 @@ Staff-invitation and file-link copying now runs within the original click gestur
 Browser verification checks exact clipboard contents, fallback when Clipboard API writes are denied, preset/custom unit conversion and persistence, and matching desktop filter geometry.
 
 Deployed to A8 on 2026-10-19 from commit `96bd03f`. The service is active; public HTTPS health checks pass and the served JavaScript SHA-256 matches the local build. Before/after counts remain 3 items, 18,986,855 bytes and 1 administrator. Rollback snapshot: `~/.local/opt/pex-fileshare/backups/controls-2.3-20261019T004608Z/`. Binary SHA-256: `c9f73facfcf4eeb63568f890a61a5064dd61c6e832c6746eb90c66fe8200355a`. GitHub Actions run `39182174779` passed all checks, including exact clipboard contents with the normal API and simulated permission denial, saving 250MB/45-day custom settings, matching month/scope geometry, mobile regressions and CPU preview isolation. Release `release-2.3` was published successfully. Preview fixture settings used for UI screenshots were isolated from production.
+
+## FileShare 2.4 transfer optimization
+
+The latency-aware upload algorithm, negotiated and checksummed gzip upload chunks, bounded text-download compression, larger streaming read buffers and cached static-asset gzip are described in [transfer-performance.md](transfer-performance.md), with baseline/optimized measurements. No schema migration or storage-policy changes are required. The transfer limits and CPU-only preview configuration are preserved.

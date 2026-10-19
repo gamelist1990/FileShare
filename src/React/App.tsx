@@ -6,7 +6,7 @@ import {
   startRegistration,
   startAuthentication,
 } from "@simplewebauthn/browser";
-import { nextChunk } from "./transfer";
+import { nextChunk, prepareChunk, compressibleName } from "./transfer";
 import { AdminTools } from "./AdminTools";
 import { FullScreenPage } from "./FullScreenPage";
 import { FileIcon } from "./FileIcon";
@@ -294,11 +294,15 @@ export function App() {
           user?.id,
         ]);
         const resumeKey = "fs-upload:" + fingerprint;
+        let compressionAllowed = false;
+        const probeStart = performance.now();
         let id = sessionStorage.getItem(resumeKey),
           offset = 0;
         if (id) {
           try {
-            offset = (await api("/api/uploads/" + id)).offset;
+            const resumed = await api("/api/uploads/" + id);
+            offset = resumed.offset;
+            compressionAllowed = resumed.encodings?.includes("gzip") === true;
           } catch {
             id = null;
           }
@@ -313,8 +317,11 @@ export function App() {
             space,
           });
           id = d.id;
+          compressionAllowed = d.encodings?.includes("gzip") === true;
           sessionStorage.setItem(resumeKey, id!);
         }
+        const roundTripMs = Math.max(0, performance.now() - probeStart);
+        let tryCompression = compressionAllowed && compressibleName(file.name);
         let chunkSize = 1024 * 1024,
           retries = 0;
         while (offset < file.size) {
@@ -325,12 +332,17 @@ export function App() {
             );
             return;
           }
-          const chunk = file.slice(offset, offset + chunkSize),
-            bytes = await chunk.arrayBuffer();
-          const checksum = Array.from(
-            new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-            (b) => b.toString(16).padStart(2, "0"),
-          ).join("");
+          const prepared = await prepareChunk(
+            file.slice(offset, offset + chunkSize),
+            tryCompression,
+          );
+          // Avoid repeatedly spending CPU on text-named files that do not compress.
+          if (
+            tryCompression &&
+            prepared.logicalBytes >= 32768 &&
+            !prepared.compressed
+          )
+            tryCompression = false;
           const start = performance.now();
           try {
             const r = await fetch("/api/uploads/" + id, {
@@ -338,9 +350,10 @@ export function App() {
               headers: {
                 "Content-Type": "application/octet-stream",
                 "Upload-Offset": String(offset),
-                "Upload-Checksum": checksum,
+                "Upload-Checksum": prepared.checksum,
+                ...(prepared.compressed ? { "Upload-Encoding": "gzip" } : {}),
               },
-              body: bytes,
+              body: prepared.body,
             });
             const d = await r.json();
             if (!r.ok) {
@@ -355,12 +368,18 @@ export function App() {
             }
             offset = d.offset;
             const elapsed = performance.now() - start;
-            chunkSize = nextChunk(chunkSize, bytes.byteLength, elapsed);
+            chunkSize = nextChunk(
+              chunkSize,
+              prepared.logicalBytes,
+              elapsed,
+              false,
+              roundTripMs,
+            );
             retries = 0;
             setProgress({
               name: file.name,
               percent: (offset / file.size) * 100,
-              speed: (bytes.byteLength / elapsed) * 1000,
+              speed: (prepared.logicalBytes / elapsed) * 1000,
             });
           } catch (e) {
             if ((e as any).fatal || ++retries > 6) throw e;

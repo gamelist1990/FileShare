@@ -36,8 +36,18 @@ await cdp.send("WebAuthn.addVirtualAuthenticator", {
   },
 });
 let loginPayload: unknown;
+let compressedUpload = false;
+const browserProof = Buffer.from(
+  "Verified browser upload with a real WebAuthn ceremony.\n".repeat(2048),
+);
 let staffCheckPage: typeof page | null = null;
 page.on("request", (request) => {
+  if (
+    request.method() === "PATCH" &&
+    request.url().includes("/api/uploads/") &&
+    request.headers()["upload-encoding"] === "gzip"
+  )
+    compressedUpload = true;
   if (request.url().endsWith("/api/auth/login/verify"))
     loginPayload = request.postDataJSON();
 });
@@ -97,13 +107,24 @@ try {
   await page.locator("input[type=file]").setInputFiles({
     name: "browser-proof.txt",
     mimeType: "text/plain",
-    buffer: Buffer.from(
-      "Verified browser upload with a real WebAuthn ceremony.",
-    ),
+    buffer: browserProof,
   });
   await page
     .getByRole("button", { name: "browser-proof.txt", exact: true })
     .waitFor();
+  if (!compressedUpload)
+    throw new Error("Browser did not negotiate compressed text upload");
+  const downloadReady = page.waitForEvent("download");
+  await page
+    .getByRole("button", {
+      name: "browser-proof.txtをダウンロード",
+      exact: true,
+    })
+    .click();
+  const browserDownload = await downloadReady;
+  const downloadedPath = await browserDownload.path();
+  if (!downloadedPath || !(await readFile(downloadedPath)).equals(browserProof))
+    throw new Error("Browser gzip download changed the saved file bytes");
   await page.getByRole("button", { name: "browser-proof.txtの設定" }).click();
   await page
     .locator(".screen-content")

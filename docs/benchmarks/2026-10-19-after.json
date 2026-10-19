@@ -1,0 +1,46 @@
+[
+  {
+    "label": "after",
+    "kbps": 256,
+    "rttMs": 200,
+    "type": "binary",
+    "bytes": 524288,
+    "uploadMs": 17089,
+    "downloadMs": 16603,
+    "wireUp": 524371,
+    "wireDown": 524288
+  },
+  {
+    "label": "after",
+    "kbps": 256,
+    "rttMs": 200,
+    "type": "text",
+    "bytes": 524288,
+    "uploadMs": 762,
+    "downloadMs": 412,
+    "wireUp": 3729,
+    "wireDown": 6416
+  },
+  {
+    "label": "after",
+    "kbps": 1000,
+    "rttMs": 600,
+    "type": "binary",
+    "bytes": 4194304,
+    "uploadMs": 37900,
+    "downloadMs": 34171,
+    "wireUp": 4194389,
+    "wireDown": 4194304
+  },
+  {
+    "label": "after",
+    "kbps": 1000,
+    "rttMs": 600,
+    "type": "text",
+    "bytes": 4194304,
+    "uploadMs": 3344,
+    "downloadMs": 1019,
+    "wireUp": 28839,
+    "wireDown": 50870
+  }
+]

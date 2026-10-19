@@ -1,6 +1,6 @@
 {
   "name": "fileshare",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "FileShare APP - Bun + React file sharing service",
   "main": "src/index.ts",
   "scripts": {
@@ -10,6 +10,7 @@
     "build:exe": "bun scripts/build.ts --exe && bun build --compile dist/server.js --outfile FileShare",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "benchmark:transfer": "bun scripts/benchmark-transfer.ts",
     "verify:browser": "bun scripts/verify-browser.ts"
   },
   "author": "koukunn",
