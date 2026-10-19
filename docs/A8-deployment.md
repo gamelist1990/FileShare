@@ -120,3 +120,11 @@ RustのHTTP/3プローブでTailscale宛てに実QUIC/TLS接続し、証明書�
 ### 2026-10-19: 公開HTTP/3有効化完了
 
 ユーザーがOracle Cloud側のUDP443受信を許可後、公開IP経由で証明書検証付きQUIC/TLSのhealthz 200とファイルRange 206・1024 bytesに成功。設定バックアップ `~/.local/opt/pex-fileshare/backups/http3-enabled-20261019T060652Z/` を作り、A8の `http3Port: 443` を有効化してfileshareを再起動。通常HTTPSのGET healthz 200、`Alt-Svc: h3=":443"; ma=300` とwgetのRange取得1024 bytesを確認。fileshare・既存ai-inferenceはactive。転送パイプラインのWebSocketは従来通りTCPを使用する。
+
+### 2026-10-19: カスタマイズ可能なプロフィール（2.11）反映済み
+
+CI run 39208572333（cbe7323）成功後、release-2.11をA8へ反映。実行ファイルSHA-256 `9b40d14c8394af85bdabd1894126fa2aa627790090f1c52b65308984a2eb4726`。オンラインSQLite・旧実行ファイル・設定のバックアップ `~/.local/opt/pex-fileshare/backups/social-profile-2.11-20261019T061406Z/`。前後とも3ファイル47,998,735 bytes、管理者1・スタッフ1、パスキー2件を保持。profilesへ表示名・所在地・カバー画像・表示位置の追加列を移行。既存ユーザーのプロフィールは代筆していない。
+
+見出しを「共有ストレージ」へ変更。プロフィールはカバーと重ねた丸いアイコン、@ユーザー名、説明・SNS、権限に沿ったファイルのタイムラインとメディア切替を備える。編集は画面内ライブプレビュー、ブラウザ内画像縮小、カバー位置調整、表示名・所在地の任意設定に対応。画像の公開にも投稿者表示OFFと利用資格の再確認を適用する。表示名での投稿者検索も可能。
+
+49テスト480 assertions、型検査、依存監査、CIブラウザの画像選択→軽量化→保存→実画像decode、320/390/700/1440pxでの編集・公開ページの横はみ出し検査に成功。既存パスキー・転送・CPU動画テストも成功。本番ブラウザで新しい見出し・公開プロフィール・メディア切替を確認し、配信中JSがローカル最終ビルドと完全一致。HTTP/3広告443を保持し、公開QUIC healthzとHTTPS、wget Rangeも確認。fileshare・ai-inferenceはactive。
