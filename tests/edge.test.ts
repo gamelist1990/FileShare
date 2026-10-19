@@ -318,6 +318,13 @@ test("A1 durable publication is readable before replication, survives restart, r
     const direct = String(downloadRedirect.headers.location);
     expect((await request(edgePort, direct)).status).toBe(200);
     expect((await request(edgePort, direct)).status).toBe(200);
+    // Counting is acknowledged by A8 after A1 has finished the response body.
+    for (
+      let attempt = 0;
+      attempt < 200 && app.store.item(id)?.downloads === 0;
+      attempt++
+    )
+      await Bun.sleep(10);
     expect(app.store.item(id)?.downloads).toBe(1);
     expect((await request(edgePort, direct, "HEAD")).body.length).toBe(0);
     expect(app.store.item(id)?.downloads).toBe(1);
