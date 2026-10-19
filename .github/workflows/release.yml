@@ -33,7 +33,6 @@ jobs:
           path: |
             ~/.bun
             node_modules
-            bun.lock
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock', '**/package.json') }}
           restore-keys: |
             ${{ runner.os }}-bun-
