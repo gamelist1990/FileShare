@@ -140,6 +140,23 @@ export function App() {
     if (authOpen) run(refreshMe);
   }, [authOpen]);
   useEffect(() => {
+    const syncInvitation = () => {
+      const token =
+        new URLSearchParams(location.hash.slice(1)).get("staff-invite") ?? "";
+      setStaffToken(token);
+      if (!token) {
+        setStaffInvitation(null);
+        setStaffInviteError("");
+      }
+    };
+    addEventListener("hashchange", syncInvitation);
+    addEventListener("popstate", syncInvitation);
+    return () => {
+      removeEventListener("hashchange", syncInvitation);
+      removeEventListener("popstate", syncInvitation);
+    };
+  }, []);
+  useEffect(() => {
     if (!ready || !staffToken) return;
     let cancelled = false;
     setAuthOpen(true);
