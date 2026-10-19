@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chromium } from "@playwright/test";
 import { readFile, writeFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -483,6 +484,55 @@ try {
     .waitFor();
   await page.screenshot({
     path: ".artifacts/rankings-mobile.png",
+    fullPage: true,
+  });
+  const videoId = randomUUID(),
+    videoBytes = await readFile(
+      new URL("../tests/fixtures/native-preview.mp4", import.meta.url),
+    );
+  await writeFile(join(app.store.blobDir, videoId), videoBytes);
+  await writeFile(join(app.store.cacheDir, videoId + ".mp4"), videoBytes);
+  app.store.db.run(
+    "INSERT INTO items(id,name,folder,size,mime,visibility,created) VALUES (?,?,0,?,?,?,?)",
+    [
+      videoId,
+      "native-preview.mp4",
+      videoBytes.length,
+      "video/mp4",
+      "public",
+      Date.now(),
+    ],
+  );
+  await page.goto(origin + `/files/${videoId}/preview`);
+  await page.locator("video").waitFor();
+  await page
+    .getByRole("button", { name: "元の画質で再生", exact: true })
+    .waitFor();
+  const nativeVideo = page.locator("video");
+  if (
+    (await nativeVideo.getAttribute("src")) !==
+    `/api/content/${videoId}/preview`
+  )
+    throw new Error("Cached lightweight preview was not reused");
+  if (
+    (await nativeVideo.getAttribute("playsinline")) === null ||
+    (await nativeVideo.getAttribute("preload")) !== "metadata"
+  )
+    throw new Error("Native inline/metadata video settings missing");
+  await page.waitForFunction(() => {
+    const video = document.querySelector("video");
+    return !!video && video.readyState >= 1 && video.videoWidth === 320;
+  });
+  await page
+    .getByRole("button", { name: "元の画質で再生", exact: true })
+    .click();
+  if (
+    (await page.locator("video").getAttribute("src")) !==
+    `/api/content/${videoId}`
+  )
+    throw new Error("Original-quality switching failed");
+  await page.screenshot({
+    path: ".artifacts/native-video.png",
     fullPage: true,
   });
   await page.goto(origin);
