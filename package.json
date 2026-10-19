@@ -1,6 +1,6 @@
 {
   "name": "fileshare",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "description": "FileShare APP - Bun + React file sharing service",
   "main": "src/index.ts",
   "scripts": {

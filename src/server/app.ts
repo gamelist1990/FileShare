@@ -1,3 +1,4 @@
+import { socialHtml } from "./social";
 import {
   profile,
   saveProfile,
@@ -645,9 +646,20 @@ export async function createApp(config: Config) {
           const asset =
             assetCache[Object.hasOwn(ASSETS, path) ? path : "/index.html"];
           if (!asset) throw new HttpError(404, "見つかりません");
+          const html = asset.type.startsWith("text/html")
+            ? Buffer.from(
+                socialHtml(store, url, asset.identity.toString("utf8")),
+              )
+            : null;
+          const identity = html ?? asset.identity;
+          const encoded = html
+            ? html.length >= 1024
+              ? gzipSync(html, { level: 1 })
+              : null
+            : asset.gzip;
           const compressed =
-            asset.gzip && acceptsGzip(req.headers["accept-encoding"]);
-          const body = compressed ? asset.gzip! : asset.identity;
+            encoded && acceptsGzip(req.headers["accept-encoding"]);
+          const body = compressed ? encoded! : identity;
           res.writeHead(200, {
             "Content-Type": asset.type,
             "Content-Length": String(body.length),

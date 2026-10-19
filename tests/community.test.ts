@@ -407,3 +407,79 @@ test("custom profiles preserve old fields, validate covers and stay private when
   ).toBe(200);
   expect((await request(p.cover)).status).toBe(404);
 });
+
+test("share HTML contains escaped SSR Open Graph tags and never exposes protected file metadata", async () => {
+  const name = `動画 <script>alert(1)</script> & " '$&.mp4`,
+    id = await item(name);
+  const url = `/?item=${id}`;
+  const html = await (await request(url)).text();
+  expect(html).toContain(
+    'property="og:title" content="動画 &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot; &#39;$&amp;.mp4 | FileShare"',
+  );
+  expect(html).toContain(`property="og:url" content="${origin}/?item=${id}"`);
+  expect(html).toContain(
+    `property="og:video" content="${origin}/api/content/${id}"`,
+  );
+  expect(html).toContain('name="twitter:title"');
+  expect(html).not.toContain("<script>alert(1)</script>");
+  expect((html.match(/<title>/g) || []).length).toBe(1);
+  expect((html.match(/name="description"/g) || []).length).toBe(1);
+  expect(html).toContain("投稿者: vip");
+  const preview = await (await request(`/files/${id}/preview`)).text();
+  expect(preview).toContain(
+    `property="og:url" content="${origin}/files/${id}/preview"`,
+  );
+  const image = await item("public-photo.png");
+  expect(await (await request(`/?item=${image}`)).text()).toContain(
+    `property="og:image" content="${origin}/api/content/${image}"`,
+  );
+  const encoded = await fetch(origin + url, {
+    headers: { "Accept-Encoding": "gzip" },
+  });
+  expect(encoded.headers.get("content-encoding")).toBe("gzip");
+  expect(await encoded.text()).toBe(html);
+  const head = await request(url, undefined, "HEAD");
+  expect(head.status).toBe(200);
+  expect(await head.text()).toBe("");
+  const hidden = await item("NEVER-EXPOSE-private.png", "private", "vip");
+  const invite = await item("NEVER-EXPOSE-invite.txt", "invite");
+  const vip = await item("NEVER-EXPOSE-vip.txt");
+  app.store.db.run("UPDATE items SET min_level=1 WHERE id=?", [vip]);
+  const expired = await item("NEVER-EXPOSE-expired.txt");
+  app.store.db.run("UPDATE item_meta SET expires_at=? WHERE item_id=?", [
+    Date.now() - 1,
+    expired,
+  ]);
+  const folder = randomUUID();
+  app.store.db.run(
+    "INSERT INTO items(id,name,folder,visibility,created) VALUES (?,?,1,?,?)",
+    [folder, "private parent", "private", Date.now()],
+  );
+  const child = await item("NEVER-EXPOSE-child.txt", "public", null, folder);
+  for (const protectedId of [
+    hidden,
+    invite,
+    vip,
+    expired,
+    child,
+    randomUUID(),
+  ]) {
+    for (const user of [undefined, "admin"]) {
+      const page = await (await request(`/?item=${protectedId}`, user)).text();
+      expect(page).not.toContain("NEVER-EXPOSE");
+      expect(page).not.toContain(`/api/content/${protectedId}`);
+      expect(page).toContain(
+        'property="og:title" content="FileShare | PEXserver"',
+      );
+    }
+  }
+  app.store.db.run("UPDATE items SET visibility='private' WHERE id=?", [id]);
+  expect(await (await request(url, "admin")).text()).not.toContain(
+    'property="og:video"',
+  );
+  app.store.filePolicy.showUploaders = false;
+  expect(await (await request(`/?item=${image}`)).text()).not.toContain(
+    "投稿者: vip",
+  );
+  app.store.filePolicy.showUploaders = true;
+});
