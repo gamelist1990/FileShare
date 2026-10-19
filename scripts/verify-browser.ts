@@ -188,8 +188,9 @@ try {
     await registrationResult.json(),
   );
   await staffPage
-    .getByText("スタッフとして登録しました。パスキーでログインしてください。", {
-      exact: true,
+    .getByRole("status")
+    .filter({
+      hasText: "スタッフとして登録しました。パスキーでログインしてください。",
     })
     .waitFor();
   await staffPage
