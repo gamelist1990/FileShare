@@ -76,7 +76,7 @@ export function App() {
     [writable, setWritable] = useState(false),
     [uploadable, setUploadable] = useState(false),
     [usage, setUsage] = useState({ used: 0, reserved: 0 }),
-    [capacity, setCapacity] = useState(200e9),
+    [capacity, setCapacity] = useState<number | null>(null),
     [filePolicy, setFilePolicy] = useState<any>(null),
     [retentionMinutes, setRetentionMinutes] = useState(43200),
     [error, setError] = useState(""),
@@ -133,10 +133,18 @@ export function App() {
     setReady(true);
     return d.user;
   };
+  const listingRequest = useRef(0);
+  const listingScope = useRef("");
+  listingScope.current = `${space}:${parent ?? ""}:${user?.id ?? ""}`;
   const refresh = async () => {
+    const scope = `${space}:${parent ?? ""}:${user?.id ?? ""}`;
+    if (scope !== listingScope.current) return;
+    const request = ++listingRequest.current;
     const d = await api(
       "/api/items?space=" + space + (parent ? "&parent=" + parent : ""),
     );
+    if (request !== listingRequest.current || scope !== listingScope.current)
+      return;
     setItems(d.items);
     setWritable(d.writable);
     setUploadable(d.uploadable);
@@ -286,6 +294,13 @@ export function App() {
       }
     });
   const switchSpace = (value: string) => {
+    if (value !== space || parent) {
+      setCapacity(null);
+      setUsage({ used: 0, reserved: 0 });
+      setItems([]);
+      setWritable(false);
+      setUploadable(false);
+    }
     setSpace(value);
     setParent(null);
     setCrumbs([]);
@@ -628,8 +643,20 @@ export function App() {
             </p>
           </div>
           <div className="hero-note">
-            <strong>{admin ? "管理者専用" : "200 GB"}</strong>
-            <span>{admin ? "Level 4" : "共有ストレージ"}</span>
+            <strong>
+              {admin
+                ? "管理者専用"
+                : capacity === null
+                  ? "読み込み中…"
+                  : size(capacity)}
+            </strong>
+            <span>
+              {admin
+                ? "Level 4"
+                : space === "private"
+                  ? "個人ストレージ"
+                  : "共有ストレージ"}
+            </span>
           </div>
         </section>
         {admin ? (
@@ -809,9 +836,21 @@ export function App() {
                   {space === "private" ? "個人ストレージ" : "共有ストレージ"}
                 </span>
                 <strong>
-                  {size(usage.used)} <small>/ {size(capacity)}</small>
+                  {capacity === null ? (
+                    "読み込み中…"
+                  ) : (
+                    <>
+                      {size(usage.used)} <small>/ {size(capacity)}</small>
+                    </>
+                  )}
                 </strong>
-                <progress value={usage.used + usage.reserved} max={capacity} />
+                <progress
+                  aria-label="ストレージ使用量"
+                  value={
+                    capacity === null ? undefined : usage.used + usage.reserved
+                  }
+                  max={Math.max(1, capacity ?? 1)}
+                />
                 <small>転送予約: {size(usage.reserved)}</small>
               </div>
               <details className="invite-box">

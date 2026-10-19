@@ -20,6 +20,7 @@ export enum FileShareVersion {
   V2_9 = "2.9",
   V2_10 = "2.10",
   V2_11 = "2.11",
+  V2_12 = "2.12",
 }
 
-export const CURRENT_FILESHARE_VERSION = FileShareVersion.V2_11;
+export const CURRENT_FILESHARE_VERSION = FileShareVersion.V2_12;

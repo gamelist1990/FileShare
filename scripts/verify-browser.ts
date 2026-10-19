@@ -354,6 +354,73 @@ try {
     .getByRole("button", { name: "パスキーでログイン", exact: true })
     .click();
   await staffPage.getByText("Level 3 · スタッフ", { exact: true }).waitFor();
+  async function expectStaffCapacity(value: string, bytes: number) {
+    await staffPage
+      .locator(".hero-note strong")
+      .filter({ hasText: value })
+      .waitFor();
+    await staffPage
+      .locator(".quota small")
+      .filter({ hasText: "/ " + value })
+      .waitFor();
+    if (
+      (await staffPage
+        .getByRole("progressbar", { name: "ストレージ使用量" })
+        .getAttribute("max")) !== String(bytes)
+    )
+      throw new Error("Quota progress maximum differs from displayed capacity");
+  }
+  await staffPage
+    .getByRole("button", { name: "プライベートフォルダ", exact: false })
+    .click();
+  await expectStaffCapacity("5.00 GB", 5e9);
+  await staffPage.screenshot({
+    path: ".artifacts/private-quota-5gb.png",
+    fullPage: true,
+  });
+  await staffPage
+    .getByRole("button", { name: "メイン共有フォルダ", exact: false })
+    .click();
+  await expectStaffCapacity("200.00 GB", 200e9);
+  app.store.db.run("UPDATE users SET quota=? WHERE name='invitedstaff'", [8e9]);
+  await staffPage
+    .getByRole("button", { name: "プライベートフォルダ", exact: false })
+    .click();
+  await expectStaffCapacity("8.00 GB", 8e9);
+  // Hold a stale shared response until a later private request has completed.
+  let releaseShared!: () => void, sharedArrived!: () => void;
+  const held = new Promise<void>((r) => (releaseShared = r)),
+    arrived = new Promise<void>((r) => (sharedArrived = r));
+  await staffPage.route("**/api/items?space=shared", async (route) => {
+    const response = await route.fetch();
+    sharedArrived();
+    await held;
+    await route.fulfill({ response });
+  });
+  await staffPage
+    .getByRole("button", { name: "メイン共有フォルダ", exact: false })
+    .click();
+  await arrived;
+  if (
+    (await staffPage.locator(".hero-note strong").textContent()) !==
+    "読み込み中…"
+  )
+    throw new Error(
+      "Switching spaces must clear the old capacity while loading",
+    );
+  await staffPage
+    .getByRole("button", { name: "プライベートフォルダ", exact: false })
+    .click();
+  await expectStaffCapacity("8.00 GB", 8e9);
+  const staleDelivered = staffPage.waitForResponse((r) =>
+    r.url().endsWith("/api/items?space=shared"),
+  );
+  releaseShared();
+  await staleDelivered;
+  await staffPage.waitForLoadState("networkidle");
+  await staffPage.unroute("**/api/items?space=shared");
+  await expectStaffCapacity("8.00 GB", 8e9);
+
   if (
     await staffPage.getByRole("button", { name: "Admin", exact: true }).count()
   )
