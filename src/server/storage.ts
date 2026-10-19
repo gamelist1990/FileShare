@@ -155,7 +155,7 @@ export function initUpload(store: Store, user: User | null, data: any) {
     offset: 0,
     maxChunk: MAX_CHUNK,
     encodings: ["identity", "gzip"],
-    pipeline: "fileshare-upload-v1",
+    pipeline: "fileshare-upload-v2",
   };
 }
 const busy = new Set<string>();
@@ -689,6 +689,8 @@ export class Bandwidth {
   private next = 0;
   constructor(public bytesPerSecond: number) {}
   async acquire(bytes: number) {
+    // 0 disables application throttling. TCP congestion control still applies.
+    if (this.bytesPerSecond === 0) return;
     const now = performance.now(),
       slot = Math.max(now, this.next);
     this.next = slot + (bytes / this.bytesPerSecond) * 1000;

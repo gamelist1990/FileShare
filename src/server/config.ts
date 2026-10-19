@@ -97,7 +97,7 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     c.port,
     c.capacityBytes,
     c.vipQuotaBytes,
-    ...Object.values(c.rate),
+    ...Object.entries(c.rate).filter(([name]) => name !== "maxBytesPerSecond").map(([, value]) => value),
     c.registration.accountsPerIp,
     c.registration.attemptsPerHour,
     c.preview.threads,
@@ -107,6 +107,8 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
   ])
     if (!Number.isSafeInteger(n) || n < 1)
       throw new Error("Invalid numeric configuration");
+  if (!Number.isSafeInteger(c.rate.maxBytesPerSecond) || c.rate.maxBytesPerSecond < 0)
+    throw new Error("Invalid transfer bandwidth limit");
   if (
     c.port > 65535 ||
     c.vipQuotaBytes > c.capacityBytes ||

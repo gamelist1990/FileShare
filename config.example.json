@@ -23,7 +23,7 @@
     "authPerMinute": 20,
     "concurrentTransfersPerIp": 3,
     "maxConnections": 512,
-    "maxBytesPerSecond": 50000000
+    "maxBytesPerSecond": 0
   },
   "preview": {
     "enabled": true,

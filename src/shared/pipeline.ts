@@ -1,5 +1,5 @@
-export const PIPELINE_PROTOCOL = "fileshare-upload-v1";
-export const BLOCK_BYTES = 256 * 1024;
+export const PIPELINE_PROTOCOL = "fileshare-upload-v2";
+export const BLOCK_BYTES = 1024 * 1024;
 export const MAX_IN_FLIGHT = 16;
 export const FRAME_HEADER = 56;
 const MAGIC = 0x46535531;
@@ -71,7 +71,7 @@ export function unpackBlock(frame: Uint8Array) {
 }
 /** Delay-sensitive application window; transport congestion control still belongs to TCP/TLS. */
 export class PipelineWindow {
-  window = 2;
+  window = 4;
   baseRtt = Infinity;
   smoothedRtt = 0;
   rate = 0;

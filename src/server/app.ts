@@ -172,7 +172,7 @@ export async function createApp(config: Config) {
               config.registration.enabled &&
               store.registrationPolicy.publicRegistration,
             autoApprove: store.registrationPolicy.autoApprove,
-            pipeline: "fileshare-upload-v1",
+            pipeline: "fileshare-upload-v2",
             setupRequired: !store.db
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
               .get(),
@@ -365,7 +365,7 @@ export async function createApp(config: Config) {
               offset: row.offset,
               size: row.size,
               encodings: ["identity", "gzip"],
-              pipeline: "fileshare-upload-v1",
+              pipeline: "fileshare-upload-v2",
               receipt: row.receipt,
             });
             return;

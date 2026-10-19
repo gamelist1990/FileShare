@@ -114,9 +114,20 @@ export function App() {
     [admin, setAdmin] = useState(location.pathname === "/admin"),
     [overview, setOverview] = useState<any>(null),
     [trashSelection, setTrashSelection] = useState<string[]>([]),
-    [cancelled, setCancelled] = useState(false);
+    [transferPhase, setTransferPhase] = useState<"uploading" | "paused" | "cancelling" | null>(null);
   const routePath = useRef(location.pathname);
-  const stop = useRef(false),
+  // Keep File objects while this tab is open: pausing must never require a second picker.
+  const uploadQueue = useRef<{
+    files: File[];
+    index: number;
+    parent: string | null;
+    space: string;
+    userId: string | undefined;
+    retentionSeconds: number;
+  } | null>(null);
+  const activeUpload = useRef<{ id: string; key: string } | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+  const stop = useRef<"pause" | "cancel" | null>(null),
     fileInput = useRef<HTMLInputElement>(null);
   const refreshMe = async () => {
     const d = await api("/api/me");
@@ -309,39 +320,112 @@ export function App() {
     setParent(i.id);
     setCrumbs([...crumbs, { id: i.id, name: i.name }]);
   };
-  async function upload(files: FileList | null) {
-    if (!files?.length) return;
+  async function cancelActiveUpload() {
+    const session = activeUpload.current;
+    if (!session) return;
+    // A just-aborted request may still be releasing its server-side exclusive lease.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const response = await fetch("/api/uploads/" + session.id, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (response.ok || response.status === 404) {
+        sessionStorage.removeItem(session.key);
+        activeUpload.current = null;
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (response.status !== 409)
+        throw new Error(data.error ?? "転送をキャンセルできませんでした");
+      await new Promise((resolve) => setTimeout(resolve, 250 + attempt * 150));
+    }
+    throw new Error("転送終了処理が完了していません。もう一度キャンセルしてください");
+  }
+  const cancelTransfer = () => {
+    stop.current = "cancel";
+    activeRequest.current?.abort();
+    if (transferPhase !== "paused") {
+      setTransferPhase("cancelling");
+      return;
+    }
+    void run(async () => {
+      setBusy(true);
+      setTransferPhase("cancelling");
+      try {
+        await cancelActiveUpload();
+        uploadQueue.current = null;
+        setProgress(null);
+        setTransferPhase(null);
+        await refresh();
+        setMessage("転送をキャンセルしました。予約容量と途中データを解放しました。");
+      } catch (error) {
+        setTransferPhase("paused");
+        throw error;
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
+  async function upload(files: FileList | File[] | null, resume = false) {
+    if (transferPhase === "uploading" || transferPhase === "cancelling") return;
+    if (!resume) {
+      if (!files?.length) return;
+      if (uploadQueue.current)
+        throw new Error("一時停止中の転送を再開するかキャンセルしてください");
+      uploadQueue.current = {
+        files: Array.from(files),
+        index: 0,
+        parent,
+        space,
+        userId: user?.id,
+        retentionSeconds: retentionMinutes * 60,
+      };
+    }
+    const queue = uploadQueue.current;
+    if (!queue) return;
+    if (queue.userId !== user?.id)
+      throw new Error("転送開始時のアカウントで再開してください");
     setBusy(true);
-    setCancelled(false);
-    stop.current = false;
+    setTransferPhase("uploading");
+    stop.current = null;
+    let completed = false, cancelledTransfer = false;
+    const interrupted = async () => {
+      if (stop.current === "cancel") {
+        setTransferPhase("cancelling");
+        await cancelActiveUpload();
+        uploadQueue.current = null;
+        setProgress(null);
+        cancelledTransfer = true;
+        await refresh();
+        setMessage("転送をキャンセルしました。予約容量と途中データを解放しました。");
+      } else {
+        setMessage("一時停止しました。ファイルを選び直さず再開できます。");
+      }
+    };
     try {
-      for (const file of Array.from(files)) {
+      while (queue.index < queue.files.length) {
+        if (stop.current) { await interrupted(); return; }
+        const file = queue.files[queue.index];
         if (filePolicy && file.size > filePolicy.maxFileBytes)
-          throw new Error(
-            "1ファイルの上限は" + size(filePolicy.maxFileBytes) + "です",
-          );
+          throw new Error("1ファイルの上限は" + size(filePolicy.maxFileBytes) + "です");
         const fingerprint = JSON.stringify([
-          file.name,
-          file.size,
-          file.lastModified,
-          parent,
-          space,
-          user?.id,
+          file.name, file.size, file.lastModified,
+          queue.parent, queue.space, queue.userId,
         ]);
         const resumeKey = "fs-upload:" + fingerprint;
-        let compressionAllowed = false,
-          pipelineAllowed = false;
+        let compressionAllowed = false, pipelineAllowed = false;
         const probeStart = performance.now();
-        let id = sessionStorage.getItem(resumeKey),
-          offset = 0;
+        let id = sessionStorage.getItem(resumeKey), offset = 0;
         if (id) {
           try {
             const resumed = await api("/api/uploads/" + id);
+            if (resumed.size !== file.size) throw new Error("サイズが一致しません");
             offset = resumed.offset;
             compressionAllowed = resumed.encodings?.includes("gzip") === true;
-            pipelineAllowed = resumed.pipeline === "fileshare-upload-v1";
+            pipelineAllowed = resumed.pipeline === "fileshare-upload-v2";
           } catch {
             id = null;
+            sessionStorage.removeItem(resumeKey);
           }
         }
         if (!id) {
@@ -349,25 +433,27 @@ export function App() {
             name: file.name,
             size: file.size,
             mime: file.type,
-            retentionSeconds: retentionMinutes * 60,
-            parent,
-            space,
+            retentionSeconds: queue.retentionSeconds,
+            parent: queue.parent,
+            space: queue.space,
           });
           id = d.id;
           compressionAllowed = d.encodings?.includes("gzip") === true;
-          pipelineAllowed = d.pipeline === "fileshare-upload-v1";
+          pipelineAllowed = d.pipeline === "fileshare-upload-v2";
           sessionStorage.setItem(resumeKey, id!);
         }
+        activeUpload.current = { id: id!, key: resumeKey };
+        setProgress({ name: file.name, percent: file.size ? offset / file.size * 100 : 100, speed: 0 });
+        if (stop.current) { await interrupted(); return; }
         const roundTripMs = Math.max(0, performance.now() - probeStart);
         let tryCompression = compressionAllowed && compressibleName(file.name);
         if (
-          pipelineAllowed &&
-          typeof WebSocket !== "undefined" &&
+          pipelineAllowed && typeof WebSocket !== "undefined" &&
           file.size >= 2 * 1024 * 1024
         ) {
           for (let attempt = 0; attempt < 3 && offset < file.size; attempt++) {
             try {
-              const url = new URL(`/api/uploads/${id}/stream`, location.origin);
+              const url = new URL("/api/uploads/" + id + "/stream", location.origin);
               url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
               const result = await uploadPipeline({
                 url: url.href,
@@ -375,60 +461,46 @@ export function App() {
                 offset,
                 roundTripMs,
                 compress: tryCompression,
-                stopped: () => stop.current,
+                stopped: () => stop.current !== null,
                 progress: (received, speed) =>
                   setProgress({
                     name: file.name,
-                    percent: (received / file.size) * 100,
+                    percent: file.size ? (received / file.size) * 100 : 100,
                     speed,
                   }),
               });
               offset = result.offset;
-              if (result.stopped) {
-                setMessage("一時停止しました。同じファイルから再開できます。");
-                return;
-              }
+              if (result.stopped || stop.current) { await interrupted(); return; }
               break;
             } catch (error) {
+              if (stop.current) { await interrupted(); return; }
               if (error instanceof PipelineError && error.fatal) throw error;
-              if (stop.current) {
-                setMessage("一時停止しました。同じファイルから再開できます。");
-                return;
-              }
               await new Promise((resolve) =>
                 setTimeout(resolve, Math.min(4000, 500 * 2 ** attempt)),
               );
               const resumed = await api("/api/uploads/" + id);
               offset = resumed.offset;
-              if (resumed.pipeline !== "fileshare-upload-v1") break;
+              if (resumed.pipeline !== "fileshare-upload-v2") break;
             }
           }
         }
-        let chunkSize = 1024 * 1024,
-          retries = 0;
+        let chunkSize = 1024 * 1024, retries = 0;
         while (offset < file.size) {
-          if (stop.current) {
-            setCancelled(true);
-            setMessage(
-              "転送を中断しました。同じファイルを選ぶと続きから再開できます。",
-            );
-            return;
-          }
+          if (stop.current) { await interrupted(); return; }
           const prepared = await prepareChunk(
             file.slice(offset, offset + chunkSize),
             tryCompression,
           );
-          // Avoid repeatedly spending CPU on text-named files that do not compress.
-          if (
-            tryCompression &&
-            prepared.logicalBytes >= 32768 &&
-            !prepared.compressed
-          )
+          if (stop.current) { await interrupted(); return; }
+          if (tryCompression && prepared.logicalBytes >= 32768 && !prepared.compressed)
             tryCompression = false;
           const start = performance.now();
+          const controller = new AbortController();
+          activeRequest.current = controller;
           try {
             const r = await fetch("/api/uploads/" + id, {
               method: "PATCH",
+              credentials: "same-origin",
               headers: {
                 "Content-Type": "application/octet-stream",
                 "Upload-Offset": String(offset),
@@ -436,55 +508,58 @@ export function App() {
                 ...(prepared.compressed ? { "Upload-Encoding": "gzip" } : {}),
               },
               body: prepared.body,
+              signal: controller.signal,
             });
             const d = await r.json();
             if (!r.ok) {
-              if (
-                r.status === 403 ||
-                r.status === 401 ||
-                r.status === 507 ||
-                r.status === 413
-              )
+              if ([403, 401, 507, 413].includes(r.status))
                 throw Object.assign(new Error(d.error), { fatal: true });
               throw new Error(d.error);
             }
             offset = d.offset;
             const elapsed = performance.now() - start;
             chunkSize = nextChunk(
-              chunkSize,
-              prepared.logicalBytes,
-              elapsed,
-              false,
-              roundTripMs,
+              chunkSize, prepared.logicalBytes, elapsed, false, roundTripMs,
             );
             retries = 0;
             setProgress({
               name: file.name,
               percent: (offset / file.size) * 100,
-              speed: (prepared.logicalBytes / elapsed) * 1000,
+              speed: (prepared.logicalBytes / Math.max(1, elapsed)) * 1000,
             });
-          } catch (e) {
-            if ((e as any).fatal || ++retries > 6) throw e;
+          } catch (error) {
+            if (stop.current) { await interrupted(); return; }
+            if ((error as any).fatal || ++retries > 6) throw error;
             chunkSize = nextChunk(chunkSize, 0, 0, true);
             await new Promise((resolve) =>
               setTimeout(resolve, Math.min(10_000, 500 * 2 ** retries)),
             );
             offset = (await api("/api/uploads/" + id)).offset;
+          } finally {
+            if (activeRequest.current === controller) activeRequest.current = null;
           }
         }
-        if (stop.current) {
-          setMessage("中断しました。同じファイルを選択すると再開できます。");
-          return;
-        }
+        if (stop.current) { await interrupted(); return; }
         await api("/api/uploads/" + id + "/complete", "POST", {});
         sessionStorage.removeItem(resumeKey);
+        activeUpload.current = null;
+        queue.index++;
         setProgress({ name: file.name, percent: 100, speed: 0 });
       }
+      completed = true;
       await refresh();
       setMessage("アップロードしました。");
     } finally {
       setBusy(false);
-      setProgress(null);
+      activeRequest.current = null;
+      if (completed || cancelledTransfer) {
+        uploadQueue.current = null;
+        setProgress(null);
+        setTransferPhase(null);
+      } else {
+        // Failed uploads remain retryable; never throw away the File reference.
+        setTransferPhase("paused");
+      }
       if (fileInput.current) fileInput.current.value = "";
     }
   }
@@ -1000,12 +1075,17 @@ export function App() {
                     {progress.percent.toFixed(1)}% · {size(progress.speed)}/秒
                   </span>
                   <progress value={progress.percent} max={100} />
-                  <button
-                    onClick={() => {
-                      stop.current = true;
-                    }}
-                  >
-                    一時停止
+                  {transferPhase === "paused" ? (
+                    <button className="primary" onClick={() => run(() => upload(null, true))}>
+                      ▶ 再開
+                    </button>
+                  ) : transferPhase === "uploading" ? (
+                    <button onClick={() => { stop.current = "pause"; activeRequest.current?.abort(); }}>
+                      Ⅱ 一時停止
+                    </button>
+                  ) : <span>転送を終了中…</span>}
+                  <button className="danger" disabled={transferPhase === "cancelling"} onClick={cancelTransfer}>
+                    キャンセル
                   </button>
                 </div>
               )}

@@ -157,6 +157,50 @@ try {
     ).n !== 1
   )
     throw new Error("Resumption duplicated the file");
+  // Verify pause retains the selected File, resume needs no picker, and cancel frees the reservation.
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 50,
+    downloadThroughput: 10 * 1024 * 1024,
+    uploadThroughput: 800 * 1024,
+  });
+  await page.locator("input[type=file]").setInputFiles({
+    name: "pause-resume-cancel.bin",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.alloc(12 * 1024 * 1024, 37),
+  });
+  await page.waitForFunction(() => {
+    const progress = document.querySelector<HTMLProgressElement>(".transfer progress");
+    return !!progress && progress.value > 0 && progress.value < 100;
+  }, undefined, { timeout: 30000 });
+  const firstOffset = (app.store.db.query(
+    "SELECT offset FROM uploads WHERE name='pause-resume-cancel.bin'",
+  ).get() as any).offset as number;
+  await page.getByRole("button", { name: /一時停止/ }).click();
+  await page.getByRole("button", { name: /再開/ }).waitFor();
+  const pausedOffset = (app.store.db.query(
+    "SELECT offset FROM uploads WHERE name='pause-resume-cancel.bin'",
+  ).get() as any).offset as number;
+  if (pausedOffset < firstOffset || !pausedOffset)
+    throw new Error("Pause discarded durable transfer bytes");
+  await page.getByRole("button", { name: /再開/ }).click();
+  await page.waitForFunction((previous) => {
+    const progress = document.querySelector<HTMLProgressElement>(".transfer progress");
+    return !!progress && progress.value > previous && progress.value < 100;
+  }, (pausedOffset / (12 * 1024 * 1024)) * 100, { timeout: 30000 });
+  await page.getByRole("button", { name: /一時停止/ }).click();
+  await page.getByRole("button", { name: /再開/ }).waitFor();
+  await page.getByRole("button", { name: "キャンセル", exact: true }).click();
+  await page.getByText("予約容量と途中データを解放しました").waitFor({ timeout: 30000 });
+  if ((app.store.db.query(
+    "SELECT count(*) AS n FROM uploads WHERE name='pause-resume-cancel.bin'",
+  ).get() as any).n !== 0)
+    throw new Error("Cancel did not release the upload reservation");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+  });
+  console.log("Browser pause/resume/cancel verified with retained File and server-side cleanup.");
   const downloadReady = page.waitForEvent("download");
   await page
     .getByRole("button", {
