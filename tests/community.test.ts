@@ -409,6 +409,10 @@ test("custom profiles preserve old fields, validate covers and stay private when
 });
 
 test("share HTML contains escaped SSR Open Graph tags and never exposes protected file metadata", async () => {
+  for (const path of ["/users", "/rankings"])
+    expect(await (await request(path)).text()).toContain(
+      `rel="canonical" href="${origin}${path}"`,
+    );
   const name = `動画 <script>alert(1)</script> & " '$&.mp4`,
     id = await item(name);
   const url = `/?item=${id}`;

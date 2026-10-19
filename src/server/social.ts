@@ -24,7 +24,11 @@ export function socialHtml(store: Store, url: URL, template: string) {
   let title = "FileShare | PEXserver",
     description =
       "PEXserverの共有ストレージ。ファイルのプレビューとダウンロード。",
-    canonical = origin + "/",
+    canonical =
+      origin +
+      (/^\/(?:rankings|users(?:\/[^/]+)?)$/.test(url.pathname)
+        ? url.pathname
+        : "/"),
     image = origin + "/server.png",
     imageAlt = "PEXserver FileShare",
     imageType = "image/png",
