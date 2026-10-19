@@ -16,6 +16,7 @@ test("first-admin setup survives exhausted signup attempts but retains auth thro
   config.registration.attemptsPerHour = 1;
   config.rate.authPerMinute = 8;
   const app = await createApp(config);
+  app.store.registrationPolicy.publicRegistration = true;
   try {
     expect((await (await fetch(origin + "/api/me")).json()).setupRequired).toBe(
       true,

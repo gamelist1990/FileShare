@@ -61,6 +61,7 @@ export function App() {
     [crumbs, setCrumbs] = useState<{ id: string; name: string }[]>([]),
     [space, setSpace] = useState("shared"),
     [writable, setWritable] = useState(false),
+    [uploadable, setUploadable] = useState(false),
     [usage, setUsage] = useState({ used: 0, reserved: 0 }),
     [capacity, setCapacity] = useState(200e9),
     [filePolicy, setFilePolicy] = useState<any>(null),
@@ -71,7 +72,8 @@ export function App() {
     [authOpen, setAuthOpen] = useState(false),
     [task, setTask] = useState<"folder" | "trash" | "purge" | null>(null),
     [folderName, setFolderName] = useState(""),
-    [registration, setRegistration] = useState(true),
+    [registration, setRegistration] = useState(false),
+    [autoApprove, setAutoApprove] = useState(false),
     [setupRequired, setSetupRequired] = useState(false),
     [name, setName] = useState(""),
     [bootstrap, setBootstrap] = useState(""),
@@ -82,6 +84,7 @@ export function App() {
     [staffInvitation, setStaffInvitation] = useState<{
       label: string;
       expires: number;
+      level: number;
     } | null>(null),
     [staffInviteError, setStaffInviteError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -107,6 +110,7 @@ export function App() {
     const d = await api("/api/me");
     setUser(d.user);
     setRegistration(d.registration);
+    setAutoApprove(d.autoApprove);
     setFilePolicy(d.filePolicy);
     if (d.filePolicy)
       setRetentionMinutes((value) =>
@@ -123,6 +127,7 @@ export function App() {
     );
     setItems(d.items);
     setWritable(d.writable);
+    setUploadable(d.uploadable);
     setUsage(d.usage);
     setCapacity(d.capacity);
     setSelected([]);
@@ -922,11 +927,13 @@ export function App() {
                     onChange={(e) => setQuery(e.target.value)}
                   />
                 </label>
-                {writable && (
+                {uploadable && (
                   <div className="actions">
-                    <button disabled={busy} onClick={mkdirAction}>
-                      ＋ フォルダ
-                    </button>
+                    {writable && (
+                      <button disabled={busy} onClick={mkdirAction}>
+                        ＋ フォルダ
+                      </button>
+                    )}
                     <button
                       className="primary"
                       disabled={busy}
@@ -1235,12 +1242,17 @@ export function App() {
             <hr />
             {staffToken && (
               <div className="staff-invite-welcome">
-                <h3>スタッフとして参加</h3>
+                <h3>
+                  {staffInvitation?.level === 1 ? "VIP" : "スタッフ"}として参加
+                </h3>
                 {staffInvitation ? (
                   <p>
                     {staffInvitation.label}
-                    への招待です。パスキー登録後、承認済みスタッフ（Level
-                    3）として利用できます。
+                    への招待です。パスキー登録後、承認済みの
+                    {staffInvitation.level === 1
+                      ? "VIP（Level 1）"
+                      : "スタッフ（Level 3）"}
+                    として利用できます。
                   </p>
                 ) : (
                   <p role={staffInviteError ? "alert" : "status"}>
@@ -1250,7 +1262,7 @@ export function App() {
                 {staffInvitation && (
                   <>
                     <label>
-                      スタッフのユーザー名
+                      招待されたユーザー名
                       <input
                         value={name}
                         onChange={(e) => setName(e.target.value)}
@@ -1263,7 +1275,8 @@ export function App() {
                       disabled={busy || !name}
                       onClick={() => register()}
                     >
-                      パスキーを登録してスタッフになる
+                      パスキーを登録して
+                      {staffInvitation.level === 1 ? "VIP" : "スタッフ"}になる
                     </button>
                   </>
                 )}
@@ -1293,9 +1306,16 @@ export function App() {
                   disabled={busy || !name}
                   onClick={() => register()}
                 >
-                  パスキーを登録して承認を申請
+                  {autoApprove
+                    ? "パスキーを登録して利用を開始"
+                    : "パスキーを登録して承認を申請"}
                 </button>
               </>
+            )}
+            {!staffToken && !registration && (
+              <p className="muted">
+                新規登録には有効なVIP・スタッフ招待URLが必要です。登録済みの方はパスキーでログインできます。
+              </p>
             )}
             {!staffToken && setupRequired && (
               <details>

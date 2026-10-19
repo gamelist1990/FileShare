@@ -68,7 +68,7 @@ export async function authRoute(
     if (!invitation)
       throw new HttpError(403, "招待URLは無効・期限切れ・利用済みです");
     const row = store.db
-      .query("SELECT label,expires FROM staff_invites WHERE id=?")
+      .query("SELECT label,expires,level FROM staff_invites WHERE id=?")
       .get(invitation.id);
     return { body: row };
   }
@@ -85,7 +85,8 @@ export async function authRoute(
     const enroll = route.startsWith("enroll");
     if (enroll) requireUser(current);
     if (
-      !store.config.registration.enabled &&
+      (!store.config.registration.enabled ||
+        !store.registrationPolicy.publicRegistration) &&
       !enroll &&
       !data.bootstrap &&
       !data.staffInvite
@@ -189,6 +190,8 @@ export async function authRoute(
     if (!verification.verified || !verification.registrationInfo)
       throw new HttpError(400, "パスキーを確認できません");
     const { credential } = verification.registrationInfo;
+    let invitationLevel = 0;
+    let autoApproved = false;
     store.db.transaction(() => {
       if (!enroll) {
         if (meta.setupHash) {
@@ -202,6 +205,7 @@ export async function authRoute(
           store.db.run("DELETE FROM setup");
         } else if (meta.staffInviteHash) {
           const invitation = staffInvitation(store, meta.staffInviteHash);
+          invitationLevel = invitation?.level ?? 0;
           if (
             !invitation ||
             !store.db
@@ -211,12 +215,22 @@ export async function authRoute(
               .get(invitation.id, Date.now())
           )
             throw new HttpError(403, "招待URLは無効・期限切れ・利用済みです");
-        } else checkIp(store, ip);
+        } else {
+          if (
+            !store.config.registration.enabled ||
+            !store.registrationPolicy.publicRegistration
+          )
+            throw new HttpError(403, "新規登録には有効な招待URLが必要です");
+          checkIp(store, ip);
+          autoApproved = store.registrationPolicy.autoApprove;
+        }
         store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
           meta.id,
           meta.name,
-          meta.setupHash ? 4 : meta.staffInviteHash ? 3 : 0,
-          meta.setupHash || meta.staffInviteHash ? "approved" : "pending",
+          meta.setupHash ? 4 : invitationLevel,
+          meta.setupHash || meta.staffInviteHash || autoApproved
+            ? "approved"
+            : "pending",
           store.config.vipQuotaBytes,
           ip,
           Date.now(),
@@ -241,7 +255,9 @@ export async function authRoute(
       enroll
         ? "passkey.add"
         : meta.staffInviteHash
-          ? "staff.register"
+          ? invitationLevel === 1
+            ? "vip.register"
+            : "staff.register"
           : "register",
     );
     return {
@@ -250,10 +266,12 @@ export async function authRoute(
         message: meta.setupHash
           ? "管理者を登録しました。パスキーでログインしてください。"
           : meta.staffInviteHash
-            ? "スタッフとして登録しました。パスキーでログインしてください。"
+            ? `${invitationLevel === 1 ? "VIP" : "スタッフ"}として登録しました。パスキーでログインしてください。`
             : enroll
               ? "パスキーを追加しました。"
-              : "登録を受け付けました。管理者の承認をお待ちください。",
+              : autoApproved
+                ? "登録しました。パスキーでログインしてください。"
+                : "登録を受け付けました。管理者の承認をお待ちください。",
       },
       cookie: authCookie(store, "fs_challenge", "", 0),
     };

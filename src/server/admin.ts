@@ -2,16 +2,20 @@ import { randomUUID } from "node:crypto";
 import { randomToken, digestToken } from "@pexserver/secure-envelope";
 import type { Store, User } from "./store";
 import { HttpError } from "./policy";
-import { validateAISettings, validateFilePolicy } from "./settings";
+import {
+  validateAISettings,
+  validateFilePolicy,
+  validateRegistrationPolicy,
+} from "./settings";
 import { fileAdminAction } from "./files";
 
 export function staffInvitation(store: Store, hash: string) {
   return store.db
     .query(
-      `SELECT i.id FROM staff_invites i JOIN users u ON u.id=i.created_by
+      `SELECT i.id,i.level FROM staff_invites i JOIN users u ON u.id=i.created_by
     WHERE i.hash=? AND i.revoked=0 AND i.expires>? AND i.uses<i.max_uses AND u.level=4 AND u.status='approved'`,
     )
-    .get(hash, Date.now()) as { id: string } | null;
+    .get(hash, Date.now()) as { id: string; level: number } | null;
 }
 export function jstDay() {
   return new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
@@ -25,7 +29,7 @@ function dayStart(day: string) {
   return utc - 9 * 3600000;
 }
 const reviewActions =
-  "('register','staff.register','user.update','application.deny','staff-invite.create','staff-invite.revoke','ai.settings','file.metadata','file.settings')";
+  "('register','staff.register','vip.register','registration.settings','user.update','application.deny','staff-invite.create','staff-invite.revoke','ai.settings','file.metadata','file.settings')";
 export async function adminAction(
   store: Store,
   admin: User,
@@ -42,17 +46,41 @@ export async function adminAction(
     return body;
   };
   if (path === "/api/admin/settings" && method === "GET")
-    return { ai: store.config.ai, files: store.filePolicy };
+    return {
+      ai: store.config.ai,
+      files: store.filePolicy,
+      registration: store.registrationPolicy,
+    };
   if (path === "/api/admin/settings" && method === "PATCH") {
     const body = await objectBody();
-    if (body.ai === undefined && body.files === undefined)
+    if (
+      body.ai === undefined &&
+      body.files === undefined &&
+      body.registration === undefined
+    )
       throw new HttpError(400, "設定を指定してください");
+    const registration =
+      body.registration === undefined
+        ? null
+        : validateRegistrationPolicy(body.registration);
     const ai = body.ai === undefined ? null : validateAISettings(body.ai);
     const files =
       body.files === undefined
         ? null
         : validateFilePolicy(body.files, store.config.capacityBytes);
     store.db.transaction(() => {
+      if (registration) {
+        store.db.run(
+          "INSERT INTO admin_settings VALUES ('registration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          [JSON.stringify(registration)],
+        );
+        store.audit(
+          ip,
+          admin,
+          "registration.settings",
+          JSON.stringify(registration),
+        );
+      }
       if (ai) {
         store.db.run(
           "INSERT INTO admin_settings VALUES ('ai',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -68,9 +96,14 @@ export async function adminAction(
         store.audit(ip, admin, "file.settings", JSON.stringify(files));
       }
     })();
+    if (registration) store.registrationPolicy = registration;
     if (ai) Object.assign(store.config.ai, ai);
     if (files) store.filePolicy = files;
-    return { ai: store.config.ai, files: store.filePolicy };
+    return {
+      ai: store.config.ai,
+      files: store.filePolicy,
+      registration: store.registrationPolicy,
+    };
   }
   if (path === "/api/admin/applications/deny" && method === "POST") {
     const { ids } = await objectBody();
@@ -103,7 +136,7 @@ export async function adminAction(
     return {
       invites: store.db
         .query(
-          "SELECT id,label,expires,max_uses,uses,created,created_by,revoked FROM staff_invites ORDER BY created DESC,id DESC LIMIT 200",
+          "SELECT id,label,level,expires,max_uses,uses,created,created_by,revoked FROM staff_invites ORDER BY created DESC,id DESC LIMIT 200",
         )
         .all(),
     };
@@ -111,6 +144,9 @@ export async function adminAction(
   if (path === "/api/admin/staff-invites" && method === "POST") {
     const body = await objectBody(),
       label = String(body.label ?? "スタッフ招待").trim();
+    const level = body.level ?? 3;
+    if (level !== 1 && level !== 3)
+      throw new HttpError(400, "招待先はVIPまたはスタッフを選択してください");
     const hours = body.hours ?? 168,
       maxUses = body.maxUses ?? 1;
     if (
@@ -133,8 +169,17 @@ export async function adminAction(
       expires = Date.now() + hours * 3600000;
     store.db.transaction(() => {
       store.db.run(
-        "INSERT INTO staff_invites (id,hash,label,expires,max_uses,created,created_by) VALUES (?,?,?,?,?,?,?)",
-        [id, digestToken(token), label, expires, maxUses, Date.now(), admin.id],
+        "INSERT INTO staff_invites (id,hash,label,expires,max_uses,created,created_by,level) VALUES (?,?,?,?,?,?,?,?)",
+        [
+          id,
+          digestToken(token),
+          label,
+          expires,
+          maxUses,
+          Date.now(),
+          admin.id,
+          level,
+        ],
       );
       store.audit(ip, admin, "staff-invite.create", id);
     })();
@@ -142,6 +187,7 @@ export async function adminAction(
       id,
       url: store.config.origin + "/#staff-invite=" + encodeURIComponent(token),
       expires,
+      level,
       maxUses,
     };
   }

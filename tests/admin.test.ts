@@ -426,3 +426,205 @@ test("AI settings persist, never allow endpoint overrides, and dynamically start
     server.stop(true);
   }
 });
+
+test("VIP invitations grant only Level 1, never a client-selected role, and retain default quota", async () => {
+  const invite = await invitation({ level: 1 });
+  const info = await (
+    await request("/api/auth/staff-invite", "POST", { token: invite.token }, "")
+  ).json();
+  expect(info.level).toBe(1);
+  const ceremony = await options("invited-vip", invite.token);
+  expect(
+    (
+      await request(
+        "/api/auth/register/verify",
+        "POST",
+        { ...registration(ceremony.options.challenge), level: 4 },
+        "",
+        ceremony.cookie,
+      )
+    ).status,
+  ).toBe(200);
+  const vip = app.store.db
+    .query("SELECT level,status,quota FROM users WHERE name='invited-vip'")
+    .get();
+  expect(vip).toEqual({
+    level: 1,
+    status: "approved",
+    quota: defaults.vipQuotaBytes,
+  });
+  expect(
+    (await request("/api/admin/staff-invites", "POST", { level: 4 })).status,
+  ).toBe(400);
+});
+
+test("registration defaults to invitation-only and rechecks disabled public signup at verification", async () => {
+  expect(
+    (await (await request("/api/me", "GET", undefined, "")).json())
+      .registration,
+  ).toBe(false);
+  expect(
+    (
+      await request(
+        "/api/auth/register/options",
+        "POST",
+        { name: "without-invite" },
+        "",
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (await request("/api/auth/login/options", "POST", {}, "")).status,
+  ).toBe(200);
+  const policy = {
+    publicRegistration: true,
+    autoApprove: true,
+    generalUploads: true,
+  };
+  expect(
+    (await request("/api/admin/settings", "PATCH", { registration: policy }))
+      .status,
+  ).toBe(200);
+  const start = async (name: string) => {
+    const result = await request(
+      "/api/auth/register/options",
+      "POST",
+      { name },
+      "",
+    );
+    expect(result.status).toBe(200);
+    return {
+      options: await result.json(),
+      cookie: result.headers.get("set-cookie")!.split(";")[0],
+    };
+  };
+  // Existing administrator at loopback already uses its per-IP allocation.
+  app.store.config.registration.accountsPerIp = 50;
+  const race = await start("public-race");
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...policy, publicRegistration: false },
+  });
+  expect(
+    (
+      await request(
+        "/api/auth/register/verify",
+        "POST",
+        registration(race.options.challenge),
+        "",
+        race.cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    app.store.db.query("SELECT 1 FROM users WHERE name='public-race'").get(),
+  ).toBeNull();
+  await request("/api/admin/settings", "PATCH", { registration: policy });
+  const valid = await start("public-auto");
+  expect(
+    (
+      await request(
+        "/api/auth/register/verify",
+        "POST",
+        registration(valid.options.challenge),
+        "",
+        valid.cookie,
+      )
+    ).status,
+  ).toBe(200);
+  const general = app.store.db
+    .query("SELECT * FROM users WHERE name='public-auto'")
+    .get() as any;
+  expect(general.level).toBe(0);
+  expect(general.status).toBe("approved");
+  const token = randomToken();
+  app.store.db.run("INSERT INTO sessions VALUES (?,?,?)", [
+    digestToken(token),
+    general.id,
+    Date.now() + 60000,
+  ]);
+  const cookie = "fs_session=" + token;
+  const listing = await (
+    await request("/api/items", "GET", undefined, "", cookie)
+  ).json();
+  expect(listing.uploadable).toBe(true);
+  expect(listing.writable).toBe(false);
+  const upload = await request(
+    "/api/uploads",
+    "POST",
+    { name: "general.txt", size: 0, space: "shared" },
+    "",
+    cookie,
+  );
+  expect(upload.status).toBe(201);
+  const { id } = await upload.json();
+  expect(
+    (await request(`/api/uploads/${id}/complete`, "POST", {}, "", cookie))
+      .status,
+  ).toBe(200);
+  expect(
+    (
+      await request(
+        `/api/items/${id}`,
+        "PATCH",
+        { visibility: "private" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await request(
+        "/api/folders",
+        "POST",
+        { name: "not-allowed", space: "shared" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await request(
+        "/api/uploads",
+        "POST",
+        { name: "private.txt", size: 0, space: "private" },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (await request("/api/admin/settings", "GET", undefined, "", cookie)).status,
+  ).toBe(403);
+  await request("/api/admin/settings", "PATCH", {
+    registration: { ...policy, generalUploads: false },
+  });
+  expect(
+    (
+      await request(
+        "/api/uploads",
+        "POST",
+        { name: "disabled.txt", size: 0 },
+        "",
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  const cloned = structuredClone(defaults);
+  cloned.dataDir = dir;
+  const reopened = new Store(cloned);
+  try {
+    expect(reopened.registrationPolicy).toEqual({
+      ...policy,
+      generalUploads: false,
+    });
+  } finally {
+    reopened.db.close();
+  }
+  app.store.registrationPolicy = {
+    publicRegistration: false,
+    autoApprove: false,
+    generalUploads: false,
+  };
+});

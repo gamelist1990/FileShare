@@ -75,3 +75,28 @@ export function validateAISettings(value: any) {
     intervalSeconds: value.intervalSeconds,
   };
 }
+
+export interface RegistrationPolicy {
+  publicRegistration: boolean;
+  autoApprove: boolean;
+  generalUploads: boolean;
+}
+export const defaultRegistrationPolicy: RegistrationPolicy = {
+  publicRegistration: false,
+  autoApprove: false,
+  generalUploads: false,
+};
+export function validateRegistrationPolicy(value: any): RegistrationPolicy {
+  if (
+    !value ||
+    ["publicRegistration", "autoApprove", "generalUploads"].some(
+      (k) => typeof value[k] !== "boolean",
+    )
+  )
+    throw new HttpError(400, "登録設定を確認してください");
+  return {
+    publicRegistration: value.publicRegistration,
+    autoApprove: value.autoApprove,
+    generalUploads: value.generalUploads,
+  };
+}

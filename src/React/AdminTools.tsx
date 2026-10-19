@@ -15,6 +15,8 @@ const dateTime = (time: number) =>
   new Date(time).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
 const actionNames: Record<string, string> = {
   register: "登録申請",
+  "vip.register": "VIP招待で登録",
+  "registration.settings": "登録・投稿設定を変更",
   "staff.register": "スタッフ招待で登録",
   "user.update": "ユーザーの審査・権限変更",
   "application.deny": "申請を無効化",
@@ -27,6 +29,7 @@ const actionNames: Record<string, string> = {
 export function AdminTools({ users, reports, refresh, request, run }: Props) {
   const [selected, setSelected] = useState<string[]>([]),
     [busy, setBusy] = useState(false);
+  const [registration, setRegistration] = useState<any>(null);
   const [ai, setAI] = useState<any>(null),
     [invites, setInvites] = useState<any[]>([]);
   const [inviteURL, setInviteURL] = useState(""),
@@ -72,7 +75,9 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
   };
   useEffect(() => {
     void run(async () => {
-      setAI((await request("/api/admin/settings")).ai);
+      const settings = await request("/api/admin/settings");
+      setAI(settings.ai);
+      setRegistration(settings.registration);
       await loadInvites();
     });
   }, []);
@@ -122,6 +127,57 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
         run={run}
         refresh={refresh}
       />
+      {registration && (
+        <section className="panel" id="admin-registration">
+          <h2>登録・一般ユーザーの投稿</h2>
+          <p className="muted">
+            標準は招待限定です。登録済みアカウントは常にパスキーでログインできます。自動承認でもパスキー登録とIP別の登録制限は必要です。
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void act(async () => {
+                const result = await request("/api/admin/settings", "PATCH", {
+                  registration,
+                });
+                setRegistration(result.registration);
+                setNotice("登録・投稿設定を保存しました");
+              });
+            }}
+          >
+            {(
+              [
+                ["publicRegistration", "招待URLのない一般ユーザーの登録を許可"],
+                ["autoApprove", "一般ユーザーを登録時に自動承認"],
+                [
+                  "generalUploads",
+                  "承認済み一般ユーザーの共有ストレージへの投稿を許可",
+                ],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={registration[key]}
+                  onChange={(e) =>
+                    setRegistration({
+                      ...registration,
+                      [key]: e.target.checked,
+                    })
+                  }
+                />
+                {label}
+              </label>
+            ))}
+            <p className="muted">
+              一般ユーザーは投稿のみ可能です。フォルダの作成、公開範囲の変更、既存ファイルの編集・削除、管理設定はできません。
+            </p>
+            <button className="primary" disabled={busy}>
+              登録・投稿設定を保存
+            </button>
+          </form>
+        </section>
+      )}
       <section className="panel" id="admin-applications">
         <div className="section-title">
           <div>
@@ -196,13 +252,12 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
       <section className="panel" id="admin-invites">
         <div className="section-title">
           <div>
-            <p className="eyebrow">STAFF INVITATIONS</p>
-            <h2>スタッフ招待URL</h2>
+            <p className="eyebrow">INVITATIONS</p>
+            <h2>VIP・スタッフ招待URL</h2>
           </div>
         </div>
         <p className="muted">
-          招待URLからパスキーを登録した人を、承認済みのLevel
-          3スタッフにします。URLは渡した相手が使えるため、信頼できる人にだけ共有してください。
+          招待URLからパスキーを登録した人を、選択したVIPまたはスタッフとして自動承認します。URLは渡した相手が使えるため、信頼できる人にだけ共有してください。
         </p>
         <form
           className="admin-form-grid"
@@ -211,16 +266,24 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
             const f = new FormData(e.currentTarget);
             void act(async () => {
               const result = await request("/api/admin/staff-invites", "POST", {
+                level: Number(f.get("level")),
                 label: f.get("label"),
                 hours: Number(f.get("hours")),
                 maxUses: Number(f.get("maxUses")),
               });
               setInviteURL(result.url);
               await loadInvites();
-              setNotice("スタッフ招待URLを発行しました");
+              setNotice("招待URLを発行しました");
             });
           }}
         >
+          <label>
+            招待する権限
+            <select name="level" defaultValue="3">
+              <option value="1">VIP（Level 1・個人領域あり）</option>
+              <option value="3">スタッフ（Level 3）</option>
+            </select>
+          </label>
           <label>
             招待名
             <input
@@ -280,6 +343,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
             <thead>
               <tr>
                 <th>招待名</th>
+                <th>権限</th>
                 <th>期限（日本時間）</th>
                 <th>利用人数</th>
                 <th>状態</th>
@@ -293,6 +357,9 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                 return (
                   <tr key={i.id}>
                     <td data-label="招待名">{i.label}</td>
+                    <td data-label="権限">
+                      {i.level === 1 ? "VIP" : "スタッフ"}
+                    </td>
                     <td data-label="期限（日本時間）">{dateTime(i.expires)}</td>
                     <td data-label="利用人数">
                       {i.uses} / {i.max_uses}

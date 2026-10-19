@@ -17,6 +17,7 @@ import {
   writeItem,
   canRead,
   canWrite,
+  canUpload,
 } from "./policy";
 import {
   randomToken,
@@ -80,6 +81,7 @@ export function listItems(
       .filter((i) => canRead(store, user, i))
       .map((i) => safeItem(store, i)),
     writable: canWrite(user, owner),
+    uploadable: canUpload(store, user, owner),
     usage: store.usage(owner ?? undefined),
     capacity:
       owner && store.user(owner)!.level !== 4
@@ -104,7 +106,7 @@ function reserve(store: Store, user: User, owner: string | null, size: number) {
 }
 export function initUpload(store: Store, user: User | null, data: any) {
   const u = requireUser(user),
-    dest = destination(store, u, data.parent, data.space),
+    dest = destination(store, u, data.parent, data.space, true),
     name = validName(data.name);
   const size = data.size;
   if (!Number.isSafeInteger(size) || size < 0)
@@ -164,8 +166,13 @@ export function getUpload(store: Store, user: User | null, id: string): any {
   if (!row) throw new HttpError(404, "転送が見つかりません");
   if (row.size > store.filePolicy.maxFileBytes)
     throw new HttpError(413, "1ファイルのアップロード上限が変更されています");
-  if (!canWrite(u, row.owner)) throw new HttpError(403, "転送権限がありません");
-  if (row.parent) writeItem(store, u, row.parent);
+  if (!canUpload(store, u, row.owner))
+    throw new HttpError(403, "転送権限がありません");
+  if (row.parent) {
+    const parent = readItem(store, u, row.parent);
+    if (!parent.folder || parent.owner !== row.owner)
+      throw new HttpError(403, "転送先が変更されています");
+  }
   row.receipt =
     store.db
       .query(

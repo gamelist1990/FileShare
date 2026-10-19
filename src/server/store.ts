@@ -14,6 +14,9 @@ import {
 } from "@pexserver/secure-envelope";
 import type { Config } from "./config";
 import {
+  defaultRegistrationPolicy,
+  validateRegistrationPolicy,
+  type RegistrationPolicy,
   validateAISettings,
   validateFilePolicy,
   defaultFilePolicy,
@@ -50,6 +53,7 @@ export interface Item {
   purged?: number;
 }
 export class Store {
+  registrationPolicy: RegistrationPolicy = { ...defaultRegistrationPolicy };
   filePolicy: FilePolicy;
   db: Database;
   secret: string;
@@ -106,6 +110,20 @@ export class Store {
       CREATE INDEX IF NOT EXISTS audit_upload_detail ON audit(detail) WHERE action='upload';
       INSERT OR IGNORE INTO item_meta(item_id,uploaded_by) SELECT i.id,COALESCE((SELECT a.user_id FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='upload' AND a.detail=i.id ORDER BY a.id DESC LIMIT 1),i.owner) FROM items i WHERE i.folder=0 AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id);
     `);
+    const inviteColumns = this.db
+      .query("PRAGMA table_info(staff_invites)")
+      .all() as { name: string }[];
+    if (!inviteColumns.some((c) => c.name === "level"))
+      this.db.exec(
+        "ALTER TABLE staff_invites ADD COLUMN level INTEGER NOT NULL DEFAULT 3 CHECK(level IN (1,3))",
+      );
+    const savedRegistration = this.db
+      .query("SELECT value FROM admin_settings WHERE key='registration'")
+      .get() as { value: string } | null;
+    if (savedRegistration)
+      this.registrationPolicy = validateRegistrationPolicy(
+        JSON.parse(savedRegistration.value),
+      );
     const savedFiles = this.db
       .query("SELECT value FROM admin_settings WHERE key='files'")
       .get() as { value: string } | null;

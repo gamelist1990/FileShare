@@ -150,7 +150,10 @@ export async function createApp(config: Config) {
           json(res, 200, {
             user: publicUser(user),
             capacity: config.capacityBytes,
-            registration: config.registration.enabled,
+            registration:
+              config.registration.enabled &&
+              store.registrationPolicy.publicRegistration,
+            autoApprove: store.registrationPolicy.autoApprove,
             pipeline: "fileshare-upload-v1",
             setupRequired: !store.db
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")

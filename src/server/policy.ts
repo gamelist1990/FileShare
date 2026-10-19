@@ -58,6 +58,19 @@ export function canWrite(user: User | null, owner: string | null): boolean {
       (!owner && user.level >= 3))
   );
 }
+export function canUpload(
+  store: Store,
+  user: User | null,
+  owner: string | null,
+): boolean {
+  return (
+    canWrite(user, owner) ||
+    (!!user &&
+      user.status === "approved" &&
+      owner === null &&
+      store.registrationPolicy.generalUploads)
+  );
+}
 export function readItem(store: Store, user: User | null, id: string): Item {
   const i = store.item(id);
   if (!i || !canRead(store, user, i))
@@ -88,6 +101,7 @@ export function destination(
   user: User | null,
   parent: unknown,
   space: unknown,
+  uploadOnly = false,
 ) {
   const u = requireUser(user);
   let owner: string | null = space === "private" ? u.id : null;
@@ -95,12 +109,14 @@ export function destination(
   if (parent) {
     if (typeof parent !== "string")
       throw new HttpError(400, "親フォルダが不正です");
-    const item = writeItem(store, u, parent);
+    const item = uploadOnly
+      ? readItem(store, u, parent)
+      : writeItem(store, u, parent);
     if (!item.folder) throw new HttpError(400, "フォルダを指定してください");
     owner = item.owner;
     parentId = item.id;
   }
-  if (!canWrite(u, owner))
+  if (!(uploadOnly ? canUpload(store, u, owner) : canWrite(u, owner)))
     throw new HttpError(403, "この領域には書き込めません");
   return { owner, parent: parentId };
 }

@@ -130,7 +130,7 @@ try {
             const message = JSON.parse(String(event.data));
             if (message.type === "ack" && !interrupted) {
               interrupted = true;
-              this.close(1011, "Simulated interruption");
+              this.close(4001, "Simulated interruption");
             }
           });
       }
@@ -307,7 +307,7 @@ try {
   });
   await staffPage.goto(staffURL);
   await staffPage
-    .getByLabel("スタッフのユーザー名", { exact: true })
+    .getByLabel("招待されたユーザー名", { exact: true })
     .fill("invitedstaff");
   await staffPage.screenshot({
     path: ".artifacts/staff-invite.png",
