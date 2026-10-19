@@ -116,3 +116,7 @@ GUIの更新確認をユーザーが閉じた後、GUIからwebインスタン�
 RustのHTTP/3プローブでTailscale宛てに実QUIC/TLS接続し、証明書検証付きhealthz 200と公開ファイルRange 206・1024 bytesを確認。一方、公開IP `132.145.118.98` 宛ては作業端末とA8の2台から接続タイムアウトし、公開インターフェースの同時tcpdumpではUDP443の到着0件。Oracle Cloudのセキュリティ・リスト／NSGでUDP443受信許可が必要と考えられ、ユーザーへ確認依頼中。
 
 公開QUIC接続が成功するまではA8の `http3Port` は0を維持し、Alt-Svcを広告しない。通常HTTPSのshare healthzとplayが200、wgetで公開ファイルRange 1024 bytes取得成功。fileshareと既存ai-inferenceはactive。実行ファイル・ユーザー・保存ファイルは今回変更していない。
+
+### 2026-10-19: 公開HTTP/3有効化完了
+
+ユーザーがOracle Cloud側のUDP443受信を許可後、公開IP経由で証明書検証付きQUIC/TLSのhealthz 200とファイルRange 206・1024 bytesに成功。設定バックアップ `~/.local/opt/pex-fileshare/backups/http3-enabled-20261019T060652Z/` を作り、A8の `http3Port: 443` を有効化してfileshareを再起動。通常HTTPSのGET healthz 200、`Alt-Svc: h3=":443"; ma=300` とwgetのRange取得1024 bytesを確認。fileshare・既存ai-inferenceはactive。転送パイプラインのWebSocketは従来通りTCPを使用する。

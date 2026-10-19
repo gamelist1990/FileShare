@@ -314,3 +314,96 @@ test("author search only discovers readable uploaders and preserves hidden ident
   });
   app.store.filePolicy.showUploaders = true;
 });
+
+test("custom profiles preserve old fields, validate covers and stay private when uploader display is disabled", async () => {
+  const png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+cLz8AAAAASUVORK5CYII=";
+  const body = {
+    bio: "Custom profile",
+    links: [],
+    displayName: "クリエイター",
+    location: "東京",
+    coverPosition: 25,
+    cover: "data:image/png;base64," + png,
+  };
+  expect((await request("/api/profile", "vip", "PATCH", body)).status).toBe(
+    200,
+  );
+  const p = await (await request("/api/users/vip")).json();
+  expect(p.displayName).toBe(body.displayName);
+  expect(p.name).toBe("vip");
+  expect(p.location).toBe("東京");
+  expect(p.coverPosition).toBe(25);
+  expect((await request(p.cover)).headers.get("content-type")).toBe(
+    "image/png",
+  );
+  expect(
+    (await request(p.cover, undefined, "HEAD")).headers.get("content-length"),
+  ).toBe(String(Buffer.from(png, "base64").length));
+  expect(
+    (
+      await (
+        await request("/api/users?q=" + encodeURIComponent("クリエイター"))
+      ).json()
+    ).users.some((u: any) => u.id === "vip"),
+  ).toBe(true);
+  for (const patch of [
+    { displayName: "x".repeat(51) },
+    { location: "x".repeat(81) },
+    { coverPosition: 101 },
+    { coverPosition: 1.2 },
+    { cover: "data:image/svg+xml;base64,PHN2Zy8+" },
+    {
+      cover:
+        "data:image/png;base64," +
+        Buffer.alloc(768 * 1024 + 1).toString("base64"),
+    },
+  ]) {
+    expect(
+      (await request("/api/profile", "vip", "PATCH", { ...body, ...patch }))
+        .status,
+    ).toBe(400);
+  }
+  expect((await request("/api/profile", undefined)).status).toBe(401);
+  expect((await request("/api/profile", "general")).status).toBe(403);
+  expect((await request("/api/profile", "general", "PATCH", body)).status).toBe(
+    403,
+  );
+  expect(
+    (
+      await request("/api/profile", "vip", "PATCH", {
+        bio: "Legacy update",
+        links: [],
+      })
+    ).status,
+  ).toBe(200);
+  expect((await (await request("/api/users/vip")).json()).coverPosition).toBe(
+    25,
+  );
+  app.store.filePolicy.showUploaders = false;
+  expect((await request(p.cover)).status).toBe(404);
+  expect((await request("/api/users/vip")).status).toBe(404);
+  const own = await (await request("/api/profile", "vip")).json();
+  expect(own.cover).toBe(body.cover);
+  expect(own.displayName).toBe(body.displayName);
+  expect(own.ip).toBeUndefined();
+  expect(own.quota).toBeUndefined();
+  app.store.filePolicy.showUploaders = true;
+  app.store.db.run("UPDATE users SET level=0 WHERE id='vip'");
+  expect((await request(p.cover)).status).toBe(404);
+  expect((await (await request("/api/users/vip")).json()).displayName).toBe(
+    "vip",
+  );
+  app.store.db.run("UPDATE users SET level=1 WHERE id='vip'");
+  expect(
+    (
+      await request("/api/profile", "vip", "PATCH", {
+        bio: "",
+        links: [],
+        cover: null,
+        avatar: null,
+      })
+    ).status,
+  ).toBe(200);
+  expect((await request(p.cover)).status).toBe(404);
+});

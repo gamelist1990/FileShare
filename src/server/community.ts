@@ -3,22 +3,34 @@ import { HttpError, canRead, requireUser } from "./policy";
 import { safeItem } from "./storage";
 export const profileAllowed = (user: User) =>
   [1, 3, 4].includes(user.level) && user.status === "approved";
-export function profile(store: Store, id: string) {
+export function profile(store: Store, id: string, own = false) {
   const user = store.user(id);
-  if (!store.filePolicy.showUploaders || !user || user.status !== "approved")
+  if (
+    (!own && !store.filePolicy.showUploaders) ||
+    !user ||
+    user.status !== "approved"
+  )
     throw new HttpError(404, "ユーザーが見つかりません");
   const row = profileAllowed(user)
-    ? (store.db
-        .query("SELECT bio,links,avatar_type FROM profiles WHERE user_id=?")
-        .get(id) as any)
+    ? (store.db.query("SELECT * FROM profiles WHERE user_id=?").get(id) as any)
     : null;
   return {
     id: user.id,
     name: user.name,
+    displayName: row?.display_name || user.name,
+    location: row?.location ?? "",
+    coverPosition: row?.cover_position ?? 50,
+    cover: row?.cover_type
+      ? own
+        ? `data:${row.cover_type};base64,${Buffer.from(row.cover).toString("base64")}`
+        : `/api/users/${encodeURIComponent(id)}/cover`
+      : null,
     bio: row?.bio ?? "",
     links: row ? JSON.parse(row.links) : [],
     avatar: row?.avatar_type
-      ? `/api/users/${encodeURIComponent(id)}/avatar`
+      ? own
+        ? `data:${row.avatar_type};base64,${Buffer.from(row.avatar).toString("base64")}`
+        : `/api/users/${encodeURIComponent(id)}/avatar`
       : null,
   };
 }
@@ -62,44 +74,78 @@ export function saveProfile(
     return { label: link.label.trim(), url: url.href };
   });
   const old = store.db
-    .query("SELECT avatar,avatar_type FROM profiles WHERE user_id=?")
+    .query("SELECT * FROM profiles WHERE user_id=?")
     .get(user.id) as any;
-  let avatar = old?.avatar ?? null,
-    avatarType = old?.avatar_type ?? null;
-  if (body.avatar !== undefined) {
-    if (body.avatar === null) {
-      avatar = null;
-      avatarType = null;
-    } else {
-      if (typeof body.avatar !== "string" || body.avatar.length > 350000)
-        throw new HttpError(
-          400,
-          "アイコンは256KB以内のPNG・JPEG・WebPを指定してください",
-        );
-      const match =
-        /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(
-          body.avatar,
-        );
-      if (!match) throw new HttpError(400, "対応していないアイコン形式です");
-      const bytes = Buffer.from(match[2], "base64");
-      const valid =
-        match[1] === "image/png"
-          ? bytes
-              .subarray(0, 8)
-              .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-          : match[1] === "image/jpeg"
-            ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-            : bytes.toString("ascii", 0, 4) === "RIFF" &&
-              bytes.toString("ascii", 8, 12) === "WEBP";
-      if (!valid || bytes.length > 256 * 1024)
-        throw new HttpError(400, "アイコン画像を確認してください");
-      avatar = bytes;
-      avatarType = match[1];
-    }
-  }
+  const displayName =
+    body.displayName === undefined
+      ? (old?.display_name ?? "")
+      : body.displayName;
+  const location =
+    body.location === undefined ? (old?.location ?? "") : body.location;
+  const coverPosition =
+    body.coverPosition === undefined
+      ? (old?.cover_position ?? 50)
+      : body.coverPosition;
+  if (
+    typeof displayName !== "string" ||
+    displayName.length > 50 ||
+    typeof location !== "string" ||
+    location.length > 80 ||
+    /[\u0000-\u001f\u007f]/.test(displayName + location) ||
+    !Number.isInteger(coverPosition) ||
+    coverPosition < 0 ||
+    coverPosition > 100
+  )
+    throw new HttpError(
+      400,
+      "表示名は50文字、所在地は80文字以内で指定してください",
+    );
+  const decodeImage = (
+    value: unknown,
+    kind: "avatar" | "cover",
+    max: number,
+  ) => {
+    if (value === undefined)
+      return [old?.[kind] ?? null, old?.[kind + "_type"] ?? null];
+    if (value === null) return [null, null];
+    if (typeof value !== "string" || value.length > Math.ceil(max / 3) * 4 + 64)
+      throw new HttpError(400, "画像のサイズが上限を超えています");
+    const match =
+      /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(
+        value,
+      );
+    if (!match)
+      throw new HttpError(400, "画像はPNG・JPEG・WebPを指定してください");
+    const bytes = Buffer.from(match[2], "base64");
+    const valid =
+      match[1] === "image/png"
+        ? bytes
+            .subarray(0, 8)
+            .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+        : match[1] === "image/jpeg"
+          ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+          : bytes.toString("ascii", 0, 4) === "RIFF" &&
+            bytes.toString("ascii", 8, 12) === "WEBP";
+    if (!valid || bytes.length > max)
+      throw new HttpError(400, "画像の形式またはサイズを確認してください");
+    return [bytes, match[1]];
+  };
+  const [avatar, avatarType] = decodeImage(body.avatar, "avatar", 256 * 1024);
+  const [cover, coverType] = decodeImage(body.cover, "cover", 768 * 1024);
   store.db.run(
-    "INSERT INTO profiles(user_id,bio,links,avatar,avatar_type) VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET bio=excluded.bio,links=excluded.links,avatar=excluded.avatar,avatar_type=excluded.avatar_type",
-    [user.id, body.bio, JSON.stringify(links), avatar, avatarType],
+    "INSERT INTO profiles(user_id,bio,links,avatar,avatar_type,display_name,location,cover,cover_type,cover_position) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET bio=excluded.bio,links=excluded.links,avatar=excluded.avatar,avatar_type=excluded.avatar_type,display_name=excluded.display_name,location=excluded.location,cover=excluded.cover,cover_type=excluded.cover_type,cover_position=excluded.cover_position",
+    [
+      user.id,
+      body.bio,
+      JSON.stringify(links),
+      avatar,
+      avatarType,
+      displayName.trim(),
+      location.trim(),
+      cover,
+      coverType,
+      coverPosition,
+    ],
   );
   store.audit(ip, user, "profile.update");
   return { ok: true };
@@ -192,11 +238,12 @@ export function searchUploaders(
       .replace(/[\\%_]/g, "\\$&") +
     "%";
   const candidates = store.db.prepare(
-    `SELECT u.id,u.name FROM users u WHERE u.status='approved' AND u.name LIKE ? ESCAPE '\\' AND u.name>? COLLATE NOCASE AND EXISTS (SELECT 1 FROM item_meta m JOIN items i ON i.id=m.item_id WHERE m.uploaded_by=u.id AND i.folder=0 AND i.deleted IS NULL AND m.purged=0 AND (m.expires_at IS NULL OR m.expires_at>?) ${user ? "" : "AND i.visibility='public' AND i.min_level=0"}) ORDER BY u.name COLLATE NOCASE,u.id`,
+    `SELECT u.id,u.name FROM users u LEFT JOIN profiles p ON p.user_id=u.id WHERE u.status='approved' AND (u.name LIKE ? ESCAPE '\\' OR (u.level IN (1,3,4) AND p.display_name LIKE ? ESCAPE '\\')) AND u.name>? COLLATE NOCASE AND EXISTS (SELECT 1 FROM item_meta m JOIN items i ON i.id=m.item_id WHERE m.uploaded_by=u.id AND i.folder=0 AND i.deleted IS NULL AND m.purged=0 AND (m.expires_at IS NULL OR m.expires_at>?) ${user ? "" : "AND i.visibility='public' AND i.min_level=0"}) ORDER BY u.name COLLATE NOCASE,u.id`,
   );
   const users: ReturnType<typeof profile>[] = [];
   try {
     for (const author of candidates.iterate(
+      pattern,
       pattern,
       after,
       Date.now(),

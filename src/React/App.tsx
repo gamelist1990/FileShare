@@ -620,7 +620,7 @@ export function App() {
             <p className="eyebrow">
               PEXSERVER / {admin ? "ADMINISTRATION" : "SHARED STORAGE"}
             </p>
-            <h1>{admin ? "ストレージ管理" : "ファイルを、つなぐ。"}</h1>
+            <h1>{admin ? "ストレージ管理" : "共有ストレージ"}</h1>
             <p className="sub">
               {admin
                 ? "ユーザーと容量、共有ファイルをひとつの場所で管理。"

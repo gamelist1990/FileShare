@@ -120,7 +120,8 @@ export function UserDirectory() {
               </span>
             )}
             <div>
-              <h2>{user.name}</h2>
+              <h2>{user.displayName || user.name}</h2>
+              <span className="social-handle">@{user.name}</span>
               <p>{user.bio || "投稿したファイルを見てみましょう。"}</p>
               <span className="creator-open">投稿ファイルを見る ↗</span>
             </div>

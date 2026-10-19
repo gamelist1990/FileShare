@@ -123,7 +123,7 @@ export async function createApp(config: Config) {
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cache-Control": "no-store",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       };
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";
@@ -184,6 +184,16 @@ export async function createApp(config: Config) {
           json(res, 200, { ok: true });
           return;
         }
+        if (path === "/api/profile" && method === "GET") {
+          const current = requireUser(user);
+          if (!profileAllowed(current))
+            throw new HttpError(
+              403,
+              "プロフィールの編集はVIP・スタッフ・管理者のみ利用できます",
+            );
+          json(res, 200, profile(store, current.id, true));
+          return;
+        }
         if (path === "/api/profile" && method === "PATCH") {
           json(
             res,
@@ -191,7 +201,7 @@ export async function createApp(config: Config) {
             saveProfile(
               store,
               user,
-              JSON.parse((await readBody(req, 400000)).toString()),
+              JSON.parse((await readBody(req, 1600000)).toString()),
               ip,
             ),
           );
@@ -210,23 +220,25 @@ export async function createApp(config: Config) {
           );
           return;
         }
-        const authorRoute = /^\/api\/users\/([^/]+)(?:\/(files|avatar))?$/.exec(
-          path,
-        );
+        const authorRoute =
+          /^\/api\/users\/([^/]+)(?:\/(files|avatar|cover))?$/.exec(path);
         if (authorRoute && ["GET", "HEAD"].includes(method)) {
           const id = decodeURIComponent(authorRoute[1]);
           const author = profile(store, id);
-          if (authorRoute[2] === "avatar") {
+          if (authorRoute[2] === "avatar" || authorRoute[2] === "cover") {
+            const kind = authorRoute[2];
             const row = store.db
-              .query("SELECT avatar,avatar_type FROM profiles WHERE user_id=?")
+              .query(
+                `SELECT ${kind},${kind}_type FROM profiles WHERE user_id=?`,
+              )
               .get(id) as any;
-            if (!row?.avatar_type || !profileAllowed(store.user(id)!))
+            if (!row?.[kind + "_type"] || !profileAllowed(store.user(id)!))
               throw new HttpError(404, "アイコンがありません");
             res.writeHead(200, {
-              "Content-Type": row.avatar_type,
-              "Content-Length": String(row.avatar.length),
+              "Content-Type": row[kind + "_type"],
+              "Content-Length": String(row[kind].length),
             });
-            res.end(method === "HEAD" ? undefined : row.avatar);
+            res.end(method === "HEAD" ? undefined : row[kind]);
             return;
           }
           json(

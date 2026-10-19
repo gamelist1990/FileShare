@@ -113,6 +113,21 @@ export class Store {
       CREATE INDEX IF NOT EXISTS audit_upload_detail ON audit(detail) WHERE action='upload';
       INSERT OR IGNORE INTO item_meta(item_id,uploaded_by) SELECT i.id,COALESCE((SELECT a.user_id FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='upload' AND a.detail=i.id ORDER BY a.id DESC LIMIT 1),i.owner) FROM items i WHERE i.folder=0 AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id);
     `);
+    const profileColumns = new Set(
+      (
+        this.db.query("PRAGMA table_info(profiles)").all() as { name: string }[]
+      ).map((c) => c.name),
+    );
+    for (const [name, definition] of Object.entries({
+      display_name: "TEXT NOT NULL DEFAULT ''",
+      location: "TEXT NOT NULL DEFAULT ''",
+      cover: "BLOB",
+      cover_type: "TEXT",
+      cover_position: "INTEGER NOT NULL DEFAULT 50",
+    })) {
+      if (!profileColumns.has(name))
+        this.db.exec(`ALTER TABLE profiles ADD COLUMN ${name} ${definition}`);
+    }
     const inviteColumns = this.db
       .query("PRAGMA table_info(staff_invites)")
       .all() as { name: string }[];

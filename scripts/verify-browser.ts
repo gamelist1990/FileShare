@@ -71,7 +71,7 @@ page.on("pageerror", (e) => errors.push(e.message));
 await mkdir(".artifacts", { recursive: true });
 try {
   await page.goto(origin);
-  await page.getByRole("heading", { name: "ファイルを、つなぐ。" }).waitFor();
+  await page.getByRole("heading", { name: "共有ストレージ" }).waitFor();
   await page.screenshot({ path: ".artifacts/desktop.png", fullPage: true });
   await page
     .getByRole("button", { name: "パスキーでログイン", exact: true })
@@ -420,6 +420,41 @@ try {
       throw new Error(`Administrator page overflows at ${width}px`);
   }
   await page.goto(origin + "/profile");
+  await page.getByLabel("表示名", { exact: true }).fill("PEX Creator");
+  await page.getByLabel("所在地", { exact: true }).fill("東京 / オンライン");
+  const profilePng = Buffer.from(
+    await page.evaluate(() => {
+      const c = document.createElement("canvas");
+      c.width = 1500;
+      c.height = 500;
+      const ctx = c.getContext("2d")!;
+      const gradient = ctx.createLinearGradient(0, 0, 1500, 500);
+      gradient.addColorStop(0, "#162e52");
+      gradient.addColorStop(0.65, "#376b9d");
+      gradient.addColorStop(1, "#dcb798");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 1500, 500);
+      ctx.fillStyle = "#ffffff15";
+      ctx.beginPath();
+      ctx.arc(1250, 500, 380, 0, Math.PI * 2);
+      ctx.fill();
+      return c.toDataURL("image/png").split(",")[1];
+    }),
+    "base64",
+  );
+  await page.getByLabel("カバー画像", { exact: true }).setInputFiles({
+    name: "cover.png",
+    mimeType: "image/png",
+    buffer: profilePng,
+  });
+  await page.locator(".social-cover img").waitFor();
+  await page.getByLabel("アイコン", { exact: true }).setInputFiles({
+    name: "avatar.png",
+    mimeType: "image/png",
+    buffer: profilePng,
+  });
+  await page.locator("img.social-avatar").waitFor();
+
   await page
     .getByLabel("説明", { exact: true })
     .fill("Browser verified profile");
@@ -430,6 +465,20 @@ try {
   await page
     .getByLabel("HTTPS URL", { exact: true })
     .fill("https://example.com/profile");
+  for (const width of [320, 390, 700, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    if (
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      )
+    )
+      throw new Error(`Profile editor overflows at ${width}px`);
+    if (width === 390 || width === 1440)
+      await page.screenshot({
+        path: `.artifacts/profile-editor-${width}.png`,
+        fullPage: true,
+      });
+  }
   await page
     .getByRole("button", { name: "プロフィールを保存", exact: true })
     .click();
@@ -438,6 +487,36 @@ try {
     .getByRole("link", { name: "投稿者ページを見る", exact: true })
     .click();
   await page.getByText("Browser verified profile", { exact: true }).waitFor();
+  await page
+    .getByRole("heading", { name: "PEX Creator", exact: true, level: 1 })
+    .waitFor();
+  await page.getByText("東京 / オンライン", { exact: false }).waitFor();
+  for (const selector of [".social-cover img", "img.social-avatar"]) {
+    await page.locator(selector).evaluate(async (img: HTMLImageElement) => {
+      await img.decode();
+      if (!img.naturalWidth) throw new Error("Profile image did not decode");
+    });
+  }
+  for (const width of [320, 390, 700, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    if (
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      )
+    )
+      throw new Error(`Profile overflows at ${width}px`);
+    if (width === 390 || width === 1440)
+      await page.screenshot({
+        path: `.artifacts/profile-${width}.png`,
+        fullPage: true,
+      });
+  }
+  await page.getByRole("tab", { name: "メディア", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "メディアはまだありません", exact: true })
+    .waitFor();
+  await page.getByRole("tab", { name: "ファイル", exact: true }).click();
+
   await page
     .getByRole("link", { name: "browser-proof.txt", exact: true })
     .click();
