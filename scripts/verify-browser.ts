@@ -71,7 +71,7 @@ try {
   if (await page.getByText("管理者の初期設定", { exact: true }).count())
     throw new Error("Completed administrator setup must not remain visible");
   await page
-    .getByRole("dialog")
+    .locator(".screen-content")
     .getByRole("button", { name: "パスキーでログイン", exact: true })
     .click();
   await page.getByText("Level 4 · 管理者", { exact: true }).waitFor();
@@ -103,7 +103,7 @@ try {
     .waitFor();
   await page.getByRole("button", { name: "browser-proof.txtの設定" }).click();
   await page
-    .getByRole("dialog")
+    .locator(".screen-content")
     .locator('select[name="visibility"]')
     .selectOption("public");
   await page.getByRole("button", { name: "設定を保存" }).click();
@@ -197,7 +197,7 @@ try {
     .getByRole("button", { name: "パスキーでログイン", exact: true })
     .click();
   await staffPage
-    .getByRole("dialog")
+    .locator(".screen-content")
     .getByRole("button", { name: "パスキーでログイン", exact: true })
     .click();
   await staffPage.getByText("Level 3 · スタッフ", { exact: true }).waitFor();
@@ -218,6 +218,54 @@ try {
   await page.screenshot({ path: ".artifacts/private.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: ".artifacts/mobile.png", fullPage: true });
+  await page.getByRole("button", { name: "browser-proof.txtの設定" }).click();
+  const mobileBounds = await page.locator(".screen-page").boundingBox();
+  if (
+    !mobileBounds ||
+    mobileBounds.x !== 0 ||
+    mobileBounds.y !== 0 ||
+    mobileBounds.width !== 390 ||
+    mobileBounds.height !== 844
+  )
+    throw new Error("Mobile settings must fill the viewport");
+  await page.screenshot({ path: ".artifacts/mobile-settings.png" });
+  await page.goBack();
+  await page.locator(".screen-page").waitFor({ state: "detached" });
+  if (
+    await page.evaluate(
+      () =>
+        document.getElementById("root")?.inert ||
+        document.body.style.overflow === "hidden",
+    )
+  )
+    throw new Error("Browser Back must unlock the file list");
+  await page.getByRole("button", { name: "browser-proof.txtの設定" }).click();
+  await page.getByRole("button", { name: "一覧に戻る", exact: true }).click();
+  await page.locator(".screen-page").waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "＋ フォルダ", exact: true }).click();
+  await page.getByLabel("フォルダ名", { exact: true }).fill("mobile-folder");
+  await page.getByRole("button", { name: "作成する", exact: true }).click();
+  await page.locator(".screen-page").waitFor({ state: "detached" });
+  await page
+    .getByRole("button", { name: "mobile-folder", exact: true })
+    .click();
+  await page.getByRole("button", { name: "＋ フォルダ", exact: true }).click();
+  await page.goBack();
+  await page.locator(".screen-page").waitFor({ state: "detached" });
+  await page
+    .getByRole("navigation", { name: "現在のフォルダ" })
+    .getByRole("button", { name: "mobile-folder", exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Admin", exact: true }).click();
+  for (const width of [320, 390, 700]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      )
+    )
+      throw new Error(`Administrator page overflows at ${width}px`);
+  }
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(
     "Browser verified: bootstrap WebAuthn registration, passkey login, private upload, publication settings, administrator page, desktop/mobile screenshots.",

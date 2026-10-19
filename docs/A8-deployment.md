@@ -56,3 +56,9 @@ Deployed on 2026-10-19: daily JST review books, persistent AI settings, atomic b
 The SQLite migration adds tables and indexes without altering the existing item/upload column layouts. Before deployment, an online SQLite backup, binary and config were saved under `~/.local/opt/pex-fileshare/backups/admin-2.1-20261019T001804Z/`. Before/after row counts, total stored bytes and the administrator count matched; no existing file was expired or purged during this update. Binary SHA-256: `85ea24ff46340fbffcb9a8c991673d2d87569f722b69e3b74ca94b3045b5df8a`.
 
 Browser CI also verifies invited staff registration and login with a virtual WebAuthn authenticator, the absence of administrator navigation for staff, and rejection of a spent invitation reopened within the same page. Test credentials are isolated from production.
+
+## FileShare 2.2 mobile layout
+
+Login, previews, file settings, folder creation and deletion confirmation now use full-viewport task pages with a sticky Back button and native browser Back support. There is a single scroll surface; closing a task restores background scrolling, focus and the current folder. Forms use 16px inputs and larger touch targets on phones. Mobile file rows and administration tables become cards with visible labels; the administration menu links directly to each section. Notifications remain accessible while a task is open. The viewport includes safe-area support for phones with display cutouts.
+
+The browser verification covers full-viewport settings, both Back actions, folder creation, preserving the current folder and administrator layouts at 320, 390 and 700 pixels. This update changes no database schema or storage policy.

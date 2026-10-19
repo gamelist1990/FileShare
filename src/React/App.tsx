@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import React, { useState, useEffect, useRef } from "react";
 import {
   startRegistration,
@@ -5,7 +6,7 @@ import {
 } from "@simplewebauthn/browser";
 import { nextChunk } from "./transfer";
 import { AdminTools } from "./AdminTools";
-import { Modal } from "./Modal";
+import { FullScreenPage } from "./FullScreenPage";
 import { FileIcon } from "./FileIcon";
 type User = {
   id: string;
@@ -65,6 +66,8 @@ export function App() {
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [authOpen, setAuthOpen] = useState(false),
+    [task, setTask] = useState<"folder" | "trash" | "purge" | null>(null),
+    [folderName, setFolderName] = useState(""),
     [registration, setRegistration] = useState(true),
     [setupRequired, setSetupRequired] = useState(false),
     [name, setName] = useState(""),
@@ -94,6 +97,7 @@ export function App() {
     [overview, setOverview] = useState<any>(null),
     [trashSelection, setTrashSelection] = useState<string[]>([]),
     [cancelled, setCancelled] = useState(false);
+  const routePath = useRef(location.pathname);
   const stop = useRef(false),
     fileInput = useRef<HTMLInputElement>(null);
   const refreshMe = async () => {
@@ -199,6 +203,9 @@ export function App() {
   }, [ready, parent, space, admin, user?.id]);
   useEffect(() => {
     const pop = () => {
+      // Closing a task must keep the current folder and breadcrumb intact.
+      if (routePath.current === location.pathname) return;
+      routePath.current = location.pathname;
       setAdmin(location.pathname === "/admin");
       setParent(null);
       setCrumbs([]);
@@ -219,6 +226,7 @@ export function App() {
   }, []);
   const navigateAdmin = (on: boolean) => {
     history.pushState({}, "", on ? "/admin" : "/");
+    routePath.current = location.pathname;
     setAdmin(on);
   };
   const login = () =>
@@ -408,22 +416,41 @@ export function App() {
       }
       throw new Error("変換中です。しばらくして再度開いてください");
     });
-  const mkdirAction = () =>
+  const mkdirAction = () => {
+    setFolderName("");
+    setTask("folder");
+  };
+  const trash = () => {
+    if (selected.length) setTask("trash");
+  };
+  const performTask = () =>
     run(async () => {
-      const folderName = prompt("フォルダ名");
-      if (!folderName) return;
-      await api("/api/folders", "POST", { name: folderName, parent, space });
-      await refresh();
-    });
-  const trash = () =>
-    run(async () => {
-      if (
-        !selected.length ||
-        !confirm(selected.length + "件をごみ箱へ移動しますか？")
-      )
-        return;
-      await api("/api/trash", "POST", { ids: selected });
-      await refresh();
+      setBusy(true);
+      try {
+        if (task === "folder") {
+          if (!folderName.trim()) return;
+          await api("/api/folders", "POST", {
+            name: folderName.trim(),
+            parent,
+            space,
+          });
+          await refresh();
+        } else if (task === "trash") {
+          await api("/api/trash", "POST", { ids: selected });
+          await refresh();
+        } else if (task === "purge") {
+          await api("/api/admin/maintenance", "POST", {
+            action: "purge",
+            ids: trashSelection,
+          });
+          setTrashSelection([]);
+          await loadAdmin();
+          setMessage("完全削除が完了しました");
+        }
+        setTask(null);
+      } finally {
+        setBusy(false);
+      }
     });
   const update = (data: any) =>
     run(async () => {
@@ -440,15 +467,12 @@ export function App() {
       setSettings(null);
       await refresh();
     });
-  const maintenance = (action: string) =>
-    run(async () => {
-      if (
-        action === "purge" &&
-        !confirm(
-          "選択したごみ箱のファイルを完全削除します。元に戻せません。続けますか？",
-        )
-      )
-        return;
+  const maintenance = (action: string) => {
+    if (action === "purge") {
+      setTask("purge");
+      return;
+    }
+    return run(async () => {
       await api("/api/admin/maintenance", "POST", {
         action,
         ids: trashSelection,
@@ -457,6 +481,7 @@ export function App() {
       await loadAdmin();
       setMessage("処理が完了しました");
     });
+  };
   return (
     <>
       <header className="site-nav">
@@ -532,25 +557,40 @@ export function App() {
             <span>{admin ? "Level 4" : "共有ストレージ"}</span>
           </div>
         </section>
-        {error && (
-          <div role="alert" className="notice error">
-            {error}
-            <button aria-label="閉じる" onClick={() => setError("")}>
-              ×
-            </button>
-          </div>
-        )}
-        {message && (
-          <div role="status" className="notice">
-            {message}
-            <button aria-label="閉じる" onClick={() => setMessage("")}>
-              ×
-            </button>
-          </div>
+        {createPortal(
+          <div className="screen-notices">
+            {error && (
+              <div role="alert" className="notice error">
+                {error}
+                <button aria-label="閉じる" onClick={() => setError("")}>
+                  ×
+                </button>
+              </div>
+            )}
+            {message && (
+              <div role="status" className="notice">
+                {message}
+                <button aria-label="閉じる" onClick={() => setMessage("")}>
+                  ×
+                </button>
+              </div>
+            )}
+          </div>,
+          document.body,
         )}
         {admin ? (
           user?.level === 4 && overview ? (
             <>
+              <nav className="admin-jumps" aria-label="管理メニュー">
+                <a href="#admin-users">ユーザー</a>
+                <a href="#admin-policy">容量・期限</a>
+                <a href="#admin-records">ファイル</a>
+                <a href="#admin-applications">申請</a>
+                <a href="#admin-invites">スタッフ招待</a>
+                <a href="#admin-ai">AI監視</a>
+                <a href="#admin-review">審査ログ</a>
+                <a href="#admin-cleanup">整理</a>
+              </nav>
               <section className="metrics">
                 <article>
                   <span>使用容量（ごみ箱を含む）</span>
@@ -572,7 +612,7 @@ export function App() {
                   </strong>
                 </article>
               </section>
-              <section className="panel">
+              <section className="panel" id="admin-users">
                 <div className="section-title">
                   <h2>ユーザーと権限</h2>
                   <button onClick={() => run(loadAdmin)}>更新</button>
@@ -620,7 +660,7 @@ export function App() {
                 request={api}
                 run={run}
               />
-              <section className="panel">
+              <section className="panel" id="admin-cleanup">
                 <div className="section-title">
                   <h2>ごみ箱とストレージ整理</h2>
                   <div className="actions">
@@ -920,7 +960,7 @@ export function App() {
                       )
                       .map((i) => (
                         <tr key={i.id}>
-                          <td>
+                          <td data-label="選択">
                             {writable && (
                               <input
                                 type="checkbox"
@@ -936,7 +976,7 @@ export function App() {
                               />
                             )}
                           </td>
-                          <td>
+                          <td data-label="名前">
                             <button
                               className="filename"
                               aria-label={i.name}
@@ -958,10 +998,10 @@ export function App() {
                               </span>
                             </button>
                           </td>
-                          <td className="muted">
+                          <td data-label="サイズ" className="muted">
                             {i.folder ? "—" : size(i.size)}
                           </td>
-                          <td>
+                          <td data-label="公開範囲">
                             <span className={"badge " + i.visibility}>
                               {i.visibility === "private"
                                 ? "非公開"
@@ -973,17 +1013,17 @@ export function App() {
                                 : ""}
                             </span>
                           </td>
-                          <td className="muted date">
+                          <td data-label="更新日" className="muted date">
                             {new Date(i.created).toLocaleDateString("ja-JP")}
                           </td>
-                          <td>
+                          <td data-label="操作">
                             <div className="row-actions">
                               {!i.folder && (
                                 <button
                                   aria-label={i.name + "をダウンロード"}
                                   onClick={() => download(i)}
                                 >
-                                  ↓
+                                  ダウンロード
                                 </button>
                               )}
                               {writable && (
@@ -1046,21 +1086,78 @@ export function App() {
           <span>安全につながる、みんなのストレージ。</span>
         </footer>
       </main>
-      {authOpen && (
-        <Modal onClose={() => setAuthOpen(false)}>
+      {task && (
+        <FullScreenPage
+          onClose={() => {
+            if (!busy) setTask(null);
+          }}
+        >
           <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
+            className="screen-content"
+            role="region"
+            aria-labelledby="task-title"
+          >
+            <p className="eyebrow">FILE OPERATIONS</p>
+            <h2 id="task-title">
+              {task === "folder"
+                ? "フォルダを作成"
+                : task === "trash"
+                  ? "ごみ箱へ移動"
+                  : "ファイルを完全削除"}
+            </h2>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                performTask();
+              }}
+            >
+              {task === "folder" ? (
+                <label>
+                  フォルダ名
+                  <input
+                    required
+                    maxLength={240}
+                    value={folderName}
+                    onChange={(e) => setFolderName(e.target.value)}
+                  />
+                </label>
+              ) : (
+                <p>
+                  {task === "trash"
+                    ? `${selected.length}件をごみ箱へ移動します。管理者はごみ箱から復元できます。`
+                    : `${trashSelection.length}件を完全に削除します。この操作は元に戻せません。`}
+                </p>
+              )}
+              <button
+                type="submit"
+                className={task === "purge" ? "danger full" : "primary full"}
+                disabled={busy || (task === "folder" && !folderName.trim())}
+              >
+                {task === "folder"
+                  ? "作成する"
+                  : task === "trash"
+                    ? "ごみ箱へ移動する"
+                    : "完全削除する"}
+              </button>
+              <button
+                type="button"
+                className="full"
+                disabled={busy}
+                onClick={() => setTask(null)}
+              >
+                キャンセルして戻る
+              </button>
+            </form>
+          </section>
+        </FullScreenPage>
+      )}
+      {authOpen && (
+        <FullScreenPage onClose={() => setAuthOpen(false)}>
+          <section
+            className="screen-content"
+            role="region"
             aria-labelledby="auth-title"
           >
-            <button
-              className="close"
-              aria-label="閉じる"
-              onClick={() => setAuthOpen(false)}
-            >
-              ×
-            </button>
             <p className="eyebrow">YOUR ACCOUNT</p>
             <h2 id="auth-title">パスキーで、つながる。</h2>
             <p className="muted">
@@ -1162,23 +1259,15 @@ export function App() {
               </details>
             )}
           </section>
-        </Modal>
+        </FullScreenPage>
       )}
       {settings && (
-        <Modal onClose={() => setSettings(null)}>
+        <FullScreenPage onClose={() => setSettings(null)}>
           <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
+            className="screen-content"
+            role="region"
             aria-labelledby="settings-title"
           >
-            <button
-              className="close"
-              aria-label="閉じる"
-              onClick={() => setSettings(null)}
-            >
-              ×
-            </button>
             <p className="eyebrow">FILE SETTINGS</p>
             <h2 id="settings-title">公開範囲と整理</h2>
             <form
@@ -1291,31 +1380,20 @@ export function App() {
               共有リンクをコピー
             </button>
           </section>
-        </Modal>
+        </FullScreenPage>
       )}
       {preview && (
-        <Modal
+        <FullScreenPage
           onClose={() => {
             setPreview(null);
             setPreviewUrl("");
           }}
         >
           <section
-            className="modal preview-modal"
-            role="dialog"
-            aria-modal="true"
+            className="screen-content preview-page"
+            role="region"
             aria-labelledby="preview-title"
           >
-            <button
-              className="close"
-              aria-label="閉じる"
-              onClick={() => {
-                setPreview(null);
-                setPreviewUrl("");
-              }}
-            >
-              ×
-            </button>
             <h2 id="preview-title">{preview.name}</h2>
             {/\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(preview.name) ? (
               <>
@@ -1347,7 +1425,7 @@ export function App() {
               ダウンロード · {size(preview.size)}
             </button>
           </section>
-        </Modal>
+        </FullScreenPage>
       )}
     </>
   );
@@ -1371,9 +1449,11 @@ function UserRow({
   }, [u.id, u.level, u.status, u.quota]);
   return (
     <tr>
-      <td>{u.name}</td>
-      <td className="mono">{u.ip}</td>
-      <td>
+      <td data-label="ユーザー">{u.name}</td>
+      <td data-label="登録IP" className="mono">
+        {u.ip}
+      </td>
+      <td data-label="権限">
         <select
           aria-label={u.name + "の権限"}
           value={level}
@@ -1386,7 +1466,7 @@ function UserRow({
           ))}
         </select>
       </td>
-      <td>
+      <td data-label="容量 (GB)">
         <input
           className="quota-input"
           aria-label={u.name + "の容量GB"}
@@ -1398,7 +1478,7 @@ function UserRow({
           onChange={(e) => setQuota(e.target.value)}
         />
       </td>
-      <td>
+      <td data-label="承認">
         <select
           aria-label={u.name + "の承認状態"}
           value={status}
@@ -1409,7 +1489,7 @@ function UserRow({
           <option value="denied">拒否</option>
         </select>
       </td>
-      <td>
+      <td data-label="操作">
         <button
           onClick={() =>
             run(() =>

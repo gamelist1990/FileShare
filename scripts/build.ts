@@ -11,7 +11,7 @@ if (!result.success) {
 }
 const js = await result.outputs.find((o) => o.path.endsWith(".js"))!.text();
 const html =
-  '<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="PEXserverの共有ストレージ。パスキーで安全にファイルを共有。"><title>FileShare | PEXserver</title><link rel="icon" href="/server.png"><link rel="stylesheet" href="/theme.css"></head><body><div id="root"></div><script type="module" src="/index.js"></script></body></html>';
+  '<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="description" content="PEXserverの共有ストレージ。パスキーで安全にファイルを共有。"><title>FileShare | PEXserver</title><link rel="icon" href="/server.png"><link rel="stylesheet" href="/theme.css"></head><body><div id="root"></div><script type="module" src="/index.js"></script></body></html>';
 await writeFile("public/index.html", html);
 await writeFile("public/index.js", js);
 const files = [

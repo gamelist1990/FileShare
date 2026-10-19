@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Modal } from "./Modal";
+import { FullScreenPage } from "./FullScreenPage";
 import { FileIcon } from "./FileIcon";
 type Props = {
   users: { id: string; name: string }[];
@@ -45,7 +45,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
   }, []);
   return (
     <>
-      <section className="panel">
+      <section className="panel" id="admin-policy">
         <p className="eyebrow">FILE POLICIES</p>
         <h2>保存期間・容量と表示の設定</h2>
         {policy && (
@@ -125,7 +125,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
           </form>
         )}
       </section>
-      <section className="panel">
+      <section className="panel" id="admin-records">
         <div className="section-title">
           <div>
             <p className="eyebrow">FILE RECORDS</p>
@@ -168,22 +168,22 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
             <tbody>
               {files.map((f) => (
                 <tr key={f.id}>
-                  <td>
+                  <td data-label="ファイル">
                     <span className="file-record-name">
                       <FileIcon name={f.name} />
                       {f.name}
                     </span>
                   </td>
-                  <td>{f.uploader_name ?? "記録なし"}</td>
-                  <td>{f.downloads ?? 0}</td>
-                  <td>
+                  <td data-label="投稿者">{f.uploader_name ?? "記録なし"}</td>
+                  <td data-label="DL数">{f.downloads ?? 0}</td>
+                  <td data-label="削除期限（日本時間）">
                     {f.expires_at
                       ? new Date(f.expires_at).toLocaleString("ja-JP", {
                           timeZone: "Asia/Tokyo",
                         })
                       : "期限未設定（既存）"}
                   </td>
-                  <td>
+                  <td data-label="操作">
                     <button onClick={() => setEditing(f)}>記録を調整</button>
                   </td>
                 </tr>
@@ -216,20 +216,12 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
         </ol>
       </section>
       {editing && (
-        <Modal onClose={() => setEditing(null)}>
+        <FullScreenPage onClose={() => setEditing(null)}>
           <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
+            className="screen-content"
+            role="region"
             aria-labelledby="file-record-title"
           >
-            <button
-              className="close"
-              aria-label="閉じる"
-              onClick={() => setEditing(null)}
-            >
-              ×
-            </button>
             <h2 id="file-record-title">ファイル記録の調整</h2>
             <p>{editing.name}</p>
             <form
@@ -299,7 +291,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
               </button>
             </form>
           </section>
-        </Modal>
+        </FullScreenPage>
       )}
       {notice && (
         <div className="notice" role="status">

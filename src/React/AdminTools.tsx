@@ -121,7 +121,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
         run={run}
         refresh={refresh}
       />
-      <section className="panel">
+      <section className="panel" id="admin-applications">
         <div className="section-title">
           <div>
             <p className="eyebrow">APPLICATIONS</p>
@@ -192,7 +192,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
           <p className="empty">承認待ちの申請はありません</p>
         )}
       </section>
-      <section className="panel">
+      <section className="panel" id="admin-invites">
         <div className="section-title">
           <div>
             <p className="eyebrow">STAFF INVITATIONS</p>
@@ -298,12 +298,12 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                   !i.revoked && i.expires > Date.now() && i.uses < i.max_uses;
                 return (
                   <tr key={i.id}>
-                    <td>{i.label}</td>
-                    <td>{dateTime(i.expires)}</td>
-                    <td>
+                    <td data-label="招待名">{i.label}</td>
+                    <td data-label="期限（日本時間）">{dateTime(i.expires)}</td>
+                    <td data-label="利用人数">
                       {i.uses} / {i.max_uses}
                     </td>
-                    <td>
+                    <td data-label="状態">
                       {i.revoked
                         ? "失効"
                         : i.expires <= Date.now()
@@ -312,7 +312,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                             ? "利用済み"
                             : "有効"}
                     </td>
-                    <td>
+                    <td data-label="操作">
                       <button
                         disabled={busy || !active}
                         onClick={() =>
@@ -339,7 +339,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
         </div>
         {!invites.length && <p className="empty">発行した招待はありません</p>}
       </section>
-      <section className="panel">
+      <section className="panel" id="admin-ai">
         <div className="section-title">
           <div>
             <p className="eyebrow">AI MONITORING</p>
@@ -412,7 +412,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
         ))}
         {!reports.length && <p className="empty">レポートはまだありません</p>}
       </section>
-      <section className="panel audit-library">
+      <section className="panel audit-library" id="admin-review">
         <div className="section-title">
           <div>
             <p className="eyebrow">REVIEW ARCHIVE / JST</p>
@@ -483,14 +483,20 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
               <tbody>
                 {entries.map((a) => (
                   <tr key={a.id}>
-                    <td>{dateTime(a.time)}</td>
-                    <td>{actionNames[a.action] ?? a.action}</td>
-                    <td>
-                      {a.actor ?? "未ログイン / システム"}
-                      <br />
-                      <small>{a.ip}</small>
+                    <td data-label="時刻（日本時間）">{dateTime(a.time)}</td>
+                    <td data-label="操作">
+                      {actionNames[a.action] ?? a.action}
                     </td>
-                    <td className="mono">{a.detail}</td>
+                    <td data-label="実行者 / IP">
+                      <div>
+                        {a.actor ?? "未ログイン / システム"}
+                        <br />
+                        <small>{a.ip}</small>
+                      </div>
+                    </td>
+                    <td data-label="対象・詳細" className="mono">
+                      {a.detail}
+                    </td>
                   </tr>
                 ))}
               </tbody>
