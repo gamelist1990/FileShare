@@ -64,3 +64,9 @@ Login, previews, file settings, folder creation and deletion confirmation now us
 The browser verification covers full-viewport settings, both Back actions, folder creation, preserving the current folder and administrator layouts at 320, 390 and 700 pixels. This update changes no database schema or storage policy.
 
 Deployed to A8 on 2026-10-19 from commit `785062a`. The user service is active and public HTTPS health checks succeed. The production mobile login page was verified in the browser, including returning to the file list. Before/after deployment: 3 items, 18,986,855 stored bytes, 1 administrator; all counts matched. Rollback snapshot: `~/.local/opt/pex-fileshare/backups/mobile-2.2-20261019T003934Z/` (previous binary and online SQLite backup). Deployed binary SHA-256: `181abcb4182dfdcba0e5e5441ac31a6cb551e6ae485750534aa30f72df2d41cd`. GitHub Actions run `39181701224` passed all checks, browser/mobile tests and CPU preview verification, and published release `release-2.2` with all platform binaries.
+
+## FileShare 2.3 control improvements
+
+Staff-invitation and file-link copying now runs within the original click gesture, uses both compatible clipboard paths, and selects the URL with manual-copy instructions when copying is unavailable. Copy feedback appears next to the button. Retention and file-size controls share preset dropdowns with custom values and explicit units (minutes/hours/days, bytes/KB/MB/GB). Existing file deadlines remain unchanged unless a new duration is selected. Upload presets respect the administrator's maximum. Month and scope filters use matching grid rows and 46px controls, including native month-input normalization.
+
+Browser verification checks exact clipboard contents, fallback when Clipboard API writes are denied, preset/custom unit conversion and persistence, and matching desktop filter geometry.

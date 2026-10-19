@@ -1,3 +1,4 @@
+import { CopyButton } from "./CopyButton";
 import React, { useEffect, useState } from "react";
 import { FileAdminTools } from "./FileAdminTools";
 
@@ -266,16 +267,9 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
                 onFocus={(e) => e.target.select()}
               />
             </label>
-            <button
-              onClick={() =>
-                act(async () => {
-                  await navigator.clipboard.writeText(inviteURL);
-                  setNotice("招待URLをコピーしました");
-                })
-              }
-            >
+            <CopyButton key={inviteURL} text={inviteURL}>
               URLをコピー
-            </button>
+            </CopyButton>
             <p className="muted">
               このURLは今回だけ表示します。控えを失った場合は失効して再発行してください。
             </p>

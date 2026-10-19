@@ -1641,3 +1641,107 @@ hr {
     grid-column: 1/-1;
   }
 }
+
+/* Predictable preset controls and aligned audit filters across native browser widgets. */
+.preset-field {
+  min-width: 0;
+  margin: 12px 0;
+}
+.preset-field > label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
+.preset-field > select {
+  display: block;
+  width: 100%;
+  min-height: 46px;
+}
+.preset-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.preset-custom > input,
+.preset-custom > select {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+}
+.upload-policy .preset-field {
+  flex: 1;
+  max-width: 360px;
+  margin: 0;
+}
+.admin-form-grid > .preset-field {
+  margin: 0;
+}
+.copy-control {
+  margin: 10px 0;
+}
+.copy-control button {
+  min-height: 44px;
+}
+.copy-status {
+  font-size: 0.88rem;
+  color: var(--brand);
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.audit-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(200px, 320px);
+  align-items: start;
+  gap: 16px;
+}
+.audit-controls > label {
+  display: grid;
+  grid-template-rows: auto 46px;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  line-height: 1.5;
+}
+.audit-controls > label > input,
+.audit-controls > label > select {
+  display: block;
+  box-sizing: border-box;
+  height: 46px;
+  min-height: 46px;
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+  padding: 9px 10px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.audit-controls input[type="month"] {
+  appearance: none;
+  -webkit-appearance: none;
+}
+.audit-controls input[type="month"]::-webkit-date-and-time-value {
+  text-align: left;
+  min-height: 24px;
+}
+@media (max-width: 700px) {
+  .upload-policy .preset-field {
+    max-width: none;
+    flex-basis: 100%;
+  }
+  .audit-controls {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .preset-field > label {
+    margin: 0 0 6px;
+    font-size: 0.9rem;
+  }
+  .preset-custom {
+    grid-template-columns: minmax(0, 1fr) 96px;
+  }
+  .copy-control button {
+    width: 100%;
+  }
+}

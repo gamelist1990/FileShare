@@ -1,3 +1,4 @@
+import { PresetField } from "./PresetField";
 import React, { useEffect, useState } from "react";
 import { FullScreenPage } from "./FullScreenPage";
 import { FileIcon } from "./FileIcon";
@@ -66,38 +67,23 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
             }}
           >
             <div className="admin-form-grid">
-              <label>
-                1ファイルの上限（MB）
-                <input
-                  type="number"
-                  min="0.000001"
-                  step="0.000001"
-                  value={policy.maxFileBytes / 1e6}
-                  onChange={(e) =>
-                    setPolicy({
-                      ...policy,
-                      maxFileBytes: Math.round(Number(e.target.value) * 1e6),
-                    })
-                  }
-                  required
-                />
-              </label>
-              <label>
-                保存期間の最大（分）
-                <input
-                  type="number"
-                  min="1"
-                  max={3650 * 1440}
-                  value={policy.maxRetentionSeconds / 60}
-                  onChange={(e) =>
-                    setPolicy({
-                      ...policy,
-                      maxRetentionSeconds: Number(e.target.value) * 60,
-                    })
-                  }
-                  required
-                />
-              </label>
+              <PresetField
+                label="1ファイルの上限"
+                kind="size"
+                value={policy.maxFileBytes}
+                onChange={(maxFileBytes) =>
+                  setPolicy({ ...policy, maxFileBytes })
+                }
+                max={200e9}
+              />
+              <PresetField
+                label="保存期間の最大"
+                value={policy.maxRetentionSeconds / 60}
+                onChange={(minutes) =>
+                  setPolicy({ ...policy, maxRetentionSeconds: minutes * 60 })
+                }
+                max={3650 * 1440}
+              />
             </div>
             <p className="muted">
               既定の保存期間上限は30日（43,200分）です。各投稿者は1分から上限まで設定できます。期間上限は新規投稿と期間の変更に適用し、既存ファイルの期限は維持します。容量上限は転送の開始・再開・確定時に適用します。
@@ -267,19 +253,13 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
                   ))}
                 </select>
               </label>
-              <label>
-                投稿からの保存期間（分）
-                <input
-                  type="number"
-                  name="retention"
-                  min="1"
-                  max={Math.floor(
-                    (policy?.maxRetentionSeconds ?? 2592000) / 60,
-                  )}
-                  placeholder="空欄で現在の期限を維持"
-                  defaultValue=""
-                />
-              </label>
+              <PresetField
+                key={editing.id}
+                label="投稿からの保存期間"
+                name="retention"
+                keepCurrent
+                max={Math.floor((policy?.maxRetentionSeconds ?? 2592000) / 60)}
+              />
               <p className="muted">
                 {editing.expires_at
                   ? `現在の期限: ${new Date(editing.expires_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}。`

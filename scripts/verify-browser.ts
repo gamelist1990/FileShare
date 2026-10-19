@@ -91,6 +91,9 @@ try {
   await page
     .getByRole("button", { name: "プライベートフォルダ", exact: false })
     .click();
+  await page
+    .getByLabel("投稿からの保存期間", { exact: true })
+    .selectOption("1440");
   await page.locator("input[type=file]").setInputFiles({
     name: "browser-proof.txt",
     mimeType: "text/plain",
@@ -141,6 +144,82 @@ try {
   const staffURLField = page.getByLabel("発行した招待URL", { exact: true });
   await staffURLField.waitFor();
   const staffURL = await staffURLField.inputValue();
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "URLをコピー", exact: true }).click();
+  await page.getByText("コピーしました", { exact: true }).waitFor();
+  if ((await page.evaluate(() => navigator.clipboard.readText())) !== staffURL)
+    throw new Error(
+      "Copy button did not copy the complete staff invitation URL",
+    );
+  await page.evaluate(async () => {
+    await navigator.clipboard.writeText("clipboard-fallback-test");
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      configurable: true,
+      value: () =>
+        Promise.reject(new Error("Simulated clipboard permission denial")),
+    });
+  });
+  await page.getByRole("button", { name: "URLをコピー", exact: true }).click();
+  if ((await page.evaluate(() => navigator.clipboard.readText())) !== staffURL)
+    throw new Error(
+      "Clipboard permission fallback did not copy the staff invitation",
+    );
+  await page.evaluate(() => {
+    delete (navigator.clipboard as any).writeText;
+  });
+  await page
+    .getByLabel("1ファイルの上限", { exact: true })
+    .selectOption("1000000000");
+  await page
+    .getByLabel("1ファイルの上限", { exact: true })
+    .selectOption("custom");
+  await page
+    .getByLabel("1ファイルの上限（単位）", { exact: true })
+    .selectOption("1000000");
+  await page
+    .getByLabel("1ファイルの上限（カスタム値）", { exact: true })
+    .fill("250");
+  await page
+    .getByLabel("保存期間の最大", { exact: true })
+    .selectOption("43200");
+  await page
+    .getByLabel("保存期間の最大", { exact: true })
+    .selectOption("custom");
+  await page
+    .getByLabel("保存期間の最大（単位）", { exact: true })
+    .selectOption("1440");
+  await page
+    .getByLabel("保存期間の最大（カスタム値）", { exact: true })
+    .fill("45");
+  await page
+    .getByRole("button", { name: "ファイル設定を保存", exact: true })
+    .click();
+  await page.getByText("ファイル設定を保存しました", { exact: true }).waitFor();
+  const savedPolicy = await page.evaluate(
+    async () => (await (await fetch("/api/admin/settings")).json()).files,
+  );
+  if (
+    savedPolicy.maxFileBytes !== 250000000 ||
+    savedPolicy.maxRetentionSeconds !== 45 * 86400
+  )
+    throw new Error(
+      "Preset/custom units were not saved with the correct values",
+    );
+  const filters = await page
+    .locator(".audit-controls input,.audit-controls select")
+    .evaluateAll((elements) =>
+      elements.map((e) => {
+        const r = e.getBoundingClientRect();
+        return { y: r.y, height: r.height };
+      }),
+    );
+  if (
+    filters.length !== 2 ||
+    filters[0].y !== filters[1].y ||
+    filters[0].height !== filters[1].height
+  )
+    throw new Error("Desktop audit filters are not aligned");
+
   await page.getByRole("button", { name: "ログを更新", exact: true }).click();
   await page.locator(".audit-book").first().waitFor();
   await page

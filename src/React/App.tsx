@@ -1,3 +1,5 @@
+import { CopyButton } from "./CopyButton";
+import { PresetField, durationLabel } from "./PresetField";
 import { createPortal } from "react-dom";
 import React, { useState, useEffect, useRef } from "react";
 import {
@@ -826,21 +828,18 @@ export function App() {
               </div>
               {writable && filePolicy && (
                 <div className="upload-policy">
-                  <label>
-                    投稿からの保存期間（分）
-                    <input
-                      type="number"
-                      min="1"
-                      max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
-                      value={retentionMinutes}
-                      onChange={(e) =>
-                        setRetentionMinutes(Number(e.target.value))
-                      }
-                    />
-                  </label>
+                  <PresetField
+                    label="投稿からの保存期間"
+                    value={retentionMinutes}
+                    onChange={setRetentionMinutes}
+                    max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
+                  />
                   <span>
-                    1分〜{Math.floor(filePolicy.maxRetentionSeconds / 60)}分 ·
-                    1ファイル上限 {size(filePolicy.maxFileBytes)}
+                    1分〜
+                    {durationLabel(
+                      Math.floor(filePolicy.maxRetentionSeconds / 60),
+                    )}{" "}
+                    · 1ファイル上限 {size(filePolicy.maxFileBytes)}
                     <br />
                     期限後はファイルを完全削除します。
                   </span>
@@ -1320,15 +1319,13 @@ export function App() {
                 招待キーを更新（既存の閲覧許可を失効）
               </label>
               {!settings.folder && filePolicy && (
-                <label>
-                  投稿からの保存期間（分）
-                  <input
+                <div>
+                  <PresetField
+                    key={settings.id}
+                    label="投稿からの保存期間"
                     name="retentionMinutes"
-                    type="number"
-                    min="1"
+                    keepCurrent
                     max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
-                    defaultValue=""
-                    placeholder="空欄で現在の設定を維持"
                   />
                   <small>
                     {settings.expires_at
@@ -1336,7 +1333,7 @@ export function App() {
                       : "現在は期限未設定です。"}
                     期限後は完全削除します。期限は投稿時刻から計算します。
                   </small>
-                </label>
+                </div>
               )}
               <button className="primary full" type="submit">
                 設定を保存
@@ -1367,18 +1364,9 @@ export function App() {
                 onFocus={(e) => e.target.select()}
               />
             </label>
-            <button
-              onClick={() =>
-                run(async () => {
-                  await navigator.clipboard.writeText(
-                    location.origin + "/?item=" + settings.id,
-                  );
-                  setMessage("共有リンクをコピーしました");
-                })
-              }
-            >
+            <CopyButton text={location.origin + "/?item=" + settings.id}>
               共有リンクをコピー
-            </button>
+            </CopyButton>
           </section>
         </FullScreenPage>
       )}
