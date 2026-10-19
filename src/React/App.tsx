@@ -1,3 +1,5 @@
+import { PreviewContent } from "./PreviewContent";
+import { compactCount } from "./CommunityPages";
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
 import { CopyButton } from "./CopyButton";
 import { PresetField, durationLabel } from "./PresetField";
@@ -31,6 +33,7 @@ type Item = {
   created: number;
   downloads?: number | null;
   uploader_name?: string | null;
+  uploaded_by?: string | null;
   expires_at?: number | null;
 };
 const levels = ["一般", "VIP", "招待", "スタッフ", "管理者"];
@@ -66,7 +69,6 @@ export function App() {
     [capacity, setCapacity] = useState(200e9),
     [filePolicy, setFilePolicy] = useState<any>(null),
     [retentionMinutes, setRetentionMinutes] = useState(43200),
-    [rankings, setRankings] = useState<Item[]>([]),
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [authOpen, setAuthOpen] = useState(false),
@@ -131,7 +133,6 @@ export function App() {
     setUsage(d.usage);
     setCapacity(d.capacity);
     setSelected([]);
-    setRankings((await api("/api/rankings")).items);
   };
   const loadAdmin = async () => {
     setOverview(await api("/api/admin/overview"));
@@ -574,6 +575,10 @@ export function App() {
           >
             FileShare
           </button>
+          <a href="/rankings">Ranking</a>
+          {user && [1, 3, 4].includes(user.level) && (
+            <a href="/profile">Profile</a>
+          )}
           {user?.level === 4 && (
             <button
               className={admin ? "active" : ""}
@@ -1063,13 +1068,22 @@ export function App() {
                                 {!i.folder && (
                                   <small>
                                     {i.uploader_name && `${i.uploader_name} · `}
-                                    {i.downloads != null && `${i.downloads} DL`}
+                                    {i.downloads != null &&
+                                      `${compactCount(i.downloads)} DL`}
                                     {i.expires_at &&
                                       ` · 期限 ${new Date(i.expires_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`}
                                   </small>
                                 )}
                               </span>
                             </button>
+                            {i.uploaded_by && (
+                              <a
+                                className="uploader-link"
+                                href={`/users/${encodeURIComponent(i.uploaded_by)}`}
+                              >
+                                投稿者のファイルを見る
+                              </a>
+                            )}
                           </td>
                           <td data-label="サイズ" className="muted">
                             {i.folder ? "—" : size(i.size)}
@@ -1132,26 +1146,6 @@ export function App() {
               )}
             </section>
           </div>
-        )}
-        {!admin && filePolicy?.rankingEnabled && rankings.length > 0 && (
-          <section className="panel file-ranking">
-            <p className="eyebrow">DOWNLOAD RANKING</p>
-            <h2>人気のファイル</h2>
-            <ol>
-              {rankings.map((i) => (
-                <li key={i.id}>
-                  <button className="filename" onClick={() => showPreview(i)}>
-                    <FileIcon name={i.name} />
-                    <span>{i.name}</span>
-                  </button>
-                  <span>
-                    {i.downloads != null && `${i.downloads} DL`}
-                    {i.uploader_name && ` · ${i.uploader_name}`}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          </section>
         )}
         <footer>
           <span>PEXserver FileShare</span>
@@ -1470,31 +1464,11 @@ export function App() {
             aria-labelledby="preview-title"
           >
             <h2 id="preview-title">{preview.name}</h2>
-            {/\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(preview.name) ? (
-              <>
-                {previewUrl ? (
-                  <video controls src={previewUrl} preload="metadata" />
-                ) : (
-                  <p role="status">CPUでプレビューを準備しています…</p>
-                )}
-                {user && (
-                  <button onClick={transcode}>
-                    軽量プレビューを作る（先頭120秒）
-                  </button>
-                )}
-              </>
-            ) : /\.(png|jpe?g|gif|webp)$/i.test(preview.name) ? (
-              <img
-                className="preview-image"
-                src={previewUrl}
-                alt={preview.name}
-              />
-            ) : /\.(mp3|ogg|wav)$/i.test(preview.name) ? (
-              <audio controls src={previewUrl} />
-            ) : (
-              <p className="muted">
-                この形式はダウンロードして開いてください。
-              </p>
+            <PreviewContent item={preview} source={previewUrl} />
+            {user && /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(preview.name) && (
+              <button onClick={transcode}>
+                軽量プレビューを作る（先頭120秒）
+              </button>
             )}
             <button className="primary" onClick={() => download(preview)}>
               ダウンロード · {size(preview.size)}

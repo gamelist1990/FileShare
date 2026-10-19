@@ -1,5 +1,5 @@
 import { chromium } from "@playwright/test";
-import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
@@ -408,6 +408,83 @@ try {
     )
       throw new Error(`Administrator page overflows at ${width}px`);
   }
+  await page.goto(origin + "/profile");
+  await page
+    .getByLabel("説明", { exact: true })
+    .fill("Browser verified profile");
+  await page
+    .getByRole("button", { name: "SNSリンクを追加", exact: true })
+    .click();
+  await page.getByLabel("SNS名", { exact: true }).fill("Example");
+  await page
+    .getByLabel("HTTPS URL", { exact: true })
+    .fill("https://example.com/profile");
+  await page
+    .getByRole("button", { name: "プロフィールを保存", exact: true })
+    .click();
+  await page.getByText("プロフィールを保存しました", { exact: true }).waitFor();
+  await page
+    .getByRole("link", { name: "投稿者ページを見る", exact: true })
+    .click();
+  await page.getByText("Browser verified profile", { exact: true }).waitFor();
+  await page
+    .getByRole("link", { name: "browser-proof.txt", exact: true })
+    .click();
+  await page
+    .getByRole("heading", { name: "browser-proof.txt", exact: true })
+    .waitFor();
+  await page
+    .locator(".text-preview")
+    .filter({ hasText: "Verified browser upload" })
+    .waitFor();
+  const directPreview = page.url();
+  if (!/\/files\/[a-f0-9-]{36}\/preview$/.test(directPreview))
+    throw new Error("Standalone preview URL missing");
+  await page
+    .getByRole("button", { name: "プレビューURLをコピー", exact: true })
+    .click();
+  if (
+    (await page.evaluate(() => navigator.clipboard.readText())) !==
+    directPreview
+  )
+    throw new Error("Preview URL clipboard mismatch");
+  const fileId = directPreview.split("/").at(-2)!;
+  const malicious =
+    "# Safe Markdown\n\n<script>window.previewExecuted=true</script>\n\n[bad](javascript:alert(1))\n\n![tracking](https://example.com/tracking.png)";
+  app.store.db.run("UPDATE items SET name='safe.md',size=? WHERE id=?", [
+    Buffer.byteLength(malicious),
+    fileId,
+  ]);
+  await writeFile(join(app.store.blobDir, fileId), malicious);
+  await page.reload();
+  await page
+    .getByRole("heading", { name: "Safe Markdown", exact: true })
+    .waitFor();
+  if (
+    await page
+      .locator(
+        ".markdown-preview script, .markdown-preview img, .markdown-preview a[href^='javascript:']",
+      )
+      .count()
+  )
+    throw new Error("Markdown allowed active HTML or tracking images");
+  if (await page.evaluate(() => !!(window as any).previewExecuted))
+    throw new Error("Uploaded script executed");
+  await page.screenshot({
+    path: ".artifacts/markdown-preview.png",
+    fullPage: true,
+  });
+  await page.goto(origin + "/rankings");
+  await page
+    .getByRole("heading", { name: "ダウンロードランキング", exact: true })
+    .waitFor();
+  await page
+    .getByRole("heading", { name: "投稿者別ランキング", exact: true })
+    .waitFor();
+  await page.screenshot({
+    path: ".artifacts/rankings-mobile.png",
+    fullPage: true,
+  });
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(
     "Browser verified: bootstrap WebAuthn registration, passkey login, private upload, publication settings, administrator page, desktop/mobile screenshots.",

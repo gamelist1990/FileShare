@@ -82,3 +82,7 @@ Deployed to A8 on 2026-10-19 from commit `8375811`. Rollback snapshot: `~/.local
 ## FileShare 2.5 upload pipeline
 
 The single-socket protocol and measurements are documented in [upload-pipeline.md](upload-pipeline.md). This update adds the `upload_blocks` receipt table without changing existing upload/item columns. An online database/binary rollback snapshot is required before deployment. Existing uploads remain readable with offset-only compatibility; new receipts are recorded for both transport paths. No FerrumProxy port, hostname or certificate changes are required because WebSocket upgrades use the existing HTTPS route.
+
+### 2026-10-19: 転送パイプラインと招待制御（2.6）反映済み
+
+CI run 39203548984成功後、release-2.6のLinux x64実行ファイルをA8へ反映。SHA-256 `f0d74642028e924bf83579756698886656dfb0053e85d8a02921a191c1430543`。オンラインSQLiteバックアップと旧実行ファイルは `~/.local/opt/pex-fileshare/backups/registration-2.6-20261019T051738Z/`。前後とも3ファイル47,998,735 bytes、承認済み管理者1・スタッフ1。既存招待1件はLevel 3を保持。公開HTTPSの `/api/me` で `registration:false`、`autoApprove:false`、`pipeline:fileshare-upload-v1`、`setupRequired:false` と200GB割当を確認。ユーザーサービスactive。登録・転送テスト42件347 assertions、ブラウザでパスキーと圧縮・切断再開を検証。

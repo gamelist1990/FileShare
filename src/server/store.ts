@@ -103,6 +103,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS item_parent ON items(parent); CREATE INDEX IF NOT EXISTS audit_time ON audit(time);
       CREATE TABLE IF NOT EXISTS admin_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS staff_invites (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, expires INTEGER NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, created_by TEXT NOT NULL REFERENCES users(id), revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS profiles (user_id TEXT PRIMARY KEY REFERENCES users(id), bio TEXT NOT NULL, links TEXT NOT NULL, avatar BLOB, avatar_type TEXT);
       CREATE TABLE IF NOT EXISTS item_meta (item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE, uploaded_by TEXT REFERENCES users(id), expires_at INTEGER, downloads INTEGER NOT NULL DEFAULT 0, purged INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS upload_policies (upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE, retention_seconds INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS download_receipts (hash TEXT PRIMARY KEY, item_id TEXT NOT NULL, expires INTEGER NOT NULL);

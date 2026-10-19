@@ -52,6 +52,7 @@ export const safeItem = (store: Store, i: Item) => {
   } = i;
   return {
     ...rest,
+    uploaded_by: store.filePolicy.showUploaders ? (uploaded_by ?? null) : null,
     uploader_name: store.filePolicy.showUploaders
       ? (uploader_name ?? null)
       : null,
@@ -731,6 +732,12 @@ export async function sendFile(
   const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
   // Never serve uploaded executable HTML/SVG/JS from the authenticated origin.
   const types: Record<string, string> = {
+    pdf: "application/pdf",
+    avif: "image/avif",
+    bmp: "image/bmp",
+    ico: "image/x-icon",
+    m4a: "audio/mp4",
+    flac: "audio/flac",
     png: "image/png",
     jpg: "image/jpeg",
     jpeg: "image/jpeg",

@@ -100,7 +100,7 @@ async function create(name: string, user = "staff", extra = {}) {
 test("downloads count once per successful link, exclude HEAD/preview/errors, and retain the uploader", async () => {
   const item = await create("counter.ts");
   expect(item.uploader_name).toBe("staff");
-  expect(item.uploaded_by).toBeUndefined();
+  expect(item.uploaded_by).toBe("staff");
   expect(item.expires_at - item.created).toBeGreaterThanOrEqual(59000);
   const ticket = await (
     await request(`/api/items/${item.id}/ticket`, "POST", {}, "")

@@ -1,9 +1,17 @@
+import {
+  profile,
+  saveProfile,
+  userFiles,
+  uploaderRanking,
+  profileAllowed,
+} from "./community";
+import { previewKind } from "../shared/preview";
 import { attachUploadPipeline } from "./upload-pipeline";
 import { gzipSync } from "node:zlib";
 import { acceptsGzip, compressibleName } from "../shared/compression";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
-import { readFile, stat, readdir } from "node:fs/promises";
+import { readFile, stat, readdir, open as openFile } from "node:fs/promises";
 import { Store, type User, type Item } from "./store";
 import type { Config } from "./config";
 import { HttpError, requireUser, requireAdmin, readItem } from "./policy";
@@ -108,7 +116,7 @@ export async function createApp(config: Config) {
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cache-Control": "no-store",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       };
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";
@@ -165,6 +173,84 @@ export async function createApp(config: Config) {
         }
         if (path === "/healthz" && method === "GET") {
           json(res, 200, { ok: true });
+          return;
+        }
+        if (path === "/api/profile" && method === "PATCH") {
+          json(
+            res,
+            200,
+            saveProfile(
+              store,
+              user,
+              JSON.parse((await readBody(req, 400000)).toString()),
+              ip,
+            ),
+          );
+          return;
+        }
+        const authorRoute = /^\/api\/users\/([^/]+)(?:\/(files|avatar))?$/.exec(
+          path,
+        );
+        if (authorRoute && ["GET", "HEAD"].includes(method)) {
+          const id = decodeURIComponent(authorRoute[1]);
+          const author = profile(store, id);
+          if (authorRoute[2] === "avatar") {
+            const row = store.db
+              .query("SELECT avatar,avatar_type FROM profiles WHERE user_id=?")
+              .get(id) as any;
+            if (!row?.avatar_type || !profileAllowed(store.user(id)!))
+              throw new HttpError(404, "アイコンがありません");
+            res.writeHead(200, {
+              "Content-Type": row.avatar_type,
+              "Content-Length": String(row.avatar.length),
+            });
+            res.end(method === "HEAD" ? undefined : row.avatar);
+            return;
+          }
+          json(
+            res,
+            200,
+            authorRoute[2] === "files"
+              ? userFiles(
+                  store,
+                  user,
+                  id,
+                  Number(url.searchParams.get("offset") ?? 0),
+                )
+              : author,
+          );
+          return;
+        }
+        if (path === "/api/rankings/uploaders" && method === "GET") {
+          json(res, 200, uploaderRanking(store, user));
+          return;
+        }
+        const textPreview = /^\/api\/items\/([a-f0-9-]{36})\/text$/.exec(path);
+        if (textPreview && method === "GET") {
+          const item = readItem(store, user, textPreview[1]);
+          if (
+            item.folder ||
+            !["text", "markdown"].includes(previewKind(item.name))
+          )
+            throw new HttpError(400, "テキスト形式を選択してください");
+          enterTransfer();
+          const handle = await openFile(join(store.blobDir, item.id), "r");
+          try {
+            const buffer = Buffer.alloc(Math.min(item.size, 512 * 1024));
+            const { bytesRead } = await handle.read(
+              buffer,
+              0,
+              buffer.length,
+              0,
+            );
+            await bandwidth.acquire(bytesRead);
+            json(res, 200, {
+              text: buffer.subarray(0, bytesRead).toString("utf8"),
+              truncated: item.size > bytesRead,
+            });
+          } finally {
+            await handle.close();
+          }
           return;
         }
         if (path === "/api/rankings" && method === "GET") {
@@ -353,6 +439,11 @@ export async function createApp(config: Config) {
             throw new HttpError(400, "ファイルを選択してください");
           if (raw[2] && !(await existsPreview(raw[1])))
             throw new HttpError(404, "プレビュー準備中です");
+          res.removeHeader("X-Frame-Options");
+          res.setHeader(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'; frame-ancestors 'self'",
+          );
           enterTransfer();
           await sendFile(
             req,
@@ -488,14 +579,27 @@ export async function createApp(config: Config) {
           ["GET", "HEAD"].includes(method) &&
           (path === "/" ||
             path === "/admin" ||
+            path === "/rankings" ||
+            path === "/profile" ||
+            /^\/users\/[^/]+$/.test(path) ||
+            /^\/files\/[a-f0-9-]{36}\/preview$/.test(path) ||
             path === "/index.html" ||
             Object.hasOwn(ASSETS, path))
         ) {
           if (path === "/admin") requireAdmin(user);
+          if (/^\/files\/[a-f0-9-]{36}\/preview$/.test(path)) {
+            readItem(store, user, path.split("/")[2]);
+            res.removeHeader("X-Frame-Options");
+            res.setHeader(
+              "Content-Security-Policy",
+              security["Content-Security-Policy"].replace(
+                "frame-ancestors 'none'",
+                "frame-ancestors *",
+              ),
+            );
+          }
           const asset =
-            assetCache[
-              path === "/" || path === "/admin" ? "/index.html" : path
-            ];
+            assetCache[Object.hasOwn(ASSETS, path) ? path : "/index.html"];
           if (!asset) throw new HttpError(404, "見つかりません");
           const compressed =
             asset.gzip && acceptsGzip(req.headers["accept-encoding"]);
