@@ -72,6 +72,11 @@ export function SearchPage() {
             <a className="filename" href={"/files/" + i.id + "/preview"}>
               <FileIcon name={i.name} />
               <strong>{i.name}</strong>
+              {i.storageState === "unavailable" && (
+                <small className="storage-unavailable">
+                  404 · 破損・接続不可
+                </small>
+              )}
             </a>
             <div className="tag-list">
               {i.tags.map((t: string) => (

@@ -30,6 +30,11 @@ function FileList({ items }: { items: any[] }) {
           <a className="filename" href={`/files/${item.id}/preview`}>
             <FileIcon name={item.name} />
             <span>{item.name}</span>
+            {item.storageState === "unavailable" && (
+              <small className="storage-unavailable">
+                404 · 破損・接続不可
+              </small>
+            )}
           </a>
           <span>
             {item.downloads != null && `${compactCount(item.downloads)} DL`}

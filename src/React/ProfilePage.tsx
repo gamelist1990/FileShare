@@ -356,6 +356,11 @@ export function ProfilePage({ id }: { id?: string }) {
                         <FileIcon name={item.name} />
                         <span>
                           <strong>{item.name}</strong>
+                          {item.storageState === "unavailable" && (
+                            <small className="storage-unavailable">
+                              404 · 破損・接続不可
+                            </small>
+                          )}
                           <small>{size(item.size)} · プレビューを開く</small>
                         </span>
                         <span aria-hidden="true">↗</span>

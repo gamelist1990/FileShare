@@ -31,6 +31,11 @@ export function RankingPage({ items, users }: { items: any[]; users: any[] }) {
               <div>
                 <a href={"/files/" + i.id + "/preview"}>
                   <strong>{i.name}</strong>
+                  {i.storageState === "unavailable" && (
+                    <small className="storage-unavailable">
+                      404 · 破損・接続不可
+                    </small>
+                  )}
                 </a>
                 {i.uploaded_by && (
                   <a className="rank-author" href={"/users/" + i.uploaded_by}>

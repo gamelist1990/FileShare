@@ -1,3 +1,4 @@
+import { assertStorageAvailable } from "./volumes";
 import {
   readDurablePrefix,
   pendingEdge,
@@ -335,6 +336,7 @@ export async function createApp(config: Config) {
         const textPreview = /^\/api\/items\/([a-f0-9-]{36})\/text$/.exec(path);
         if (textPreview && method === "GET") {
           const item = readItem(store, user, textPreview[1]);
+          assertStorageAvailable(store, item);
           if (
             item.folder ||
             !["text", "markdown"].includes(previewKind(item.name))
@@ -514,6 +516,7 @@ export async function createApp(config: Config) {
           }
           if (edgeSync[2] === "origin" && ["GET", "HEAD"].includes(method)) {
             const item = store.item(edgeSync[1]);
+            if (item) assertStorageAvailable(store, item);
             if (!item || pendingEdge(store, item.id))
               throw new HttpError(404, "ファイルがまだA1にあります");
             await sendFile(
@@ -717,6 +720,7 @@ export async function createApp(config: Config) {
           }
           if (method === "POST" && action === "ticket") {
             const i = readItem(store, user, id);
+            assertStorageAvailable(store, i);
             if (i.folder)
               throw new HttpError(400, "ファイルを選択してください");
             const ticket = await seal(
@@ -732,6 +736,7 @@ export async function createApp(config: Config) {
           }
           if (method === "GET" && action === "preview") {
             const item = readItem(store, user, id);
+            assertStorageAvailable(store, item);
             json(res, 200, {
               ...previews.status(item),
               canCreate:
@@ -744,6 +749,7 @@ export async function createApp(config: Config) {
           }
           if (method === "POST" && action === "preview") {
             const i = readItem(store, user, id);
+            assertStorageAvailable(store, i);
             requireUser(user);
             if (pendingEdge(store, i.id))
               throw new HttpError(
@@ -769,6 +775,7 @@ export async function createApp(config: Config) {
           if (payload.user !== (user?.id ?? null))
             throw new HttpError(403, "ログイン状態が変わりました");
           const item = readItem(store, user, payload.id);
+          assertStorageAvailable(store, item);
           if (item.folder)
             throw new HttpError(400, "ファイルを選択してください");
           if (edgeSecret && config.edgeSpool.enabled) {
@@ -811,6 +818,7 @@ export async function createApp(config: Config) {
         );
         if (raw && ["GET", "HEAD"].includes(method)) {
           const item = readItem(store, user, raw[1]);
+          assertStorageAvailable(store, item);
           if (item.folder)
             throw new HttpError(400, "ファイルを選択してください");
           if (!raw[2] && edgeSecret && config.edgeSpool.enabled) {
@@ -1001,7 +1009,20 @@ export async function createApp(config: Config) {
         ) {
           if (path === "/admin") requireAdmin(user);
           if (/^\/files\/[a-f0-9-]{36}\/preview$/.test(path)) {
-            readItem(store, user, path.split("/")[2]);
+            const file = readItem(store, user, path.split("/")[2]);
+            try {
+              assertStorageAvailable(store, file);
+            } catch (error) {
+              if (!(error instanceof HttpError)) throw error;
+              res.writeHead(404, {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-store",
+              });
+              res.end(
+                `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="15"><title>404 · 破損・接続不可 | FileShare</title><link rel="stylesheet" href="/theme.css"><main class="panel storage-error"><strong>404</strong><h1>破損・接続不可</h1><p>保存先ドライブまたはファイルを確認できません。ドライブの再接続後に再読み込みしてください。</p><a href="${path}">再読み込み</a> · <a href="/">FileShareへ戻る</a></main></html>`,
+              );
+              return;
+            }
             res.removeHeader("X-Frame-Options");
             res.setHeader(
               "Content-Security-Policy",
@@ -1046,18 +1067,25 @@ export async function createApp(config: Config) {
           res.destroy();
           return;
         }
+        const unavailable = ["ENOENT", "ENODEV", "ESTALE", "EIO"].includes(
+          (e as NodeJS.ErrnoException).code ?? "",
+        );
         let status =
           e instanceof HttpError
             ? e.status
-            : e instanceof SyntaxError
-              ? 400
-              : 500;
+            : unavailable
+              ? 404
+              : e instanceof SyntaxError
+                ? 400
+                : 500;
         let message =
           e instanceof HttpError
             ? e.message
-            : status === 400
-              ? "入力形式が不正です"
-              : "処理できませんでした";
+            : unavailable
+              ? "破損・接続不可：保存先ドライブまたはファイルを確認できません"
+              : status === 400
+                ? "入力形式が不正です"
+                : "処理できませんでした";
         if ((e as any)?.code?.includes?.("SQLITE_CONSTRAINT")) {
           status = 409;
           message = "同じ名前が存在するか、操作が競合しました";

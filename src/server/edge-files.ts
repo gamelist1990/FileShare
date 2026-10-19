@@ -1,3 +1,4 @@
+import { assertStorageAvailable } from "./volumes";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -140,6 +141,7 @@ export function authorizeContent(store: Store, secret: string, body: any) {
     user = session;
   }
   const item = readItem(store, user, ticket.id);
+  assertStorageAvailable(store, item);
   if (item.folder) throw new HttpError(400, "ファイルを選択してください");
   if (body.commit === true && ticket.download && ticket.receipt)
     recordDownload(store, item.id, "edge:" + ticket.receipt, 86400000);
@@ -184,6 +186,7 @@ export async function readDurablePrefix(
 ) {
   const item = store.item(id);
   if (!item) throw new HttpError(404, "ファイルが見つかりません");
+  assertStorageAvailable(store, item);
   const upload = store.db
     .query("SELECT offset FROM uploads WHERE id=?")
     .get(id) as { offset: number } | null;

@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { chromium } from "@playwright/test";
-import { readFile, writeFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  rename,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
@@ -388,9 +395,73 @@ try {
   await page
     .locator("#admin-users")
     .screenshot({ path: ".artifacts/manager-users.png" });
-  await page
-    .locator("#admin-volumes")
-    .screenshot({ path: ".artifacts/manager-storage.png" });
+  // Exercise drive discovery and manual setup without writing outside the fixture.
+  const previousCapacity = app.store.config.capacityBytes;
+  app.store.config.capacityBytes = 100e6;
+  const volumePanel = page.locator("#admin-volumes");
+  await volumePanel.getByRole("button", { name: "ドライブを再検出" }).click();
+  const options = await (
+    await page.request.get(origin + "/api/admin/storage/volumes")
+  ).json();
+  const detected = options.candidates.find((c: any) => !c.registered);
+  if (detected) {
+    await volumePanel
+      .getByLabel("追加するドライブ", { exact: true })
+      .selectOption(detected.path);
+    await volumePanel.getByText("追加後の総容量：", { exact: false }).waitFor();
+  }
+  await volumePanel
+    .getByLabel("追加するドライブ", { exact: true })
+    .selectOption("manual");
+  const drive = join(dataDir, "browser-drive");
+  await mkdir(drive);
+  await volumePanel.getByLabel("保存先ディレクトリの絶対パス").fill(drive);
+  await volumePanel.getByLabel("管理用の名前").fill("Browser SSD");
+  await volumePanel.getByLabel("追加容量 GB", { exact: true }).fill(".005");
+  await volumePanel
+    .getByRole("button", { name: "容量を追加", exact: true })
+    .click();
+  await volumePanel
+    .getByRole("heading", { name: "Browser SSD", exact: true })
+    .waitFor();
+  if (app.store.config.capacityBytes !== 105e6)
+    throw Error("Drive addition did not expand the existing pool");
+  app.store.config.capacityBytes = previousCapacity + 5e6;
+  await volumePanel.screenshot({
+    path: ".artifacts/manager-storage.png",
+    style: ".manager-navigation{visibility:hidden}",
+  });
+  await rename(drive, drive + "-offline");
+  await volumePanel.getByRole("button", { name: "ドライブを再検出" }).click();
+  await volumePanel
+    .locator(".volume-grid .badge")
+    .filter({ hasText: "接続不可" })
+    .waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const volumeBounds = await volumePanel.evaluate((el) => ({
+    width: el.scrollWidth,
+    client: el.clientWidth,
+  }));
+  if (volumeBounds.width > volumeBounds.client + 1)
+    throw Error("Storage setup overflows on mobile");
+  await volumePanel.screenshot({
+    path: ".artifacts/manager-storage-offline-mobile.png",
+    style: ".manager-navigation{visibility:hidden}",
+  });
+  await rename(drive + "-offline", drive);
+  await volumePanel.getByRole("button", { name: "ドライブを再検出" }).click();
+  await volumePanel
+    .locator(".volume-grid .badge")
+    .filter({ hasText: "接続中" })
+    .waitFor();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  // This UI-only fixture has no blobs. Keep subsequent existing quota checks isolated.
+  app.store.db.run(
+    "DELETE FROM storage_volume_checks WHERE volume_id IN (SELECT id FROM storage_volumes WHERE label='Browser SSD')",
+  );
+  app.store.db.run("DELETE FROM storage_volumes WHERE label='Browser SSD'");
+  app.store.config.capacityBytes = previousCapacity;
+  await rm(drive, { recursive: true, force: true });
   const staffContext = await browser.newContext();
   const staffPage = await staffContext.newPage();
   staffCheckPage = staffPage;

@@ -6,7 +6,7 @@ export function PreviewContent({
   item,
   source,
 }: {
-  item: { id: string; name: string };
+  item: { id: string; name: string; storageState?: string };
   source?: string;
 }) {
   const kind = previewKind(item.name);
@@ -57,6 +57,26 @@ export function PreviewContent({
         });
     return () => controller.abort();
   }, [item.id, source, kind]);
+  const [storageState, setStorageState] = useState(item.storageState);
+  useEffect(() => {
+    const controller = new AbortController();
+    setStorageState(item.storageState);
+    const check = () =>
+      fetch(`/api/items/${item.id}`, { signal: controller.signal })
+        .then(async (r) => {
+          const d = await r.json();
+          if (r.ok) setStorageState(d.storageState);
+        })
+        .catch(() => {});
+    void check();
+    const timer = setInterval(() => {
+      if (!document.hidden) void check();
+    }, 15000);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, [item.id, item.storageState]);
   const lightweight = async () => {
     const signal = videoAbort.current?.signal;
     if (!signal) return;
@@ -105,6 +125,18 @@ export function PreviewContent({
     }
   };
   const standalone = `${location.origin}/files/${item.id}/preview`;
+  if (storageState === "unavailable")
+    return (
+      <div className="storage-error" role="status">
+        <strong>404</strong>
+        <h2>破損・接続不可</h2>
+        <p>
+          保存先ドライブまたはファイルを確認できません。再接続後、自動的に表示を再開します。
+        </p>
+        <button onClick={() => location.reload()}>再読み込み</button>
+      </div>
+    );
+
   return (
     <>
       {notice && <p role="status">{notice}</p>}

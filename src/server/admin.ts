@@ -1,4 +1,8 @@
-import { registerVolume } from "./volumes";
+import {
+  registerVolume,
+  registerDetectedVolume,
+  volumeOverview,
+} from "./volumes";
 import { encryptKey, validateEndpoint } from "./ai-key";
 import { randomUUID } from "node:crypto";
 import { randomToken, digestToken } from "@pexserver/secure-envelope";
@@ -48,16 +52,12 @@ export async function adminAction(
     return body;
   };
   if (path === "/api/admin/storage/volumes" && method === "GET")
-    return {
-      volumes: store.db
-        .query(
-          "SELECT v.*,COALESCE((SELECT SUM(i.size) FROM file_locations l JOIN items i ON i.id=l.item_id WHERE l.volume_id=v.id AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id AND m.purged=1)),0) AS used FROM storage_volumes v ORDER BY label",
-        )
-        .all(),
-      capacity: store.config.capacityBytes,
-    };
+    return volumeOverview(store);
   if (path === "/api/admin/storage/volumes" && method === "POST") {
-    const result = await registerVolume(store, await objectBody());
+    const body = await objectBody();
+    const result = await (body.detected
+      ? registerDetectedVolume(store, body)
+      : registerVolume(store, body));
     store.audit(ip, admin, "storage.map", result.id);
     return result;
   }

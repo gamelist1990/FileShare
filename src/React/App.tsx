@@ -254,7 +254,7 @@ export function App() {
   const listingRequest = useRef(0);
   const listingScope = useRef("");
   listingScope.current = `${space}:${parent ?? ""}:${user?.id ?? ""}`;
-  const refresh = async () => {
+  const refresh = async (keepSelection = false) => {
     const scope = `${space}:${parent ?? ""}:${user?.id ?? ""}`;
     if (scope !== listingScope.current) return;
     const request = ++listingRequest.current;
@@ -268,7 +268,7 @@ export function App() {
     setUploadable(d.uploadable);
     setUsage(d.usage);
     setCapacity(d.capacity);
-    setSelected([]);
+    if (!keepSelection) setSelected([]);
   };
   const loadAdmin = async () => {
     setOverview(await api("/api/admin/overview"));
@@ -325,6 +325,13 @@ export function App() {
       cancelled = true;
     };
   }, [ready, staffToken]);
+  useEffect(() => {
+    if (!ready || admin) return;
+    const t = setInterval(() => {
+      if (!document.hidden) void refresh(true).catch(() => {});
+    }, 15000);
+    return () => clearInterval(t);
+  }, [ready, admin, parent, space, user?.id]);
   const clearStaffInvitation = () => {
     setStaffToken("");
     setStaffInvitation(null);
@@ -1038,7 +1045,7 @@ export function App() {
                   await refreshMe();
                 }}
               />
-              <VolumeManager request={api} run={run} />
+              <VolumeManager request={api} run={run} onChange={loadAdmin} />
               <AdminTools
                 users={overview.users}
                 reports={overview.reports}
@@ -1506,6 +1513,11 @@ export function App() {
                                 <span>{i.name}</span>
                                 {!i.folder && (
                                   <small>
+                                    {i.storageState === "unavailable" && (
+                                      <span className="storage-unavailable">
+                                        404 · 破損・接続不可 ·{" "}
+                                      </span>
+                                    )}
                                     {i.storageState === "replicating" &&
                                       "A1で利用可能・A8へ保存中 · "}
                                     {i.uploader_name && `${i.uploader_name} · `}

@@ -1,4 +1,12 @@
-import { assignVolume, moveDurable } from "./volumes";
+import {
+  openUploadTarget,
+  assignVolume,
+  moveDurable,
+  storageUnavailable,
+  queueVolumeDelete,
+  reconcileVolumeDeletes,
+  volumeOnline,
+} from "./volumes";
 import { itemTags, setItemTags, validateTags } from "./tags";
 import { gunzipSync, createGzip } from "node:zlib";
 import { compressibleName, acceptsGzip } from "../shared/compression";
@@ -56,11 +64,14 @@ export const safeItem = (store: Store, i: Item) => {
   return {
     ...rest,
     tags: itemTags(store, i.id),
-    storageState: store.db
-      .query("SELECT 1 FROM edge_files WHERE item_id=? AND pending=1")
-      .get(i.id)
-      ? "replicating"
-      : "stored",
+    storageState:
+      !i.folder && storageUnavailable(store, i.id, i.size)
+        ? "unavailable"
+        : store.db
+              .query("SELECT 1 FROM edge_files WHERE item_id=? AND pending=1")
+              .get(i.id)
+          ? "replicating"
+          : "stored",
     uploaded_by: store.filePolicy.showUploaders ? (uploaded_by ?? null) : null,
     uploader_name: store.filePolicy.showUploaders
       ? (uploader_name ?? null)
@@ -357,9 +368,11 @@ export async function completeUpload(
   if (row.offset !== row.size)
     throw new HttpError(409, "転送が完了していません");
   busy.add(id);
-  const source = join(store.tempDir, id),
-    target = store.uploadPath(id);
+  const source = join(store.tempDir, id);
+  let destination: Awaited<ReturnType<typeof openUploadTarget>> | undefined;
   try {
+    destination = await openUploadTarget(store, id);
+    const target = destination.path;
     if (!row.size && !existsSync(source) && !existsSync(target))
       await (await open(source, "wx", 0o600)).close();
     if (existsSync(source)) await moveDurable(source, target);
@@ -440,7 +453,11 @@ export async function completeUpload(
     if (!replication) store.audit(ip, user, "upload", id);
     return safeItem(store, store.item(id)!);
   } finally {
-    busy.delete(id);
+    try {
+      await destination?.close();
+    } finally {
+      busy.delete(id);
+    }
   }
 }
 export async function cancelUpload(
@@ -461,9 +478,10 @@ export async function cancelUpload(
     await unlink(join(store.tempDir, id)).catch((e) => {
       if (e.code !== "ENOENT") throw e;
     });
-    await unlink(store.uploadPath(id)).catch((e) => {
-      if (e.code !== "ENOENT") throw e;
-    });
+    if (!queueVolumeDelete(store, id))
+      await unlink(store.uploadPath(id)).catch((e) => {
+        if (e.code !== "ENOENT") throw e;
+      });
     store.db.run("DELETE FROM uploads WHERE id=?", [id]);
     return { ok: true };
   } finally {
@@ -622,6 +640,17 @@ export function trashItems(
         `WITH RECURSIVE subtree(id) AS (SELECT id FROM items WHERE id=? UNION ALL SELECT i.id FROM items i JOIN subtree s ON i.parent=s.id) UPDATE items SET deleted=? WHERE id IN subtree`,
         [id, now],
       );
+    const rows = store.db
+      .query("SELECT i.id,i.size FROM items i WHERE i.folder=0 AND i.deleted=?")
+      .all(now) as { id: string; size: number }[];
+    for (const row of rows)
+      if (storageUnavailable(store, row.id, row.size)) {
+        queueVolumeDelete(store, row.id);
+        store.db.run(
+          "INSERT INTO item_meta(item_id,purged) VALUES (?,1) ON CONFLICT(item_id) DO UPDATE SET purged=1",
+          [row.id],
+        );
+      }
   })();
   store.audit(ip, user, "trash", ids.join(","));
   return { ok: true };
@@ -673,8 +702,17 @@ async function performMaintenance(
         const meta = store.db
           .query("SELECT expires_at,purged FROM item_meta WHERE item_id=?")
           .get(id) as any;
-        if (meta?.purged || (meta?.expires_at && meta.expires_at <= Date.now()))
-          throw new HttpError(409, "保存期限を過ぎたファイルは復元できません");
+        if (
+          meta?.purged ||
+          store.db
+            .query("SELECT 1 FROM volume_deletions WHERE item_id=?")
+            .get(id) ||
+          (meta?.expires_at && meta.expires_at <= Date.now())
+        )
+          throw new HttpError(
+            409,
+            "完全削除済み、または保存期限を過ぎたファイルは復元できません",
+          );
         if (item.parent && !store.item(item.parent))
           throw new HttpError(409, "親フォルダを先に復元してください");
         store.db.run("UPDATE items SET deleted=NULL WHERE id=?", [id]);
@@ -702,9 +740,10 @@ async function performMaintenance(
               "転送データを保存中です。再試行してください",
             );
           await unlink(join(store.tempDir, i.id)).catch(() => {});
-          await unlink(store.blobPath(i.id)).catch((e) => {
-            if (e.code !== "ENOENT") throw e;
-          });
+          if (!queueVolumeDelete(store, i.id))
+            await unlink(store.blobPath(i.id)).catch((e) => {
+              if (e.code !== "ENOENT") throw e;
+            });
           await unlink(join(store.cacheDir, i.id + ".mp4")).catch(() => {});
         }
         store.db.transaction(() => {
@@ -715,6 +754,7 @@ async function performMaintenance(
       }
     }
   } else throw new HttpError(400, "不明な操作です");
+  await reconcileVolumeDeletes(store);
   store.audit(ip, user, action, ids.join(","));
   return { ok: true };
 }
@@ -723,6 +763,7 @@ export async function cleanup(store: Store, full = true) {
   if (cleaning.has(store)) return { uploads: 0, orphans: 0, expired: 0 };
   cleaning.add(store);
   try {
+    await reconcileVolumeDeletes(store);
     const now = Date.now();
     let uploads = 0,
       orphans = 0;
@@ -731,8 +772,9 @@ export async function cleanup(store: Store, full = true) {
       .query("SELECT item_id FROM item_meta WHERE expires_at<=? AND purged=0")
       .all(now) as { item_id: string }[]) {
       if (busy.has(row.item_id)) continue;
+      const mapped = queueVolumeDelete(store, row.item_id);
       for (const path of [
-        store.blobPath(row.item_id),
+        ...(mapped ? [] : [store.blobPath(row.item_id)]),
         join(store.tempDir, row.item_id),
         join(store.cacheDir, row.item_id + ".mp4"),
       ])
@@ -763,10 +805,12 @@ export async function cleanup(store: Store, full = true) {
       .all(now) as { id: string }[]) {
       if (busy.has(row.id)) continue;
       await unlink(join(store.tempDir, row.id)).catch(() => {});
-      await unlink(store.uploadPath(row.id)).catch(() => {});
+      if (!queueVolumeDelete(store, row.id))
+        await unlink(store.uploadPath(row.id)).catch(() => {});
       store.db.run("DELETE FROM uploads WHERE id=?", [row.id]);
       uploads++;
     }
+    await reconcileVolumeDeletes(store);
     if (!full) return { uploads, orphans, expired };
     for (const file of await readdir(store.tempDir)) {
       if (!/^[a-f0-9-]{36}$/.test(file) || busy.has(file)) continue;
@@ -775,15 +819,13 @@ export async function cleanup(store: Store, full = true) {
         orphans++;
       }
     }
-    // Never delete registered blobs, including trash or an upload awaiting finalization.
-    for (const dir of [
-      store.blobDir,
-      ...(
-        store.db.query("SELECT path FROM storage_volumes").all() as {
-          path: string;
-        }[]
-      ).map((v) => v.path),
-    ]) {
+    // Scan only verified drives; never touch a replacement mount at the same path.
+    const mappedDirs = (
+      store.db.query("SELECT * FROM storage_volumes").all() as any[]
+    )
+      .filter(volumeOnline)
+      .map((v) => v.path);
+    for (const dir of [store.blobDir, ...mappedDirs]) {
       for (const file of await readdir(dir).catch(() => [])) {
         if (!/^[a-f0-9-]{36}$/.test(file) || busy.has(file)) continue;
         if (

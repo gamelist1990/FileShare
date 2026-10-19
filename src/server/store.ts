@@ -113,6 +113,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS download_receipts (hash TEXT PRIMARY KEY, item_id TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS edge_files(item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,pending INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS storage_volumes(id TEXT PRIMARY KEY,label TEXT NOT NULL,path TEXT UNIQUE NOT NULL,capacity INTEGER NOT NULL,enabled INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS storage_volume_checks(volume_id TEXT PRIMARY KEY REFERENCES storage_volumes(id));
+      CREATE TABLE IF NOT EXISTS volume_deletions(volume_id TEXT NOT NULL REFERENCES storage_volumes(id),item_id TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(volume_id,item_id));
       CREATE TABLE IF NOT EXISTS file_locations(item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,volume_id TEXT NOT NULL REFERENCES storage_volumes(id));
       CREATE TABLE IF NOT EXISTS upload_volumes(upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE,volume_id TEXT NOT NULL REFERENCES storage_volumes(id));
       CREATE TABLE IF NOT EXISTS item_tags(item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,tag TEXT NOT NULL,PRIMARY KEY(item_id,tag));
