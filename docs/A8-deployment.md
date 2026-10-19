@@ -86,3 +86,7 @@ The single-socket protocol and measurements are documented in [upload-pipeline.m
 ### 2026-10-19: 転送パイプラインと招待制御（2.6）反映済み
 
 CI run 39203548984成功後、release-2.6のLinux x64実行ファイルをA8へ反映。SHA-256 `f0d74642028e924bf83579756698886656dfb0053e85d8a02921a191c1430543`。オンラインSQLiteバックアップと旧実行ファイルは `~/.local/opt/pex-fileshare/backups/registration-2.6-20261019T051738Z/`。前後とも3ファイル47,998,735 bytes、承認済み管理者1・スタッフ1。既存招待1件はLevel 3を保持。公開HTTPSの `/api/me` で `registration:false`、`autoApprove:false`、`pipeline:fileshare-upload-v1`、`setupRequired:false` と200GB割当を確認。ユーザーサービスactive。登録・転送テスト42件347 assertions、ブラウザでパスキーと圧縮・切断再開を検証。
+
+### 2026-10-19: 投稿者ページと権限付きプレビュー（2.7）反映済み
+
+CI run 39203963126成功後にrelease-2.7のLinux x64実行ファイルを反映。SHA-256 `0d840d779516f33ed56aeacc152e0a057002d6371d84e1a5b0dcebee8bfe3d86`。バックアップ `~/.local/opt/pex-fileshare/backups/preview-2.7-20261019T052152Z/`、反映直前3ファイル47,998,735 bytes、管理者1・スタッフ1。公開healthz成功、ユーザーサービスactive。45テスト395 assertionsに加え、CIブラウザでプロフィール・投稿者一覧・独立ランキング・プレビューURLコピーとMarkdown内スクリプト拒否を検証。本番ブラウザでもランキングと公開投稿者ページを確認。

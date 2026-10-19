@@ -5,8 +5,18 @@
   "dataDir": "./data",
   "capacityBytes": 200000000000,
   "vipQuotaBytes": 5000000000,
-  "proxy": { "enabled": false, "trustedPeers": ["127.0.0.1", "::1"] },
-  "registration": { "enabled": true, "accountsPerIp": 1, "attemptsPerHour": 5 },
+  "proxy": {
+    "enabled": false,
+    "trustedPeers": [
+      "127.0.0.1",
+      "::1"
+    ]
+  },
+  "registration": {
+    "enabled": true,
+    "accountsPerIp": 1,
+    "attemptsPerHour": 5
+  },
   "rate": {
     "requestsPerMinute": 600,
     "globalRequestsPerMinute": 6000,
@@ -27,5 +37,6 @@
     "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
     "model": "gemma4",
     "intervalSeconds": 60
-  }
+  },
+  "http3Port": 0
 }

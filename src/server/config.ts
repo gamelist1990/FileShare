@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 export interface Config {
+  http3Port: number;
   host: string;
   port: number;
   origin: string;
@@ -36,6 +37,7 @@ export interface Config {
   };
 }
 export const defaults: Config = {
+  http3Port: 0,
   host: "127.0.0.1",
   port: 8100,
   origin: "http://localhost:8100",
@@ -78,6 +80,13 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     ai: { ...defaults.ai, ...raw.ai },
   } as Config;
   const url = new URL(c.origin);
+  if (
+    !Number.isSafeInteger(c.http3Port) ||
+    c.http3Port < 0 ||
+    c.http3Port > 65535 ||
+    (c.http3Port && url.protocol !== "https:")
+  )
+    throw new Error("http3Port must be 0 (disabled) or an HTTPS UDP port");
   if (
     url.origin !== c.origin ||
     (url.protocol !== "https:" &&

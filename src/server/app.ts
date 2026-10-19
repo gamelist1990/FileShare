@@ -14,7 +14,13 @@ import { join } from "node:path";
 import { readFile, stat, readdir, open as openFile } from "node:fs/promises";
 import { Store, type User, type Item } from "./store";
 import type { Config } from "./config";
-import { HttpError, requireUser, requireAdmin, readItem } from "./policy";
+import {
+  HttpError,
+  requireUser,
+  requireAdmin,
+  readItem,
+  canRead,
+} from "./policy";
 import { sessionUser, publicUser, authRoute } from "./auth";
 import { createTransport } from "./transport";
 import {
@@ -121,6 +127,8 @@ export async function createApp(config: Config) {
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";
       for (const [k, v] of Object.entries(security)) res.setHeader(k, v);
+      if (config.http3Port)
+        res.setHeader("Alt-Svc", `h3=":${config.http3Port}"; ma=300`);
       try {
         if (!ip) throw new HttpError(403, "接続情報が不正です");
         req.setTimeout(90_000, () => req.destroy());
@@ -442,7 +450,7 @@ export async function createApp(config: Config) {
           res.removeHeader("X-Frame-Options");
           res.setHeader(
             "Content-Security-Policy",
-            "sandbox; default-src 'none'; frame-ancestors 'self'",
+            `sandbox; default-src 'none'; frame-ancestors ${canRead(store, null, item) ? "*" : "'self'"}`,
           );
           enterTransfer();
           await sendFile(
