@@ -1265,7 +1265,7 @@ export function App() {
         </footer>
       </main>
       {task && (
-        <FullScreenPage
+        <FullScreenPage variant="modal"
           onClose={() => {
             if (!busy) setTask(null);
           }}
@@ -1330,7 +1330,7 @@ export function App() {
         </FullScreenPage>
       )}
       {keyResult && (
-        <FullScreenPage onClose={() => setKeyResult(null)}>
+        <FullScreenPage variant="modal" onClose={() => setKeyResult(null)}>
           <section className="screen-content">
             <h2>招待キーを保存してください</h2>
             <p>
@@ -1600,7 +1600,7 @@ export function App() {
         </FullScreenPage>
       )}
       {preview && (
-        <FullScreenPage
+        <FullScreenPage variant="modal"
           onClose={() => {
             setPreview(null);
             setPreviewUrl("");

@@ -1825,3 +1825,9 @@ hr {
 
 .screen-modal .screen-content { scrollbar-width: none; -ms-overflow-style: none; }
 .screen-modal .screen-content::-webkit-scrollbar { display: none; }
+
+/* Preview requires more room, while confirmation dialogs remain compact. */
+@media (min-width: 721px) {
+  .screen-modal .preview-page { width: min(1080px, 100%); max-height: min(92dvh, 980px); }
+  .screen-modal .preview-page video, .screen-modal .preview-page img { max-height: min(70dvh, 760px); }
+}

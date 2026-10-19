@@ -204,7 +204,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
         </ol>
       </section>
       {editing && (
-        <FullScreenPage onClose={() => setEditing(null)}>
+        <FullScreenPage variant="modal" onClose={() => setEditing(null)}>
           <section
             className="screen-content"
             role="region"
