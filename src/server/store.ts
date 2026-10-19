@@ -89,7 +89,7 @@ export class Store {
     });
     chmodSync(join(config.dataDir, "fileshare.sqlite"), 0o600);
     this.db
-      .exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+      .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, level INTEGER NOT NULL CHECK(level BETWEEN 0 AND 4), status TEXT NOT NULL, quota INTEGER NOT NULL, ip TEXT NOT NULL, created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), public_key BLOB NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS device_enrollments (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);

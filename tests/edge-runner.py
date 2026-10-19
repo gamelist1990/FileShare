@@ -11,5 +11,8 @@ for line in sys.stdin:
             for row in m.active_uploads():progressed=m.replicate_one(row['id']) or progressed
             if not progressed:break
         print('REPLICATED',flush=True)
+    elif line.strip()=='step':
+        for row in m.active_uploads():m.replicate_one(row['id'])
+        print('STEPPED',flush=True)
     elif line.strip()=='stop':break
 server.shutdown()

@@ -1,4 +1,5 @@
 import {
+  readDurablePrefix,
   pendingEdge,
   publishEdge,
   contentLocation,
@@ -458,7 +459,7 @@ export async function createApp(config: Config) {
           return;
         }
         const edgeSync =
-          /^\/api\/internal\/edge-sync\/([a-f0-9-]{36})(?:\/(chunk|publish|complete|authorize|origin))?$/.exec(
+          /^\/api\/internal\/edge-sync\/([a-f0-9-]{36})(?:\/(chunk|publish|complete|authorize|origin|prefix))?$/.exec(
             path,
           );
         if (edgeSync) {
@@ -489,6 +490,22 @@ export async function createApp(config: Config) {
             if (result.id !== edgeSync[1])
               throw new HttpError(403, "ファイルが一致しません");
             json(res, 200, result);
+            return;
+          }
+          if (edgeSync[2] === "prefix" && method === "GET") {
+            const bytes = await readDurablePrefix(
+              store,
+              edgeSync[1],
+              Number(url.searchParams.get("offset")),
+              Number(url.searchParams.get("length")),
+            );
+            await bandwidth.acquire(bytes.length);
+            res.writeHead(200, {
+              "Content-Type": "application/octet-stream",
+              "Content-Length": String(bytes.length),
+              "Cache-Control": "no-store",
+            });
+            res.end(bytes);
             return;
           }
           if (edgeSync[2] === "origin" && ["GET", "HEAD"].includes(method)) {

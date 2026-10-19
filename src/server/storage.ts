@@ -276,7 +276,8 @@ export async function commitUploadBlock(
   if (!equalDigest(createHash("sha256").update(body).digest("hex"), checksum))
     throw new HttpError(400, "チェックサムが一致しません");
   const path = join(store.tempDir, id),
-    file = await open(path, existsSync(path) ? "r+" : "wx", 0o600);
+    existed = existsSync(path),
+    file = await open(path, existed ? "r+" : "wx", 0o600);
   try {
     await file.truncate(row.offset);
     let written = 0;
@@ -291,6 +292,14 @@ export async function commitUploadBlock(
       written += r.bytesWritten;
     }
     await file.sync();
+    if (!existed && process.platform !== "win32") {
+      const directory = await open(store.tempDir, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
     // Permission/quota changes during disk I/O cannot commit an unauthorized block.
     getUpload(store, user, id, replication);
     store.db.transaction(() => {

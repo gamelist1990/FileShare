@@ -1,3 +1,5 @@
+import { open } from "node:fs/promises";
+import { join } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { digestToken } from "@pexserver/secure-envelope";
 import type { Store, User, Item } from "./store";
@@ -170,4 +172,54 @@ export function contentLocation(
     receipt: receipt ? digestToken(receipt) : null,
   });
   return `${store.config.edgeSpool.path}/${item.id}/content?token=${encodeURIComponent(token)}`;
+}
+
+// Only the already-fsynced, committed prefix may be read while replication runs.
+// Bound each request so the edge can forward bytes without buffering a whole file.
+export async function readDurablePrefix(
+  store: Store,
+  id: string,
+  offset: number,
+  length: number,
+) {
+  const item = store.item(id);
+  if (!item) throw new HttpError(404, "ファイルが見つかりません");
+  const upload = store.db
+    .query("SELECT offset FROM uploads WHERE id=?")
+    .get(id) as { offset: number } | null;
+  const available = pendingEdge(store, id) ? (upload?.offset ?? 0) : item.size;
+  if (
+    !Number.isSafeInteger(offset) ||
+    !Number.isSafeInteger(length) ||
+    offset < 0 ||
+    length < 1 ||
+    length > 256 * 1024 ||
+    offset + length > available
+  )
+    throw new HttpError(409, "A8の保存が確定していない範囲です");
+  let file;
+  try {
+    file = await open(
+      upload ? join(store.tempDir, id) : store.blobPath(id),
+      "r",
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !upload)
+      throw error;
+    // Completion may atomically rename the temporary file after the snapshot.
+    file = await open(store.uploadPath(id), "r");
+  }
+  try {
+    const bytes = Buffer.alloc(length);
+    let done = 0;
+    while (done < length) {
+      const result = await file.read(bytes, done, length - done, offset + done);
+      if (!result.bytesRead)
+        throw new HttpError(503, "A8の保存データが途中で切れています");
+      done += result.bytesRead;
+    }
+    return bytes;
+  } finally {
+    await file.close();
+  }
 }

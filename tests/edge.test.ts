@@ -1,10 +1,12 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
+import { readDurablePrefix } from "../src/server/edge-files";
+import { Database } from "bun:sqlite";
 import { createApp } from "../src/server/app";
 import { defaults } from "../src/server/config";
 import { createEdgeUploadTicket } from "../src/server/edge-auth";
@@ -78,7 +80,7 @@ function request(
     req.end(body);
   });
 }
-test("A1 durable publication is readable before replication, survives restart, then completes on A8 with live ACL and cached Range downloads", async () => {
+test("A1 durable publication is readable before replication, survives restart, reclaims acknowledged blocks, then completes on A8 with live ACL and streamed Range downloads", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fs-edge-e2e-")),
     secret = randomToken(32)
       .replace(/[^a-f0-9]/g, "a")
@@ -181,6 +183,7 @@ test("A1 durable publication is readable before replication, survives restart, t
       { Authorization: "Bearer " + edge.ticket },
     );
     expect(start.status).toBe(200);
+    let released = 0;
     for (let offset = 0; offset < bytes.length; offset += edge.blockBytes) {
       const chunk = bytes.subarray(
         offset,
@@ -192,6 +195,35 @@ test("A1 durable publication is readable before replication, survives restart, t
         "Upload-Checksum": createHash("sha256").update(chunk).digest("hex"),
       });
       expect(r.status).toBe(200);
+      if (offset === 0) {
+        expect(
+          (await readFile(join(dir, "a1", id + ".part"))).equals(chunk),
+        ).toBe(true);
+        (child!.stdin as any).write("step\n");
+        await (child!.stdin as any).flush();
+        await until("STEPPED");
+        const db = new Database(join(dir, "a1", "spool.sqlite"), {
+          readonly: true,
+        });
+        const receipt = db
+          .query(
+            "SELECT released_offset,reclaimed_bytes FROM edge_uploads WHERE id=?",
+          )
+          .get(id) as any;
+        db.close();
+        released = receipt.released_offset;
+        expect(released).toBe(chunk.length);
+        expect(receipt.reclaimed_bytes).toBeGreaterThan(0);
+        expect(
+          (await stat(join(dir, "a1", id + ".part"))).blocks * 512,
+        ).toBeLessThan(chunk.length);
+        expect(
+          (await readFile(join(dir, "a1", id + ".part"))).equals(
+            Buffer.alloc(chunk.length),
+          ),
+        ).toBe(true);
+        await expect(readDurablePrefix(app.store, id, 0, 1)).rejects.toThrow(); // unpublished data has no public identity
+      }
     }
     const finish = await request(
       edgePort,
@@ -208,7 +240,7 @@ test("A1 durable publication is readable before replication, survives restart, t
           .query("SELECT offset FROM uploads WHERE id=?")
           .get(id) as any
       ).offset,
-    ).toBe(0);
+    ).toBe(released);
     expect(app.store.usage(uid)).toEqual({ used: bytes.length, reserved: 0 });
     const redirect = await request(
       port,
@@ -219,6 +251,21 @@ test("A1 durable publication is readable before replication, survives restart, t
     );
     expect(redirect.status).toBe(307);
     const location = String(redirect.headers.location);
+    await expect(
+      readDurablePrefix(app.store, id, released, 1),
+    ).rejects.toThrow();
+    expect(
+      (await readDurablePrefix(app.store, id, 0, 128)).equals(
+        bytes.subarray(0, 128),
+      ),
+    ).toBe(true);
+    const crossing = await request(edgePort, location, "GET", Buffer.alloc(0), {
+      Range: `bytes=${released - 32}-${released + 32}`,
+    });
+    expect(crossing.status).toBe(206);
+    expect(
+      crossing.body.equals(bytes.subarray(released - 32, released + 33)),
+    ).toBe(true);
     const served = await request(edgePort, location);
     expect(served.status).toBe(200);
     expect(served.body.equals(bytes)).toBe(true);

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import base64
+import ctypes
+import errno
 import hashlib
 import hmac
 import http.client
@@ -76,6 +78,7 @@ def connect_db() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA synchronous=FULL")
     return connection
 
 
@@ -115,6 +118,10 @@ def init_db() -> None:
             )
             if "published" not in [r[1] for r in connection.execute("PRAGMA table_info(edge_uploads)")]:
                 connection.execute("ALTER TABLE edge_uploads ADD COLUMN published INTEGER NOT NULL DEFAULT 0")
+            columns = {r[1] for r in connection.execute("PRAGMA table_info(edge_uploads)")}
+            for name in ("released_offset", "reclaimed_bytes"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE edge_uploads ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
             connection.execute("CREATE TABLE IF NOT EXISTS download_cache(id TEXT PRIMARY KEY,size INTEGER NOT NULL,accessed INTEGER NOT NULL)")
             os.chmod(DB_PATH, 0o600)
         finally:
@@ -190,6 +197,8 @@ def status_for(upload_id: str) -> dict:
             "offset": row["offset"],
             "receivedBytes": row["received_bytes"],
             "replicatedOffset": row["replicated_offset"],
+            "releasedOffset": row["released_offset"],
+            "reclaimedBytes": row["reclaimed_bytes"],
             "state": row["state"],
             "receipt": receipt,
             **({"error": row["error"]} if row["error"] else {}),
@@ -222,7 +231,7 @@ def reserve_spool(ticket: dict) -> dict:
             )
         else:
             reserved = connection.execute(
-                "SELECT COALESCE(SUM(size),0) FROM edge_uploads WHERE state NOT IN ('complete','cancelled','error')"
+                "SELECT COALESCE(SUM(size-reclaimed_bytes),0) FROM edge_uploads WHERE state NOT IN ('complete','cancelled','error')"
             ).fetchone()[0]
             available = os.statvfs(DATA_DIR).f_bavail * os.statvfs(DATA_DIR).f_frsize
             if (
@@ -496,6 +505,79 @@ def update_replication(upload_id: str, offset: int, state: str, error=None) -> N
         connection.close()
 
 
+def release_confirmed_prefix(upload_id: str, confirmed: int) -> None:
+    """Persist the remote-read boundary before punching only A8-durable bytes.
+
+    A crash before/after fallocate always routes this prefix to A8. Unsupported
+    filesystems retain the bytes safely; actual reclaimed blocks govern admission.
+    """
+    with upload_lock(upload_id):
+        db = connect_db()
+        try:
+            row = db.execute("SELECT * FROM edge_uploads WHERE id=?", (upload_id,)).fetchone()
+            if not row or confirmed > row["replicated_offset"] or confirmed > row["offset"]:
+                raise OSError("Unconfirmed reclamation boundary")
+            if confirmed <= row["released_offset"]:
+                return
+            start = row["released_offset"]
+            db.execute("UPDATE edge_uploads SET released_offset=? WHERE id=?", (confirmed, upload_id))
+            path = DATA_DIR / (upload_id + ".part")
+            fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                before = os.fstat(fd).st_blocks * 512
+                libc = ctypes.CDLL(None, use_errno=True)
+                punch = getattr(libc, "fallocate", None)
+                if punch is None:
+                    return
+                punch.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+                punch.restype = ctypes.c_int
+                # KEEP_SIZE | PUNCH_HOLE: logical offsets stay stable for receipts.
+                if punch(fd, 0x03, start, confirmed-start) != 0:
+                    error = ctypes.get_errno()
+                    if error in (errno.EOPNOTSUPP, errno.ENOSYS, errno.EINVAL):
+                        return
+                    raise OSError(error, "Cannot reclaim durable spool prefix")
+                os.fsync(fd)
+                freed = max(0, before-os.fstat(fd).st_blocks*512)
+                db.execute("UPDATE edge_uploads SET reclaimed_bytes=MIN(size,reclaimed_bytes+?) WHERE id=?", (freed,upload_id))
+            finally:
+                os.close(fd)
+        finally:
+            db.close()
+
+
+def read_origin_chunk(upload_id: str, offset: int, length: int) -> bytes:
+    path = f"/api/internal/edge-sync/{upload_id}/prefix?offset={offset}&length={length}"
+    timestamp = str(int(time.time()*1000))
+    connection = ProxyHTTPConnection(A8_HOST,A8_PORT,timeout=90)
+    try:
+        connection.request("GET", path, headers={"Host":PUBLIC_HOST,"Connection":"close","X-FileShare-Edge-Time":timestamp,"X-FileShare-Edge-Signature":internal_signature("GET",path,timestamp,b"")})
+        response=connection.getresponse()
+        if response.status != 200 or int(response.getheader("Content-Length","-1")) != length:
+            raise OSError("A8 durable prefix is unavailable")
+        data=response.read(length)
+        if len(data)!=length: raise OSError("Incomplete A8 durable prefix")
+        return data
+    finally:
+        connection.close()
+
+
+def read_pending_chunk(upload_id: str, offset: int, length: int) -> bytes:
+    with upload_lock(upload_id):
+        db=connect_db()
+        try: row=db.execute("SELECT * FROM edge_uploads WHERE id=?",(upload_id,)).fetchone()
+        finally: db.close()
+        if not row: raise OSError("Missing upload receipt")
+        if row["state"] == "complete":
+            remote_length=length
+        elif offset < row["released_offset"]:
+            remote_length=min(length,row["released_offset"]-offset)
+        else:
+            # Hold the same lock as hole punching until pread has copied bytes.
+            return read_spool_block(upload_id,offset,length)
+    return read_origin_chunk(upload_id,offset,remote_length)
+
+
 def local_receipt(upload_id: str, start: int):
     connection = connect_db()
     try:
@@ -524,14 +606,6 @@ def read_spool_block(upload_id: str, offset: int, length: int) -> bytes:
 def delete_upload(upload_id: str, state="cancelled") -> None:
     with upload_lock(upload_id):
         path = DATA_DIR / (upload_id + ".part")
-        if state == "complete" and path.exists():
-            cache = DATA_DIR / (upload_id + ".cache")
-            os.replace(path, cache)
-            db = connect_db()
-            try:
-                db.execute("INSERT OR REPLACE INTO download_cache VALUES (?,?,?)", (upload_id, cache.stat().st_size, int(time.time()*1000)))
-            finally:
-                db.close()
         try:
             path.unlink()
         except FileNotFoundError:
@@ -626,12 +700,15 @@ def replicate_one(upload_id: str) -> bool:
     if not isinstance(remote_offset, int) or remote_offset < 0 or remote_offset > row["size"]:
         update_replication(upload_id, row["replicated_offset"], "error", "A8の確定位置が不正です")
         return False
+    if remote_offset < row["released_offset"]:
+        update_replication(upload_id, row["replicated_offset"], "error", "A8の耐久受領位置が解放済み位置より後退しました")
+        return False
     if remote_offset != row["replicated_offset"]:
         if remote_offset > 0:
             receipt = remote.get("receipt") or {}
             start = receipt.get("start")
             local = local_receipt(upload_id, start) if isinstance(start, int) else None
-            if local and (
+            if not local or (
                 local["length"] != receipt.get("length")
                 or not hmac.compare_digest(local["hash"], str(receipt.get("hash", "")))
             ):
@@ -640,6 +717,11 @@ def replicate_one(upload_id: str) -> bool:
         update_replication(upload_id, remote_offset, "syncing", None)
         row = dict(row)
         row["replicated_offset"] = remote_offset
+    try:
+        release_confirmed_prefix(upload_id, remote_offset)
+    except OSError:
+        # Reclamation is opportunistic; durable replication can still continue.
+        pass
     offset = remote_offset
     if offset >= row["size"]:
         update_replication(upload_id, offset, "ready", None)
@@ -675,6 +757,10 @@ def replicate_one(upload_id: str) -> bool:
         return False
     next_state = "ready" if next_offset == row["size"] else "syncing"
     update_replication(upload_id, next_offset, next_state, None)
+    try:
+        release_confirmed_prefix(upload_id, next_offset)
+    except OSError:
+        pass
     return True
 
 
@@ -926,7 +1012,7 @@ def _evict_cache(incoming=0):
     try:
         for row in db.execute("SELECT * FROM download_cache ORDER BY accessed").fetchall():
             usage=cache_bytes()
-            pending=db.execute("SELECT COALESCE(SUM(size),0) FROM edge_uploads WHERE state NOT IN ('complete','cancelled','error')").fetchone()[0]
+            pending=db.execute("SELECT COALESCE(SUM(size-reclaimed_bytes),0) FROM edge_uploads WHERE state NOT IN ('complete','cancelled','error')").fetchone()[0]
             disk=os.statvfs(DATA_DIR)
             if usage+pending+incoming<=MAX_RESERVED_BYTES and disk.f_bavail*disk.f_frsize-incoming>=MIN_FREE_BYTES: break
             try: (DATA_DIR/(row["id"]+".cache")).unlink()
@@ -956,19 +1042,18 @@ def serve_edge_content(handler, upload_id, meta, head, auth_body):
     source=DATA_DIR/(upload_id+".part") if meta["pending"] else cache
     local=None
     try:
+        if meta["pending"]: raise FileNotFoundError()
         local=open(source,"rb")
         if os.fstat(local.fileno()).st_size!=total: local.close();local=None
     except FileNotFoundError:
-        if meta["pending"]:
+        if not meta["pending"]:
             try:
                 local=open(cache,"rb")
                 if os.fstat(local.fileno()).st_size!=total:local.close();local=None
             except FileNotFoundError:pass
     connection=None; response=None; writing=None; caching=False
-    if local is None and meta["pending"]:
-        raise SpoolError(503,"A1の保存ファイルを確認できません。再試行してください")
     try:
-        if local is None and not head:
+        if local is None and not meta["pending"] and not head:
             path=f"/api/internal/edge-sync/{upload_id}/origin"
             timestamp=str(int(time.time()*1000))
             connection=ProxyHTTPConnection(A8_HOST,A8_PORT,timeout=90)
@@ -980,7 +1065,7 @@ def serve_edge_content(handler, upload_id, meta, head, auth_body):
             if not requested and total<=MAX_RESERVED_BYTES//2:
                 evict_cache(total)
                 db=connect_db()
-                try:reserved=db.execute("SELECT COALESCE(SUM(size),0) FROM edge_uploads WHERE state NOT IN ('complete','cancelled','error')").fetchone()[0]
+                try:reserved=db.execute("SELECT COALESCE(SUM(size-reclaimed_bytes),0) FROM edge_uploads WHERE state NOT IN ('complete','cancelled','error')").fetchone()[0]
                 finally:db.close()
                 disk=os.statvfs(DATA_DIR)
                 used=cache_bytes()
@@ -1003,7 +1088,11 @@ def serve_edge_content(handler, upload_id, meta, head, auth_body):
         remaining=length
         collected=bytearray()
         while remaining:
-            chunk=local.read(min(256*1024,remaining)) if local else response.read(min(256*1024,remaining))
+            amount=min(256*1024,remaining)
+            if meta["pending"]:
+                chunk=read_pending_chunk(upload_id,end-remaining+1,amount)
+            else:
+                chunk=local.read(amount) if local else response.read(amount)
             if not chunk:raise OSError("Incomplete content stream")
             if text_preview:collected.extend(chunk)
             else:handler.wfile.write(chunk)
