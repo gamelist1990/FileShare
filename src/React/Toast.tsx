@@ -85,8 +85,10 @@ function ToastCard({
   return (
     <div
       className={`toast toast-${toast.tone}${closing ? " toast-leaving" : ""}${paused ? " toast-paused" : ""}`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onPointerEnter={(event) => {
+        if (event.pointerType === "mouse") setHovered(true);
+      }}
+      onPointerLeave={() => setHovered(false)}
       onFocusCapture={() => setFocused(true)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null))

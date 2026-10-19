@@ -554,7 +554,11 @@ try {
   const deviceURL = await page
     .getByLabel("別端末用の登録URL", { exact: true })
     .inputValue();
-  const deviceContext = await browser.newContext();
+  const deviceContext = await browser.newContext({
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 844 },
+  });
   const devicePage = await deviceContext.newPage();
   const deviceCDP = await deviceContext.newCDPSession(devicePage);
   await deviceCDP.send("WebAuthn.enable");
@@ -576,6 +580,11 @@ try {
     .getByRole("status")
     .filter({ hasText: "パスキーを追加しました" })
     .waitFor();
+  const deviceToast = devicePage
+    .locator(".toast")
+    .filter({ hasText: "パスキーを追加しました" });
+  await deviceToast.locator(".toast-text").tap();
+  await deviceToast.waitFor({ state: "detached", timeout: 5000 });
   await devicePage
     .getByRole("button", { name: "ログイン画面へ戻る", exact: true })
     .click();
