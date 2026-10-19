@@ -158,3 +158,19 @@ A1では `fileshare-a1-edge-spool.service` が `127.0.0.1:8124` で稼働中。F
 A8実行ファイルSHA-256 `5860fdd8f10448ccff975e791f96f3a73789b576afc7f6dd2862c36fbe0bec15` を配置し、A1 spoolのPythonソースSHA-256 `1f94a7e3ae8aa7eed3637b1d0fa3cc9aeb6cd8fc57101672f191b1881e99d785` を反映。A8の実行ファイル・設定・オンラインSQLiteバックアップは `~/.local/opt/pex-fileshare/backups/upload-stutter-fix-20261019T154843Z/`、A1の反映前ソース保全コピーは `/home/ubuntu/.local/opt/fileshare-edge-spool/backups/parallel-block-write-20261019T154744Z/a1-edge-spool.py`。両ホストで未完了アップロード予約が0件であることを再起動直前に確認した。
 
 A1の公開 `/edge-upload/healthz`、A8の `/healthz` が200、公開 `/api/me` は `pipeline:fileshare-upload-v2` と `edgeSpool:true` を返し、両サービスはactive。公開 `/index.js` のSHA-256 `99472a3a44f53ec152e0a46c12fcb12c51e7ef6f747a7fbb379c2bb05718b62f` はローカルビルドと一致。実ファイルのアップロードは行っていない。
+
+### 2026-10-20: 管理画面・検索・差分転送（2.16）反映済み
+
+公開整理と機能追加の `a832477`（2.14）、確定済みブロック解放の `aa6f387`（2.15）、HTTP/1互換修正を含む `93b6a0b`（2.16）をpush済み。最終CI [39288510492](https://github.com/gamelist1990/FileShare/actions/runs/39288510492) が成功し、release-2.16 Linux x64をA8へ配置した。実行ファイルSHA-256 `b56f8bcfa6fee4ca21315ce403b720ab05d9c7d9501c416b20747cca39f9c4f3`、A1 receiver SHA-256 `418708cd4c986ff3d442c4852e5086c0d4bf14afa92a107b67b4a533fe3274c1`。A8のFileShare、既存ai-inference、A1 receiverとFerrumProxyはactive。既存のFerrumProxy経路割当・他インスタンスは変更していない。
+
+最初の切替直前のオンラインSQLite・実行ファイル・設定バックアップはA8 `~/.local/opt/pex-fileshare/backups/manager-delta-2.15-20261019T164225Z/`、A1 `~/.local/share/fileshare-edge-backups/manager-delta-2.15-20261019T164225Z/`。2.16切替前はそれぞれ `http1-edge-2.16-20261019T165005Z/`、`http1-edge-2.16-20261019T165006Z/` に保存。最終反映前後とも20件4,285,978,506 bytes、承認済みスタッフ3・管理者1、パスキー5件、未完了アップロード0件を確認した。
+
+VIP・スタッフ・管理者の無期限保持、個人領域の初期値とCookie保存、管理者個人容量の割当遵守、共通ナビ、ファイル移動・複数外部ドロップ、プロフィール画像の選択状態と丸枠クロップ、アイコン付きランキング、公開タグ検索を追加。管理画面はユーザー検索・状態／権限フィルター・ページ分割と用途別ナビを備え、保存先ドライブの割当、OpenAI互換endpoint・暗号化API key保存・モデル取得／選択に対応する。実ドライブの新規割当は0件で、管理者がマウント済みの書込可能パスと容量を指定する。実AIサービスは有効化せず、APIは互換モックで検証した。
+
+A1は受信中にA8へ転送し、A8がファイル・初回ディレクトリエントリーのfsyncとFULL-synchronous SQLite受領記録を確定した部分だけを解放する。A1は先にremote-read境界を記録してからhole punchingを行う。A8の受領位置が後退した場合は停止し、未確認部分は解放しない。公開済み転送途中のファイルはA8の確定済みprefixとA1の残りを順に読み出す。ダウンロードは256KiBずつ順次配信し、Range・HEAD・テキストプレビューと毎回の権限再確認を維持する。A1実機の一時プローブでも、論理サイズ1MiBのまま実使用量が1MiBから512KiBへ減ることを確認した。これは全量の二重保存ではなく、転送途中は両ホストにデータが分かれる。A1の24GB上限・8GB空き確保は維持し、物理回線速度の向上を実測したという主張はしない。
+
+HTTP/1で同じ接続を再利用したリダイレクトがA8へ誤配送される問題を本番で発見したため、edge有効時のFileShareとA1はHTTP/1応答後に接続を閉じる。現行FerrumProxyのTCP接続ごとの経路選択に合わせる互換対応で、要求間の接続確立コストが生じる。ファイル本体は同じ接続で最後までストリーミングする。HTTP/3 bridgeではhop headerが除去され、QUIC接続と独立ストリームを再利用できる。WebSocket転送も維持する。
+
+54テスト636 assertions、型検査、依存監査（122 packages、検出0）、ブラウザ、実行ファイル転送、CPU動画検証が成功。実Python receiverとA8の統合試験で、保存確定後の物理領域解放、境界をまたぐRange、A1再起動後の読み出しと転送再開、未確定prefix拒否、セッション失効、キャッシュ・ダウンロード集計を検証した。本番では追加Connectionヘッダーなしのwgetで公開ファイルRange 1024 bytes、curlで公開PNG全量68,281 bytes取得成功。A8原本・A1 cache・取得データのSHA-256はいずれも `595c6e11f57ed7a2b87f919be65ac63eb25f2b3380e3e31939be23a47416e14c`。公開IP経由の証明書検証付きHTTP/3 healthz 200、両healthz、検索・ランキング・Userページ、共有OG、匿名管理API 401を確認。配信JSはローカル生成物のSHA-256 `a1b7ca4a5e9c32e148034b907d4fb18d11b276b067aa0d74ff5c721985e64b28` と一致する。本番に試験アカウント・パスキー・試験ファイルは追加していない。
+
+生成HTML/JS、ローカル共有サンプル、実験動画はGit追跡から除外し、元の作業端末のローカルファイルは保持した。履歴の書換えは実施していない。
