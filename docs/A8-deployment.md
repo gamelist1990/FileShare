@@ -90,3 +90,9 @@ CI run 39203548984成功後、release-2.6のLinux x64実行ファイルをA8へ�
 ### 2026-10-19: 投稿者ページと権限付きプレビュー（2.7）反映済み
 
 CI run 39203963126成功後にrelease-2.7のLinux x64実行ファイルを反映。SHA-256 `0d840d779516f33ed56aeacc152e0a057002d6371d84e1a5b0dcebee8bfe3d86`。バックアップ `~/.local/opt/pex-fileshare/backups/preview-2.7-20261019T052152Z/`、反映直前3ファイル47,998,735 bytes、管理者1・スタッフ1。公開healthz成功、ユーザーサービスactive。45テスト395 assertionsに加え、CIブラウザでプロフィール・投稿者一覧・独立ランキング・プレビューURLコピーとMarkdown内スクリプト拒否を検証。本番ブラウザでもランキングと公開投稿者ページを確認。
+
+### 2026-10-19: HTTP/3広告の設定対応（2.8）反映済み
+
+CI run 39204559277成功後、release-2.8をA8へ反映。実行ファイルSHA-256 `52e078432bf3844ab6c08d2dadbfd39c50f0682fa400bfe1fee6ce2d8542f77c`、バックアップ `~/.local/opt/pex-fileshare/backups/http3-advertisement-2.8-20261019T052919Z/`。公開healthzとランキング200、wgetによる公開ファイルのRange取得1024 bytes、招待限定登録・初期設定完了を確認。fileshareと既存ai-inferenceのユーザーサービスはactive。3ファイル47,998,735 bytes、管理者1・スタッフ1を保持。
+
+**HTTP/3はまだ有効化していない。** FerrumProxy core 69dbb36のARM64リリースは公開エッジのwebインスタンスに `.next` として配置済み。GUI更新確認でCodexブラウザが操作不能となり、ユーザーへキャンセルを依頼中。GUI復旧後、GUI更新・webコア更新・`https.http3` の有効化・UDP443到達性確認が必要。GUIの自己更新確認をページ内表示へ変更する修正92cc445もpush済み。公開QUIC/TLSの実接続が成功するまでFileShareの `http3Port` は0のままとし、Alt-Svcを広告しない。
