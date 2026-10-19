@@ -13,6 +13,14 @@ import {
   digestToken,
 } from "@pexserver/secure-envelope";
 import type { Config } from "./config";
+import {
+  validateAISettings,
+  validateFilePolicy,
+  defaultFilePolicy,
+  type FilePolicy,
+} from "./settings";
+export const ITEM_SELECT =
+  "SELECT i.*,m.uploaded_by,m.expires_at,m.downloads,m.purged,u.name AS uploader_name FROM items i LEFT JOIN item_meta m ON m.item_id=i.id LEFT JOIN users u ON u.id=m.uploaded_by";
 export interface User {
   id: string;
   name: string;
@@ -35,14 +43,27 @@ export interface Item {
   key_hash: string | null;
   created: number;
   deleted: number | null;
+  uploaded_by?: string | null;
+  uploader_name?: string | null;
+  expires_at?: number | null;
+  downloads?: number;
+  purged?: number;
 }
 export class Store {
+  filePolicy: FilePolicy;
   db: Database;
   secret: string;
   blobDir: string;
   tempDir: string;
   cacheDir: string;
   constructor(public config: Config) {
+    this.filePolicy = {
+      ...defaultFilePolicy,
+      maxFileBytes: Math.min(
+        defaultFilePolicy.maxFileBytes,
+        config.capacityBytes,
+      ),
+    };
     mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
     chmodSync(config.dataDir, 0o700);
     this.blobDir = join(config.dataDir, "blobs");
@@ -75,7 +96,28 @@ export class Store {
       CREATE TABLE IF NOT EXISTS setup (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS ai_reports (id INTEGER PRIMARY KEY, time INTEGER NOT NULL, report TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS item_parent ON items(parent); CREATE INDEX IF NOT EXISTS audit_time ON audit(time);
+      CREATE TABLE IF NOT EXISTS admin_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS staff_invites (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, expires INTEGER NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, created_by TEXT NOT NULL REFERENCES users(id), revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS item_meta (item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE, uploaded_by TEXT REFERENCES users(id), expires_at INTEGER, downloads INTEGER NOT NULL DEFAULT 0, purged INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS upload_policies (upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE, retention_seconds INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS download_receipts (hash TEXT PRIMARY KEY, item_id TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS item_expiry ON item_meta(expires_at) WHERE purged=0;
+      CREATE INDEX IF NOT EXISTS audit_upload_detail ON audit(detail) WHERE action='upload';
+      INSERT OR IGNORE INTO item_meta(item_id,uploaded_by) SELECT i.id,COALESCE((SELECT a.user_id FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='upload' AND a.detail=i.id ORDER BY a.id DESC LIMIT 1),i.owner) FROM items i WHERE i.folder=0 AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id);
     `);
+    const savedFiles = this.db
+      .query("SELECT value FROM admin_settings WHERE key='files'")
+      .get() as { value: string } | null;
+    if (savedFiles)
+      this.filePolicy = validateFilePolicy(
+        JSON.parse(savedFiles.value),
+        config.capacityBytes,
+      );
+    const savedAI = this.db
+      .query("SELECT value FROM admin_settings WHERE key='ai'")
+      .get() as { value: string } | null;
+    if (savedAI)
+      Object.assign(config.ai, validateAISettings(JSON.parse(savedAI.value)));
     const count = this.db
       .query(
         "SELECT count(*) AS n FROM users WHERE level=4 AND status='approved'",
@@ -102,7 +144,7 @@ export class Store {
   }
   item(id: string) {
     return this.db
-      .query("SELECT * FROM items WHERE id=? AND deleted IS NULL")
+      .query(ITEM_SELECT + " WHERE i.id=? AND i.deleted IS NULL")
       .get(id) as Item | null;
   }
   audit(ip: string, user: User | null, action: string, detail = "") {
@@ -124,7 +166,7 @@ export class Store {
     const used = (
       this.db
         .query(
-          `SELECT COALESCE(sum(size),0) AS n FROM items ${owner ? "WHERE owner=?" : ""}`,
+          `SELECT COALESCE(sum(i.size),0) AS n FROM items i WHERE NOT EXISTS (SELECT 1 FROM item_meta m WHERE m.item_id=i.id AND m.purged=1) ${owner ? "AND i.owner=?" : ""}`,
         )
         .get(...(owner ? [owner] : [])) as { n: number }
     ).n;

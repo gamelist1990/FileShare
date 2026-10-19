@@ -28,6 +28,8 @@ import { Previews } from "./preview";
 import { startMonitor } from "./monitor";
 import { seal, open as openEnvelope } from "@pexserver/secure-envelope";
 import { ASSETS } from "../generated/v2assets";
+import { adminAction } from "./admin";
+import { ranking, recordDownload } from "./files";
 export async function createApp(config: Config) {
   const store = new Store(config),
     previews = new Previews(store),
@@ -114,11 +116,16 @@ export async function createApp(config: Config) {
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
               .get(),
             preview: config.preview.enabled,
+            filePolicy: store.filePolicy,
           });
           return;
         }
         if (path === "/healthz" && method === "GET") {
           json(res, 200, { ok: true });
+          return;
+        }
+        if (path === "/api/rankings" && method === "GET") {
+          json(res, 200, ranking(store, user));
           return;
         }
         if (path.startsWith("/api/auth/") && method === "POST") {
@@ -204,7 +211,7 @@ export async function createApp(config: Config) {
           const id = itemRoute[1],
             action = itemRoute[2];
           if (method === "GET" && !action) {
-            json(res, 200, safeItem(readItem(store, user, id)));
+            json(res, 200, safeItem(store, readItem(store, user, id)));
             return;
           }
           if (method === "PATCH" && !action) {
@@ -255,8 +262,7 @@ export async function createApp(config: Config) {
           if (item.folder)
             throw new HttpError(400, "ファイルを選択してください");
           enterTransfer();
-          store.audit(ip, user, "download", item.id);
-          await sendFile(
+          const sent = await sendFile(
             req,
             res,
             join(store.blobDir, item.id),
@@ -264,6 +270,14 @@ export async function createApp(config: Config) {
             bandwidth,
             true,
           );
+          if (sent) {
+            recordDownload(
+              store,
+              item.id,
+              url.searchParams.get("ticket") ?? "",
+            );
+            store.audit(ip, user, "download", item.id);
+          }
           return;
         }
         const raw = /^\/api\/content\/([a-f0-9-]{36})(?:\/(preview))?$/.exec(
@@ -288,6 +302,19 @@ export async function createApp(config: Config) {
         }
         if (path.startsWith("/api/admin/")) {
           const admin = requireAdmin(user);
+          const result = await adminAction(
+            store,
+            admin,
+            ip,
+            path,
+            method,
+            url,
+            data,
+          );
+          if (result !== undefined) {
+            json(res, 200, result);
+            return;
+          }
           if (path === "/api/admin/overview" && method === "GET") {
             const cacheBytes = (
               await Promise.all(
@@ -307,7 +334,7 @@ export async function createApp(config: Config) {
               cacheBytes,
               trash: store.db
                 .query(
-                  "SELECT id,parent,name,folder,size,owner,deleted FROM items WHERE deleted IS NOT NULL ORDER BY deleted DESC LIMIT 500",
+                  "SELECT id,parent,name,folder,size,owner,deleted FROM items WHERE deleted IS NOT NULL AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=items.id AND m.purged=1) ORDER BY deleted DESC LIMIT 500",
                 )
                 .all(),
               audit: store.db
@@ -364,8 +391,22 @@ export async function createApp(config: Config) {
                 [level, status, quota, target.id],
               );
               store.db.run("DELETE FROM sessions WHERE user_id=?", [target.id]);
+              store.audit(
+                ip,
+                admin,
+                "user.update",
+                JSON.stringify({
+                  id: target.id,
+                  name: target.name,
+                  before: {
+                    level: target.level,
+                    status: target.status,
+                    quota: target.quota,
+                  },
+                  after: { level, status, quota },
+                }),
+              );
             })();
-            store.audit(ip, admin, "user.update", target.id);
             json(res, 200, { ok: true });
             return;
           }
@@ -454,14 +495,15 @@ export async function createApp(config: Config) {
     transport.server.listen(config.port, config.host, resolve);
   });
   const stopMonitor = startMonitor(store);
-  // Remove abandoned uploads and expire authentication material; never auto-purge users' trash.
+  // Enforce explicitly selected file deadlines and clear abandoned transfers.
   await cleanup(store);
   await previews.prune();
+  let janitorRuns = 0;
   const janitor = setInterval(() => {
-    cleanup(store)
+    cleanup(store, ++janitorRuns % 60 === 0)
       .then(() => previews.prune())
       .catch(console.error);
-  }, 3_600_000);
+  }, 60_000);
   janitor.unref();
   async function existsPreview(id: string) {
     try {

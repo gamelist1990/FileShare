@@ -4,6 +4,9 @@ import {
   startAuthentication,
 } from "@simplewebauthn/browser";
 import { nextChunk } from "./transfer";
+import { AdminTools } from "./AdminTools";
+import { Modal } from "./Modal";
+import { FileIcon } from "./FileIcon";
 type User = {
   id: string;
   name: string;
@@ -22,6 +25,9 @@ type Item = {
   visibility: string;
   min_level: number;
   created: number;
+  downloads?: number | null;
+  uploader_name?: string | null;
+  expires_at?: number | null;
 };
 const levels = ["一般", "VIP", "招待", "スタッフ", "管理者"];
 const size = (n: number) =>
@@ -53,6 +59,9 @@ export function App() {
     [writable, setWritable] = useState(false),
     [usage, setUsage] = useState({ used: 0, reserved: 0 }),
     [capacity, setCapacity] = useState(200e9),
+    [filePolicy, setFilePolicy] = useState<any>(null),
+    [retentionMinutes, setRetentionMinutes] = useState(43200),
+    [rankings, setRankings] = useState<Item[]>([]),
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [authOpen, setAuthOpen] = useState(false),
@@ -60,6 +69,15 @@ export function App() {
     [setupRequired, setSetupRequired] = useState(false),
     [name, setName] = useState(""),
     [bootstrap, setBootstrap] = useState(""),
+    [staffToken, setStaffToken] = useState(
+      () =>
+        new URLSearchParams(location.hash.slice(1)).get("staff-invite") ?? "",
+    ),
+    [staffInvitation, setStaffInvitation] = useState<{
+      label: string;
+      expires: number;
+    } | null>(null),
+    [staffInviteError, setStaffInviteError] = useState(""),
     [busy, setBusy] = useState(false),
     [progress, setProgress] = useState<{
       name: string;
@@ -82,6 +100,11 @@ export function App() {
     const d = await api("/api/me");
     setUser(d.user);
     setRegistration(d.registration);
+    setFilePolicy(d.filePolicy);
+    if (d.filePolicy)
+      setRetentionMinutes((value) =>
+        Math.min(value, Math.floor(d.filePolicy.maxRetentionSeconds / 60)),
+      );
     setSetupRequired(d.setupRequired === true);
     if (!d.setupRequired) setBootstrap("");
     setReady(true);
@@ -96,6 +119,7 @@ export function App() {
     setUsage(d.usage);
     setCapacity(d.capacity);
     setSelected([]);
+    setRankings((await api("/api/rankings")).items);
   };
   const loadAdmin = async () => {
     setOverview(await api("/api/admin/overview"));
@@ -115,6 +139,29 @@ export function App() {
   useEffect(() => {
     if (authOpen) run(refreshMe);
   }, [authOpen]);
+  useEffect(() => {
+    if (!ready || !staffToken) return;
+    let cancelled = false;
+    setAuthOpen(true);
+    setStaffInvitation(null);
+    setStaffInviteError("");
+    api("/api/auth/staff-invite", "POST", { token: staffToken })
+      .then((value) => {
+        if (!cancelled) setStaffInvitation(value);
+      })
+      .catch((e) => {
+        if (!cancelled) setStaffInviteError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, staffToken]);
+  const clearStaffInvitation = () => {
+    setStaffToken("");
+    setStaffInvitation(null);
+    setStaffInviteError("");
+    history.replaceState({}, "", location.pathname + location.search);
+  };
   useEffect(() => {
     const id = new URLSearchParams(location.search).get("item");
     if (!ready || !id || admin) return;
@@ -177,11 +224,13 @@ export function App() {
         const route = enroll ? "enroll" : "register";
         const opts = await api("/api/auth/" + route + "/options", "POST", {
           name,
-          bootstrap,
+          bootstrap: staffToken ? undefined : bootstrap,
+          staffInvite: !enroll && staffToken ? staffToken : undefined,
         });
         const response = await startRegistration({ optionsJSON: opts });
         const d = await api("/api/auth/" + route + "/verify", "POST", response);
         setBootstrap("");
+        if (!enroll && staffToken) clearStaffInvitation();
         await refreshMe();
         setMessage(d.message);
         setAuthOpen(false);
@@ -205,6 +254,10 @@ export function App() {
     stop.current = false;
     try {
       for (const file of Array.from(files)) {
+        if (filePolicy && file.size > filePolicy.maxFileBytes)
+          throw new Error(
+            "1ファイルの上限は" + size(filePolicy.maxFileBytes) + "です",
+          );
         const fingerprint = JSON.stringify([
           file.name,
           file.size,
@@ -228,6 +281,7 @@ export function App() {
             name: file.name,
             size: file.size,
             mime: file.type,
+            retentionSeconds: retentionMinutes * 60,
             parent,
             space,
           });
@@ -263,7 +317,12 @@ export function App() {
             });
             const d = await r.json();
             if (!r.ok) {
-              if (r.status === 403 || r.status === 401 || r.status === 507)
+              if (
+                r.status === 403 ||
+                r.status === 401 ||
+                r.status === 507 ||
+                r.status === 413
+              )
                 throw Object.assign(new Error(d.error), { fatal: true });
               throw new Error(d.error);
             }
@@ -534,6 +593,16 @@ export function App() {
                   </table>
                 </div>
               </section>
+              <AdminTools
+                users={overview.users}
+                reports={overview.reports}
+                refresh={async () => {
+                  await loadAdmin();
+                  await refreshMe();
+                }}
+                request={api}
+                run={run}
+              />
               <section className="panel">
                 <div className="section-title">
                   <h2>ごみ箱とストレージ整理</h2>
@@ -595,43 +664,6 @@ export function App() {
                 {!overview.uploads.length && (
                   <p className="muted">未完了の転送はありません</p>
                 )}
-              </section>
-              <section className="panel">
-                <h2>監査ログ</h2>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>時刻</th>
-                        <th>操作</th>
-                        <th>IP</th>
-                        <th>対象</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {overview.audit.map((a: any) => (
-                        <tr key={a.id}>
-                          <td>{new Date(a.time).toLocaleString("ja-JP")}</td>
-                          <td>{a.action}</td>
-                          <td>{a.ip}</td>
-                          <td className="mono">{a.detail}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-              <section className="panel">
-                <h2>AI監視レポート</h2>
-                <p className="muted">
-                  数値化した操作件数をGemmaへ送信し、管理者向けの所見を作ります。判断は参考情報です。
-                </p>
-                {overview.reports.map((r: any) => (
-                  <article key={r.id}>
-                    <small>{new Date(r.time).toLocaleString("ja-JP")}</small>
-                    <p className="pre-wrap">{r.report}</p>
-                  </article>
-                ))}
               </section>
             </>
           ) : (
@@ -735,6 +767,28 @@ export function App() {
                   ↻ 更新
                 </button>
               </div>
+              {writable && filePolicy && (
+                <div className="upload-policy">
+                  <label>
+                    投稿からの保存期間（分）
+                    <input
+                      type="number"
+                      min="1"
+                      max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
+                      value={retentionMinutes}
+                      onChange={(e) =>
+                        setRetentionMinutes(Number(e.target.value))
+                      }
+                    />
+                  </label>
+                  <span>
+                    1分〜{Math.floor(filePolicy.maxRetentionSeconds / 60)}分 ·
+                    1ファイル上限 {size(filePolicy.maxFileBytes)}
+                    <br />
+                    期限後はファイルを完全削除します。
+                  </span>
+                </div>
+              )}
               <div className="toolbar">
                 <label className="search">
                   <span>⌕</span>
@@ -873,14 +927,18 @@ export function App() {
                                 i.folder ? enter(i) : showPreview(i)
                               }
                             >
-                              <span
-                                className={
-                                  i.folder ? "file-icon folder" : "file-icon"
-                                }
-                              >
-                                {i.folder ? "▱" : "▤"}
+                              <FileIcon name={i.name} folder={!!i.folder} />
+                              <span className="filename-copy">
+                                <span>{i.name}</span>
+                                {!i.folder && (
+                                  <small>
+                                    {i.uploader_name && `${i.uploader_name} · `}
+                                    {i.downloads != null && `${i.downloads} DL`}
+                                    {i.expires_at &&
+                                      ` · 期限 ${new Date(i.expires_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`}
+                                  </small>
+                                )}
                               </span>
-                              {i.name}
                             </button>
                           </td>
                           <td className="muted">
@@ -945,6 +1003,26 @@ export function App() {
             </section>
           </div>
         )}
+        {!admin && filePolicy?.rankingEnabled && rankings.length > 0 && (
+          <section className="panel file-ranking">
+            <p className="eyebrow">DOWNLOAD RANKING</p>
+            <h2>人気のファイル</h2>
+            <ol>
+              {rankings.map((i) => (
+                <li key={i.id}>
+                  <button className="filename" onClick={() => showPreview(i)}>
+                    <FileIcon name={i.name} />
+                    <span>{i.name}</span>
+                  </button>
+                  <span>
+                    {i.downloads != null && `${i.downloads} DL`}
+                    {i.uploader_name && ` · ${i.uploader_name}`}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
         <footer>
           <span>PEXserver FileShare</span>
           <a href="https://pexserver.com">PEXserverについて ↗</a>
@@ -952,7 +1030,7 @@ export function App() {
         </footer>
       </main>
       {authOpen && (
-        <div className="modal-backdrop">
+        <Modal onClose={() => setAuthOpen(false)}>
           <section
             className="modal"
             role="dialog"
@@ -975,7 +1053,50 @@ export function App() {
               パスキーでログイン
             </button>
             <hr />
-            {registration && (
+            {staffToken && (
+              <div className="staff-invite-welcome">
+                <h3>スタッフとして参加</h3>
+                {staffInvitation ? (
+                  <p>
+                    {staffInvitation.label}
+                    への招待です。パスキー登録後、承認済みスタッフ（Level
+                    3）として利用できます。
+                  </p>
+                ) : (
+                  <p role={staffInviteError ? "alert" : "status"}>
+                    {staffInviteError || "招待URLを確認しています…"}
+                  </p>
+                )}
+                {staffInvitation && (
+                  <>
+                    <label>
+                      スタッフのユーザー名
+                      <input
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        autoComplete="username webauthn"
+                        placeholder="英数字・_・-、2〜32文字"
+                      />
+                    </label>
+                    <button
+                      className="primary full"
+                      disabled={busy || !name}
+                      onClick={() => register()}
+                    >
+                      パスキーを登録してスタッフになる
+                    </button>
+                  </>
+                )}
+                <button
+                  className="full"
+                  disabled={busy}
+                  onClick={clearStaffInvitation}
+                >
+                  通常のログイン・登録へ戻る
+                </button>
+              </div>
+            )}
+            {!staffToken && registration && (
               <>
                 <h3>はじめての方</h3>
                 <label>
@@ -996,7 +1117,7 @@ export function App() {
                 </button>
               </>
             )}
-            {setupRequired && (
+            {!staffToken && setupRequired && (
               <details>
                 <summary>管理者の初期設定</summary>
                 <label>
@@ -1024,10 +1145,10 @@ export function App() {
               </details>
             )}
           </section>
-        </div>
+        </Modal>
       )}
       {settings && (
-        <div className="modal-backdrop">
+        <Modal onClose={() => setSettings(null)}>
           <section
             className="modal"
             role="dialog"
@@ -1051,6 +1172,12 @@ export function App() {
                   name: d.get("name"),
                   visibility: d.get("visibility"),
                   min_level: Number(d.get("min_level")),
+                  ...(d.get("retentionMinutes")
+                    ? {
+                        retentionSeconds:
+                          Number(d.get("retentionMinutes")) * 60,
+                      }
+                    : {}),
                   rotateKey: d.get("rotateKey") === "on",
                 });
               }}
@@ -1086,6 +1213,25 @@ export function App() {
                 <input type="checkbox" name="rotateKey" />
                 招待キーを更新（既存の閲覧許可を失効）
               </label>
+              {!settings.folder && filePolicy && (
+                <label>
+                  投稿からの保存期間（分）
+                  <input
+                    name="retentionMinutes"
+                    type="number"
+                    min="1"
+                    max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
+                    defaultValue=""
+                    placeholder="空欄で現在の設定を維持"
+                  />
+                  <small>
+                    {settings.expires_at
+                      ? `現在の期限: ${new Date(settings.expires_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}。`
+                      : "現在は期限未設定です。"}
+                    期限後は完全削除します。期限は投稿時刻から計算します。
+                  </small>
+                </label>
+              )}
               <button className="primary full" type="submit">
                 設定を保存
               </button>
@@ -1128,10 +1274,15 @@ export function App() {
               共有リンクをコピー
             </button>
           </section>
-        </div>
+        </Modal>
       )}
       {preview && (
-        <div className="modal-backdrop">
+        <Modal
+          onClose={() => {
+            setPreview(null);
+            setPreviewUrl("");
+          }}
+        >
           <section
             className="modal preview-modal"
             role="dialog"
@@ -1179,7 +1330,7 @@ export function App() {
               ダウンロード · {size(preview.size)}
             </button>
           </section>
-        </div>
+        </Modal>
       )}
     </>
   );
@@ -1196,6 +1347,11 @@ function UserRow({
   const [level, setLevel] = useState(u.level),
     [status, setStatus] = useState(u.status),
     [quota, setQuota] = useState(String(u.quota / 1e9));
+  useEffect(() => {
+    setLevel(u.level);
+    setStatus(u.status);
+    setQuota(String(u.quota / 1e9));
+  }, [u.id, u.level, u.status, u.quota]);
   return (
     <tr>
       <td>{u.name}</td>

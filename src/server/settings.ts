@@ -1,0 +1,77 @@
+import { HttpError } from "./policy";
+export interface FilePolicy {
+  maxFileBytes: number;
+  maxRetentionSeconds: number;
+  trackDownloads: boolean;
+  showDownloadCounts: boolean;
+  showUploaders: boolean;
+  rankingEnabled: boolean;
+}
+export const defaultFilePolicy: FilePolicy = {
+  maxFileBytes: 5_000_000_000,
+  maxRetentionSeconds: 30 * 86400,
+  trackDownloads: true,
+  showDownloadCounts: true,
+  showUploaders: true,
+  rankingEnabled: true,
+};
+export function validateFilePolicy(value: any, capacity: number): FilePolicy {
+  if (
+    !value ||
+    !Number.isSafeInteger(value.maxFileBytes) ||
+    value.maxFileBytes < 1 ||
+    value.maxFileBytes > capacity ||
+    !Number.isSafeInteger(value.maxRetentionSeconds) ||
+    value.maxRetentionSeconds < 60 ||
+    value.maxRetentionSeconds > 3650 * 86400 ||
+    [
+      "trackDownloads",
+      "showDownloadCounts",
+      "showUploaders",
+      "rankingEnabled",
+    ].some((k) => typeof value[k] !== "boolean")
+  )
+    throw new HttpError(
+      400,
+      "ファイル設定を確認してください（保存期間の上限は1分〜3650日）",
+    );
+  return {
+    maxFileBytes: value.maxFileBytes,
+    maxRetentionSeconds: value.maxRetentionSeconds,
+    trackDownloads: value.trackDownloads,
+    showDownloadCounts: value.showDownloadCounts,
+    showUploaders: value.showUploaders,
+    rankingEnabled: value.rankingEnabled,
+  };
+}
+export function retentionSeconds(value: unknown, maximum: number) {
+  if (
+    !Number.isSafeInteger(value) ||
+    Number(value) < 60 ||
+    Number(value) > maximum
+  )
+    throw new HttpError(
+      400,
+      `保存期間は1分〜${Math.floor(maximum / 60)}分で指定してください`,
+    );
+  return Number(value);
+}
+export function validateAISettings(value: any) {
+  if (
+    typeof value?.enabled !== "boolean" ||
+    typeof value.model !== "string" ||
+    !/^[a-zA-Z0-9_.:/-]{1,120}$/.test(value.model) ||
+    !Number.isSafeInteger(value.intervalSeconds) ||
+    value.intervalSeconds < 60 ||
+    value.intervalSeconds > 3600
+  )
+    throw new HttpError(
+      400,
+      "AI設定を確認してください（監視間隔は60〜3600秒）",
+    );
+  return {
+    enabled: value.enabled,
+    model: value.model,
+    intervalSeconds: value.intervalSeconds,
+  };
+}

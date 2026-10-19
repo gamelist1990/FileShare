@@ -1,10 +1,16 @@
 import type { Store } from "./store";
 export function startMonitor(store: Store) {
-  if (!store.config.ai.enabled) return () => {};
-  let active = false;
+  let active = false,
+    disposed = false,
+    lastRun = Date.now();
+  let fingerprint = JSON.stringify(store.config.ai);
+  let controller: AbortController | null = null;
   const run = async () => {
-    if (active) return;
+    if (active || disposed || !store.config.ai.enabled) return;
     active = true;
+    const settings = { ...store.config.ai },
+      runFingerprint = JSON.stringify(settings);
+    controller = new AbortController();
     try {
       // Only bounded numeric aggregates leave the service. AI cannot run commands or alter ACLs.
       const rows = store.db
@@ -12,9 +18,13 @@ export function startMonitor(store: Store) {
           "SELECT action,count(*) AS count FROM audit WHERE time>? GROUP BY action ORDER BY count DESC LIMIT 20",
         )
         .all(Date.now() - 600_000);
-      const response = await fetch(store.config.ai.endpoint, {
+      const response = await fetch(settings.endpoint, {
         method: "POST",
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(30_000),
+        ]),
+        redirect: "error",
         headers: {
           "Content-Type": "application/json",
           ...(process.env.FILESHARE_AI_KEY
@@ -22,7 +32,7 @@ export function startMonitor(store: Store) {
             : {}),
         },
         body: JSON.stringify({
-          model: store.config.ai.model,
+          model: settings.model,
           messages: [
             {
               role: "system",
@@ -40,6 +50,12 @@ export function startMonitor(store: Store) {
       });
       if (!response.ok) throw new Error("AI HTTP " + response.status);
       const data = (await response.json()) as any;
+      if (
+        disposed ||
+        !store.config.ai.enabled ||
+        runFingerprint !== JSON.stringify(store.config.ai)
+      )
+        return;
       const report = String(data.choices?.[0]?.message?.content ?? "").slice(
         0,
         8000,
@@ -53,6 +69,7 @@ export function startMonitor(store: Store) {
         "DELETE FROM ai_reports WHERE id NOT IN (SELECT id FROM ai_reports ORDER BY id DESC LIMIT 100)",
       );
     } catch (e) {
+      if (disposed || controller?.signal.aborted) return;
       store.audit(
         "local",
         null,
@@ -61,12 +78,30 @@ export function startMonitor(store: Store) {
       );
     } finally {
       active = false;
+      controller = null;
     }
   };
-  const timer = setInterval(
-    run,
-    Math.max(60, store.config.ai.intervalSeconds) * 1000,
-  );
+  const timer = setInterval(() => {
+    const current = JSON.stringify(store.config.ai);
+    if (current !== fingerprint) {
+      fingerprint = current;
+      controller?.abort();
+      lastRun = store.config.ai.enabled ? 0 : Date.now();
+    }
+    if (
+      store.config.ai.enabled &&
+      !active &&
+      Date.now() - lastRun >=
+        Math.max(60, store.config.ai.intervalSeconds) * 1000
+    ) {
+      lastRun = Date.now();
+      void run();
+    }
+  }, 1000);
   timer.unref();
-  return () => clearInterval(timer);
+  return () => {
+    disposed = true;
+    clearInterval(timer);
+    controller?.abort();
+  };
 }

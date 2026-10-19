@@ -23,7 +23,14 @@ export function canRead(
   item: Item,
   seen = new Set<string>(),
 ): boolean {
-  if (item.deleted || seen.has(item.id) || seen.size >= 64) return false;
+  if (
+    item.deleted ||
+    item.purged ||
+    (item.expires_at != null && item.expires_at <= Date.now()) ||
+    seen.has(item.id) ||
+    seen.size >= 64
+  )
+    return false;
   if (user?.level === 4) return true;
   seen.add(item.id);
   if (item.parent) {

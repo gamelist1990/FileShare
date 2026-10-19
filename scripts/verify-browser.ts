@@ -108,10 +108,96 @@ try {
   await page.getByRole("button", { name: "設定を保存" }).click();
   await page.getByRole("button", { name: "Admin", exact: true }).click();
   await page.getByRole("heading", { name: "ユーザーと権限" }).waitFor();
-  await page.screenshot({ path: ".artifacts/admin.png", fullPage: true });
+  for (const name of ["review_pending_one", "review_pending_two"])
+    app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
+      name,
+      name,
+      0,
+      "pending",
+      5e9,
+      "192.0.2.12",
+      Date.now(),
+    ]);
+  await page.getByRole("button", { name: "更新", exact: true }).click();
   await page
-    .getByRole("button", { name: "FileShare", exact: true })
+    .getByRole("checkbox", { name: "review_pending_one", exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "承認待ちをすべて選択", exact: true })
     .click();
+  await page
+    .getByRole("button", { name: "選択した申請を無効化（2）", exact: true })
+    .click();
+  await page.getByText("2件の申請を無効化しました", { exact: true }).waitFor();
+  if (app.store.user("review_pending_one")?.status !== "denied")
+    throw new Error("Bulk review did not reject the pending application");
+  await page.getByLabel("監視間隔（秒）", { exact: true }).fill("120");
+  await page.getByRole("button", { name: "AI設定を保存", exact: true }).click();
+  await page.getByText("AI監視の設定を保存しました", { exact: true }).waitFor();
+  await page
+    .getByRole("button", { name: "招待URLを発行", exact: true })
+    .click();
+  const staffURLField = page.getByLabel("発行した招待URL", { exact: true });
+  await staffURLField.waitFor();
+  const staffURL = await staffURLField.inputValue();
+  await page.getByRole("button", { name: "ログを更新", exact: true }).click();
+  await page.locator(".audit-book").first().waitFor();
+  await page
+    .locator(".audit-library")
+    .screenshot({ path: ".artifacts/review-books.png" });
+  await page.screenshot({ path: ".artifacts/admin.png", fullPage: true });
+  const staffContext = await browser.newContext();
+  const staffPage = await staffContext.newPage();
+  staffPage.on("pageerror", (e) => errors.push(e.message));
+  const staffCDP = await staffContext.newCDPSession(staffPage);
+  await staffCDP.send("WebAuthn.enable");
+  await staffCDP.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  await staffPage.goto(staffURL);
+  await staffPage
+    .getByLabel("スタッフのユーザー名", { exact: true })
+    .fill("invitedstaff");
+  await staffPage.screenshot({
+    path: ".artifacts/staff-invite.png",
+    fullPage: true,
+  });
+  await staffPage
+    .getByRole("button", {
+      name: "パスキーを登録してスタッフになる",
+      exact: true,
+    })
+    .click();
+  await staffPage
+    .getByText("スタッフとして登録しました。パスキーでログインしてください。", {
+      exact: true,
+    })
+    .waitFor();
+  await staffPage
+    .getByRole("button", { name: "パスキーでログイン", exact: true })
+    .click();
+  await staffPage
+    .getByRole("dialog")
+    .getByRole("button", { name: "パスキーでログイン", exact: true })
+    .click();
+  await staffPage.getByText("Level 3 · スタッフ", { exact: true }).waitFor();
+  if (
+    await staffPage.getByRole("button", { name: "Admin", exact: true }).count()
+  )
+    throw new Error("Invited staff must not see administrator navigation");
+  await staffPage.goto(staffURL);
+  await staffPage
+    .getByText("招待URLは無効・期限切れ・利用済みです", { exact: true })
+    .waitFor();
+  await staffContext.close();
+  await page.getByRole("button", { name: "FileShare", exact: true }).click();
   await page
     .getByRole("button", { name: "プライベートフォルダ", exact: false })
     .click();

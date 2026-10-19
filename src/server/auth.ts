@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { randomToken, digestToken } from "@pexserver/secure-envelope";
 import type { Store, User } from "./store";
 import { HttpError, requireUser } from "./policy";
+import { staffInvitation } from "./admin";
 const SESSION_TTL = 12 * 60 * 60 * 1000;
 export function cookieValue(cookie: string | undefined, name: string) {
   return (
@@ -59,6 +60,18 @@ export async function authRoute(
   current: User | null,
 ): Promise<{ body: unknown; cookie?: string }> {
   const rpID = new URL(store.config.origin).hostname;
+  if (route === "staff-invite") {
+    const invitation = staffInvitation(
+      store,
+      digestToken(String(data.token ?? "")),
+    );
+    if (!invitation)
+      throw new HttpError(403, "招待URLは無効・期限切れ・利用済みです");
+    const row = store.db
+      .query("SELECT label,expires FROM staff_invites WHERE id=?")
+      .get(invitation.id);
+    return { body: row };
+  }
   if (route === "logout") {
     store.db.run("DELETE FROM sessions WHERE hash=?", [
       digestToken(cookieValue(cookie, "fs_session")),
@@ -71,7 +84,12 @@ export async function authRoute(
   if (route === "register/options" || route === "enroll/options") {
     const enroll = route.startsWith("enroll");
     if (enroll) requireUser(current);
-    if (!store.config.registration.enabled && !enroll && !data.bootstrap)
+    if (
+      !store.config.registration.enabled &&
+      !enroll &&
+      !data.bootstrap &&
+      !data.staffInvite
+    )
       throw new HttpError(403, "新規登録を受け付けていません");
     const name = enroll
       ? current!.name
@@ -81,6 +99,9 @@ export async function authRoute(
     if (!/^[a-z0-9_-]{2,32}$/.test(name))
       throw new HttpError(400, "ユーザー名は英数字・_・-の2〜32文字です");
     let setupHash: string | null = null;
+    let staffInviteHash: string | null = null;
+    if (!enroll && data.bootstrap && data.staffInvite)
+      throw new HttpError(400, "初期設定とスタッフ招待は同時に使用できません");
     if (!enroll && data.bootstrap) {
       if (store.db.query("SELECT 1 FROM users WHERE level=4 LIMIT 1").get())
         throw new HttpError(403, "初期設定は完了しています");
@@ -92,10 +113,16 @@ export async function authRoute(
       )
         throw new HttpError(403, "初期設定キーが無効または期限切れです");
     }
+    if (!enroll && data.staffInvite) {
+      staffInviteHash = digestToken(String(data.staffInvite));
+      if (!staffInvitation(store, staffInviteHash))
+        throw new HttpError(403, "招待URLは無効・期限切れ・利用済みです");
+    }
     // A verified bootstrap key authorizes first-admin setup independently of
     // ordinary signup attempts. The shared auth/request rate limits still apply.
     if (
       !setupHash &&
+      !staffInviteHash &&
       !store.limit(
         "register:" + ip,
         store.config.registration.attemptsPerHour,
@@ -105,7 +132,7 @@ export async function authRoute(
       throw new HttpError(429, "登録回数の上限です。時間をおいてください");
     if (!enroll && store.db.query("SELECT 1 FROM users WHERE name=?").get(name))
       throw new HttpError(409, "登録できないユーザー名です");
-    if (!enroll && !setupHash) checkIp(store, ip);
+    if (!enroll && !setupHash && !staffInviteHash) checkIp(store, ip);
     const id = enroll ? current!.id : randomUUID();
     const opts = await generateRegistrationOptions({
       rpName: "PEXserver FileShare",
@@ -129,7 +156,7 @@ export async function authRoute(
     store.db.run("INSERT INTO challenges VALUES (?,?,?,?,?,?)", [
       cid,
       enroll ? "enroll" : "register",
-      JSON.stringify({ id, name, setupHash }),
+      JSON.stringify({ id, name, setupHash, staffInviteHash }),
       opts.challenge,
       ip,
       Date.now() + 300_000,
@@ -153,6 +180,11 @@ export async function authRoute(
       expectedOrigin: store.config.origin,
       expectedRPID: rpID,
       requireUserVerification: true,
+    }).catch(() => {
+      throw new HttpError(
+        400,
+        "パスキーを確認できません。もう一度お試しください",
+      );
     });
     if (!verification.verified || !verification.registrationInfo)
       throw new HttpError(400, "パスキーを確認できません");
@@ -168,12 +200,23 @@ export async function authRoute(
           )
             throw new HttpError(403, "初期設定は完了しています");
           store.db.run("DELETE FROM setup");
+        } else if (meta.staffInviteHash) {
+          const invitation = staffInvitation(store, meta.staffInviteHash);
+          if (
+            !invitation ||
+            !store.db
+              .query(
+                "UPDATE staff_invites SET uses=uses+1 WHERE id=? AND revoked=0 AND expires>? AND uses<max_uses RETURNING id",
+              )
+              .get(invitation.id, Date.now())
+          )
+            throw new HttpError(403, "招待URLは無効・期限切れ・利用済みです");
         } else checkIp(store, ip);
         store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
           meta.id,
           meta.name,
-          meta.setupHash ? 4 : 0,
-          meta.setupHash ? "approved" : "pending",
+          meta.setupHash ? 4 : meta.staffInviteHash ? 3 : 0,
+          meta.setupHash || meta.staffInviteHash ? "approved" : "pending",
           store.config.vipQuotaBytes,
           ip,
           Date.now(),
@@ -192,15 +235,25 @@ export async function authRoute(
         unlinkSync(join(store.config.dataDir, "bootstrap.token"));
       } catch {}
     }
-    store.audit(ip, store.user(meta.id), enroll ? "passkey.add" : "register");
+    store.audit(
+      ip,
+      store.user(meta.id),
+      enroll
+        ? "passkey.add"
+        : meta.staffInviteHash
+          ? "staff.register"
+          : "register",
+    );
     return {
       body: {
         ok: true,
         message: meta.setupHash
           ? "管理者を登録しました。パスキーでログインしてください。"
-          : enroll
-            ? "パスキーを追加しました。"
-            : "登録を受け付けました。管理者の承認をお待ちください。",
+          : meta.staffInviteHash
+            ? "スタッフとして登録しました。パスキーでログインしてください。"
+            : enroll
+              ? "パスキーを追加しました。"
+              : "登録を受け付けました。管理者の承認をお待ちください。",
       },
       cookie: authCookie(store, "fs_challenge", "", 0),
     };
