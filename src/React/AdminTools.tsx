@@ -1,3 +1,4 @@
+import { useNotice } from "./Toast";
 import { CopyButton } from "./CopyButton";
 import React, { useEffect, useState } from "react";
 import { FileAdminTools } from "./FileAdminTools";
@@ -119,6 +120,7 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
       ),
     );
   }, [users]);
+  useNotice(notice, setNotice);
   return (
     <>
       <FileAdminTools
@@ -597,11 +599,6 @@ export function AdminTools({ users, reports, refresh, request, run }: Props) {
           )}
         </div>
       </section>
-      {notice && (
-        <div role="status" className="notice">
-          {notice}
-        </div>
-      )}
     </>
   );
 }

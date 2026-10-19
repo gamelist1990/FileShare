@@ -4,6 +4,7 @@ import {
   userFiles,
   uploaderRanking,
   profileAllowed,
+  searchUploaders,
 } from "./community";
 import { previewKind } from "../shared/preview";
 import { attachUploadPipeline } from "./upload-pipeline";
@@ -192,6 +193,19 @@ export async function createApp(config: Config) {
               user,
               JSON.parse((await readBody(req, 400000)).toString()),
               ip,
+            ),
+          );
+          return;
+        }
+        if (path === "/api/users" && method === "GET") {
+          json(
+            res,
+            200,
+            searchUploaders(
+              store,
+              user,
+              url.searchParams.get("q") ?? "",
+              url.searchParams.get("after") ?? "",
             ),
           );
           return;
@@ -597,6 +611,7 @@ export async function createApp(config: Config) {
           (path === "/" ||
             path === "/admin" ||
             path === "/rankings" ||
+            path === "/users" ||
             path === "/profile" ||
             /^\/users\/[^/]+$/.test(path) ||
             /^\/files\/[a-f0-9-]{36}\/preview$/.test(path) ||

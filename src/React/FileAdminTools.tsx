@@ -1,3 +1,4 @@
+import { useNotice } from "./Toast";
 import { PresetField } from "./PresetField";
 import React, { useEffect, useState } from "react";
 import { FullScreenPage } from "./FullScreenPage";
@@ -44,6 +45,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
       await load();
     });
   }, []);
+  useNotice(notice, setNotice);
   return (
     <>
       <section className="panel" id="admin-policy">
@@ -272,11 +274,6 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
             </form>
           </section>
         </FullScreenPage>
-      )}
-      {notice && (
-        <div className="notice" role="status">
-          {notice}
-        </div>
       )}
     </>
   );

@@ -212,3 +212,105 @@ test("preview classification keeps executable formats as escaped text and bounds
   expect(res.headers.get("content-type")).toBe("application/pdf");
   expect(res.headers.get("content-disposition")).toContain("inline");
 });
+
+test("author search only discovers readable uploaders and preserves hidden identities, pagination and administrator controls", async () => {
+  const hiddenUsers = [
+    "only-private",
+    "only-expired",
+    "only-parent-private",
+    "only-vip",
+    "blocked-author",
+  ];
+  for (const name of hiddenUsers)
+    app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
+      name,
+      name,
+      1,
+      name === "blocked-author" ? "denied" : "approved",
+      5e9,
+      "192.0.2.99",
+      Date.now(),
+    ]);
+  const privateParent = randomUUID();
+  app.store.db.run(
+    "INSERT INTO items(id,name,folder,visibility,created) VALUES (?,?,1,?,?)",
+    [privateParent, "secret-directory", "private", Date.now()],
+  );
+  for (const name of hiddenUsers) {
+    const id = await item(
+      name + ".txt",
+      name === "only-private" ? "private" : "public",
+      name === "only-private" ? name : null,
+      name === "only-parent-private" ? privateParent : null,
+    );
+    app.store.db.run("UPDATE item_meta SET uploaded_by=? WHERE item_id=?", [
+      name,
+      id,
+    ]);
+    if (name === "only-expired")
+      app.store.db.run("UPDATE item_meta SET expires_at=? WHERE item_id=?", [
+        Date.now() - 1,
+        id,
+      ]);
+    if (name === "only-vip")
+      app.store.db.run("UPDATE items SET min_level=1 WHERE id=?", [id]);
+  }
+  for (const name of hiddenUsers) {
+    const result = await (await request("/api/users?q=" + name)).json();
+    expect(result.users).toEqual([]);
+    expect(result.next).toBeNull();
+  }
+  const found = await (await request("/api/users?q=VIP")).json();
+  expect(found.users.some((u: any) => u.id === "vip")).toBe(true);
+  expect(
+    found.users.every(
+      (u: any) =>
+        u.ip === undefined && u.status === undefined && u.quota === undefined,
+    ),
+  ).toBe(true);
+  expect(
+    (await (await request("/api/users?q=only-private", "admin")).json())
+      .users[0].id,
+  ).toBe("only-private");
+  expect(
+    (await (await request("/api/users?q=only-vip", "vip")).json()).users[0].id,
+  ).toBe("only-vip");
+  expect((await (await request("/api/users?q=%25")).json()).users).toEqual([]);
+  expect((await request("/api/users?q=" + "a".repeat(65))).status).toBe(400);
+  for (let n = 0; n < 27; n++) {
+    const name = "creator-" + String(n).padStart(2, "0");
+    app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
+      name,
+      name,
+      0,
+      "approved",
+      5e9,
+      "192.0.2.99",
+      Date.now(),
+    ]);
+    const id = await item(name + ".txt");
+    app.store.db.run("UPDATE item_meta SET uploaded_by=? WHERE item_id=?", [
+      name,
+      id,
+    ]);
+  }
+  const first = await (await request("/api/users?q=creator-")).json();
+  expect(first.users.length).toBe(24);
+  expect(first.next).toBe("creator-23");
+  const second = await (
+    await request("/api/users?q=creator-&after=" + first.next)
+  ).json();
+  expect(second.users.map((u: any) => u.name)).toEqual([
+    "creator-24",
+    "creator-25",
+    "creator-26",
+  ]);
+  expect(second.next).toBeNull();
+  app.store.filePolicy.showUploaders = false;
+  expect(await (await request("/api/users?q=creator-")).json()).toEqual({
+    users: [],
+    next: null,
+    enabled: false,
+  });
+  app.store.filePolicy.showUploaders = true;
+});

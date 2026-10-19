@@ -1,3 +1,4 @@
+import { useNotice } from "./Toast";
 import React, { useEffect, useState } from "react";
 import { startRegistration } from "@simplewebauthn/browser";
 import { FullScreenPage } from "./FullScreenPage";
@@ -56,6 +57,7 @@ export function PasskeyPage({
       setDone(true);
       if (!token) await refresh();
     });
+  useNotice(message, setMessage);
   return (
     <FullScreenPage onClose={onClose}>
       <section className="screen-content" aria-labelledby="passkey-title">
@@ -64,7 +66,6 @@ export function PasskeyPage({
           {token ? "この端末のパスキーを登録" : "パスキー・端末の追加"}
         </h2>
         {error && <p role="alert">{error}</p>}
-        {message && <p role="status">{message}</p>}
         {info && (
           <>
             <p>

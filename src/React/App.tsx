@@ -4,7 +4,7 @@ import { compactCount } from "./CommunityPages";
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
 import { CopyButton } from "./CopyButton";
 import { PresetField, durationLabel } from "./PresetField";
-import { createPortal } from "react-dom";
+import { useNotice } from "./Toast";
 import React, { useState, useEffect, useRef } from "react";
 import {
   startRegistration,
@@ -58,6 +58,10 @@ async function api(path: string, method = "GET", body?: unknown) {
   return d;
 }
 export function App() {
+  const [keyResult, setKeyResult] = useState<{
+    id: string;
+    key: string;
+  } | null>(null);
   const [passkeyOpen, setPasskeyOpen] = useState(false);
   const [deviceToken, setDeviceToken] = useState(
     () =>
@@ -524,14 +528,10 @@ export function App() {
     run(async () => {
       if (!settings) return;
       const d = await api("/api/items/" + settings.id, "PATCH", data);
-      if (d.key)
-        setMessage(
-          "招待キー（この一度だけ表示）: " +
-            d.key +
-            " ／ ファイルID: " +
-            settings.id,
-        );
-      else setMessage("設定を保存しました");
+      if (d.key) {
+        setKeyResult({ id: settings.id, key: d.key });
+        setMessage("招待キーを発行しました");
+      } else setMessage("設定を保存しました");
       setSettings(null);
       await refresh();
     });
@@ -550,6 +550,8 @@ export function App() {
       setMessage("処理が完了しました");
     });
   };
+  useNotice(message, setMessage);
+  useNotice(error, setError, "error");
   return (
     <>
       <header className="site-nav">
@@ -569,6 +571,7 @@ export function App() {
             FileShare
           </button>
           <a href="/rankings">Ranking</a>
+          <a href="/users">User</a>
           {user && [1, 3, 4].includes(user.level) && (
             <a href="/profile">Profile</a>
           )}
@@ -629,27 +632,6 @@ export function App() {
             <span>{admin ? "Level 4" : "共有ストレージ"}</span>
           </div>
         </section>
-        {createPortal(
-          <div className="screen-notices">
-            {error && (
-              <div role="alert" className="notice error">
-                {error}
-                <button aria-label="閉じる" onClick={() => setError("")}>
-                  ×
-                </button>
-              </div>
-            )}
-            {message && (
-              <div role="status" className="notice">
-                {message}
-                <button aria-label="閉じる" onClick={() => setMessage("")}>
-                  ×
-                </button>
-              </div>
-            )}
-          </div>,
-          document.body,
-        )}
         {admin ? (
           user?.level === 4 && overview ? (
             <>
@@ -1208,6 +1190,31 @@ export function App() {
                 キャンセルして戻る
               </button>
             </form>
+          </section>
+        </FullScreenPage>
+      )}
+      {keyResult && (
+        <FullScreenPage onClose={() => setKeyResult(null)}>
+          <section className="screen-content">
+            <h2>招待キーを保存してください</h2>
+            <p>
+              このキーは今回だけ表示します。閲覧を許可する相手にファイルIDと一緒に渡してください。
+            </p>
+            <label>
+              招待キー
+              <input
+                readOnly
+                value={keyResult.key}
+                onFocus={(e) => e.target.select()}
+              />
+            </label>
+            <CopyButton text={keyResult.key}>招待キーをコピー</CopyButton>
+            <label>
+              ファイルID
+              <input readOnly value={keyResult.id} />
+            </label>
+            <CopyButton text={keyResult.id}>ファイルIDをコピー</CopyButton>
+            <button onClick={() => setKeyResult(null)}>保存して閉じる</button>
           </section>
         </FullScreenPage>
       )}

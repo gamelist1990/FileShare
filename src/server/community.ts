@@ -168,3 +168,64 @@ export function uploaderRanking(store: Store, user: User | null) {
       .slice(0, 50),
   };
 }
+
+/** Only discover authors with at least one file this viewer can actually read. */
+export function searchUploaders(
+  store: Store,
+  user: User | null,
+  query: string,
+  after: string,
+) {
+  if (
+    query.length > 64 ||
+    after.length > 32 ||
+    (after && !/^[a-z0-9_-]{2,32}$/i.test(after))
+  )
+    throw new HttpError(400, "検索条件が不正です");
+  if (!store.filePolicy.showUploaders)
+    return { users: [], next: null, enabled: false };
+  const pattern =
+    "%" +
+    query
+      .normalize("NFC")
+      .trim()
+      .replace(/[\\%_]/g, "\\$&") +
+    "%";
+  const candidates = store.db.prepare(
+    `SELECT u.id,u.name FROM users u WHERE u.status='approved' AND u.name LIKE ? ESCAPE '\\' AND u.name>? COLLATE NOCASE AND EXISTS (SELECT 1 FROM item_meta m JOIN items i ON i.id=m.item_id WHERE m.uploaded_by=u.id AND i.folder=0 AND i.deleted IS NULL AND m.purged=0 AND (m.expires_at IS NULL OR m.expires_at>?) ${user ? "" : "AND i.visibility='public' AND i.min_level=0"}) ORDER BY u.name COLLATE NOCASE,u.id`,
+  );
+  const users: ReturnType<typeof profile>[] = [];
+  try {
+    for (const author of candidates.iterate(
+      pattern,
+      after,
+      Date.now(),
+    ) as Iterable<{ id: string; name: string }>) {
+      const files = store.db.prepare(
+        ITEM_SELECT +
+          " WHERE m.uploaded_by=? AND i.folder=0 AND i.deleted IS NULL AND m.purged=0 AND (m.expires_at IS NULL OR m.expires_at>?)",
+      );
+      try {
+        for (const item of files.iterate(
+          author.id,
+          Date.now(),
+        ) as Iterable<Item>) {
+          if (canRead(store, user, item)) {
+            users.push(profile(store, author.id));
+            break;
+          }
+        }
+      } finally {
+        files.finalize();
+      }
+      if (users.length === 25) break;
+    }
+  } finally {
+    candidates.finalize();
+  }
+  return {
+    users: users.slice(0, 24),
+    next: users.length > 24 ? users[23].name : null,
+    enabled: true,
+  };
+}

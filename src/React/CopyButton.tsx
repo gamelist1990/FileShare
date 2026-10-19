@@ -1,3 +1,4 @@
+import { useNotify } from "./Toast";
 import React, { useState } from "react";
 
 /** Keep the copy attempt inside the click gesture, including older/mobile browsers. */
@@ -8,6 +9,7 @@ export function CopyButton({
   text: string;
   children: React.ReactNode;
 }) {
+  const notify = useNotify();
   const [status, setStatus] = useState("");
   const [pending, setPending] = useState(false);
   return (
@@ -50,11 +52,12 @@ export function CopyButton({
           } catch {
             /* A selected URL remains available for manual copying. */
           }
-          if (copied) setStatus("コピーしました");
+          if (copied) notify("コピーしました");
           else {
             field?.focus();
             field?.select();
             field?.setSelectionRange(0, text.length);
+            notify("自動コピーできませんでした", "error");
             setStatus(
               "自動コピーできませんでした。URL欄を長押し、または Ctrl+C / ⌘C でコピーしてください。",
             );
@@ -65,9 +68,15 @@ export function CopyButton({
         {children}
       </button>
       {status && (
-        <p role="status" className="copy-status">
-          {status}
-        </p>
+        <div className="copy-status">
+          <p>{status}</p>
+          <textarea
+            aria-label="手動コピー用の内容"
+            readOnly
+            value={text}
+            onFocus={(e) => e.target.select()}
+          />
+        </div>
       )}
     </div>
   );

@@ -108,6 +108,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS item_meta (item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE, uploaded_by TEXT REFERENCES users(id), expires_at INTEGER, downloads INTEGER NOT NULL DEFAULT 0, purged INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS upload_policies (upload_id TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE, retention_seconds INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS download_receipts (hash TEXT PRIMARY KEY, item_id TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS item_meta_uploader ON item_meta(uploaded_by);
       CREATE INDEX IF NOT EXISTS item_expiry ON item_meta(expires_at) WHERE purged=0;
       CREATE INDEX IF NOT EXISTS audit_upload_detail ON audit(detail) WHERE action='upload';
       INSERT OR IGNORE INTO item_meta(item_id,uploaded_by) SELECT i.id,COALESCE((SELECT a.user_id FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='upload' AND a.detail=i.id ORDER BY a.id DESC LIMIT 1),i.owner) FROM items i WHERE i.folder=0 AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id);

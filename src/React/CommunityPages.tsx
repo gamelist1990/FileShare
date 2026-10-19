@@ -1,3 +1,5 @@
+import { UserDirectory } from "./UserDirectory";
+import { useNotice } from "./Toast";
 import React, { useEffect, useState } from "react";
 import { FileIcon } from "./FileIcon";
 import { PreviewContent } from "./PreviewContent";
@@ -56,7 +58,8 @@ export function CommunityPage() {
     let cancelled = false;
     (async () => {
       let result: any;
-      if (preview) result = await api(`/api/items/${preview[1]}`);
+      if (path === "/users") result = {};
+      else if (preview) result = await api(`/api/items/${preview[1]}`);
       else if (author) result = await api(`/api/users/${author[1]}/files`);
       else if (path === "/profile") {
         const { user } = await api("/api/me");
@@ -84,6 +87,7 @@ export function CommunityPage() {
       cancelled = true;
     };
   }, [path]);
+  useNotice(notice, setNotice);
   const item = data?.item ?? data;
   return (
     <>
@@ -94,7 +98,18 @@ export function CommunityPage() {
         <nav>
           <a href="https://pexserver.com">Home</a>
           <a href="/">FileShare</a>
-          <a href="/rankings">Ranking</a>
+          <a
+            href="/rankings"
+            aria-current={path === "/rankings" ? "page" : undefined}
+          >
+            Ranking
+          </a>
+          <a
+            href="/users"
+            aria-current={path.startsWith("/users") ? "page" : undefined}
+          >
+            User
+          </a>
         </nav>
       </header>
       <main
@@ -107,8 +122,10 @@ export function CommunityPage() {
             {error} <a href="/">FileShareへ戻る</a>
           </p>
         )}
-        {notice && <p role="status">{notice}</p>}
-        {!data && !error && <p role="status">読み込み中…</p>}
+        {path === "/users" && <UserDirectory />}
+        {path !== "/users" && !data && !error && (
+          <p role="status">読み込み中…</p>
+        )}
         {data && preview && (
           <section className="panel preview-page">
             <h1>{item.name}</h1>

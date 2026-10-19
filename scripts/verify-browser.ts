@@ -215,6 +215,16 @@ try {
     throw new Error(
       "Copy button did not copy the complete staff invitation URL",
     );
+  const copyToast = page
+    .locator(".toast")
+    .filter({ hasText: "コピーしました" });
+  await copyToast.hover();
+  await page.waitForTimeout(4400);
+  if ((await copyToast.count()) !== 1)
+    throw new Error("Hovered toast disappeared before the user could read it");
+  await page.screenshot({ path: ".artifacts/copy-toast.png", fullPage: false });
+  await page.mouse.move(0, 0);
+  await copyToast.waitFor({ state: "detached", timeout: 5000 });
   await page.evaluate(async () => {
     await navigator.clipboard.writeText("clipboard-fallback-test");
     Object.defineProperty(navigator.clipboard, "writeText", {
@@ -586,6 +596,50 @@ try {
     path: ".artifacts/passkey-devices.png",
     fullPage: true,
   });
+  await page.getByRole("button", { name: "一覧に戻る", exact: true }).click();
+  await page.getByRole("link", { name: "User", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "投稿者を探す", exact: true })
+    .waitFor();
+  await page
+    .getByLabel("投稿者名を検索", { exact: true })
+    .fill("does-not-exist");
+  await page
+    .getByText("一致する投稿者が見つかりません。", { exact: true })
+    .waitFor();
+  await page.getByLabel("投稿者名を検索", { exact: true }).fill("browseradmin");
+  const creator = page
+    .locator(".creator-card")
+    .filter({ hasText: "browseradmin" });
+  await creator.waitFor();
+  if (
+    await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
+  )
+    throw new Error("User directory overflows on mobile");
+  await page.screenshot({
+    path: ".artifacts/user-search-mobile.png",
+    fullPage: true,
+  });
+  await creator.click();
+  await page
+    .getByRole("heading", { name: "投稿したファイル", exact: true })
+    .waitFor();
+  await page.getByRole("link", { name: "safe.md", exact: true }).click();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page
+    .getByRole("button", { name: "プレビューURLをコピー", exact: true })
+    .click();
+  await page.getByText("コピーしました", { exact: true }).waitFor();
+  if (
+    (await page
+      .locator(".toast")
+      .evaluate((e) => getComputedStyle(e).animationName)) !== "none"
+  )
+    throw new Error(
+      "Reduced-motion preference did not disable notification animation",
+    );
+  await page.getByRole("button", { name: "通知を閉じる", exact: true }).click();
+  await page.locator(".toast").waitFor({ state: "detached" });
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(
     "Browser verified: bootstrap WebAuthn registration, passkey login, private upload, publication settings, administrator page, desktop/mobile screenshots.",
