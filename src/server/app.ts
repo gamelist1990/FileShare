@@ -20,6 +20,7 @@ import { previewKind } from "../shared/preview";
 import { attachUploadPipeline } from "./upload-pipeline";
 import {
   createEdgeUploadTicket,
+  createDirectUploadTicket,
   loadEdgeSecret,
   verifyEdgeRequestSignature,
 } from "./edge-auth";
@@ -151,6 +152,22 @@ export async function createApp(config: Config) {
       path: config.edgeSpool.path + "/" + row.id,
       ticket,
       blockBytes: Math.min(1024 * 1024, blockBytesForSize(row.size)),
+      ...(config.directIpv6.enabled
+        ? {
+            direct: {
+              url: `wss://${config.directIpv6.host}:${config.directIpv6.port}/api/uploads/${row.id}/stream`,
+              ticket: createDirectUploadTicket(edgeSecret, {
+                v: 1,
+                scope: "direct-upload",
+                id: row.id,
+                userId: user.id,
+                session: digestToken(session),
+                size: row.size,
+                expiresAt: Date.now() + 5 * 60_000,
+              }),
+            },
+          }
+        : {}),
     };
   };
   const server = http.createServer(
@@ -175,7 +192,7 @@ export async function createApp(config: Config) {
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cache-Control": "no-store",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}${config.directIpv6.enabled ? ` wss://${config.directIpv6.host}:${config.directIpv6.port}` : ""}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       };
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";
@@ -231,6 +248,7 @@ export async function createApp(config: Config) {
             autoApprove: store.registrationPolicy.autoApprove,
             pipeline: "fileshare-upload-v2",
             edgeSpool: config.edgeSpool.enabled,
+            directIpv6: config.directIpv6,
             setupRequired: !store.db
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
               .get(),

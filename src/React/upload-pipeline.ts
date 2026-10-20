@@ -22,6 +22,7 @@ export function uploadPipeline(options: {
   url: string;
   protocols?: string[];
   connectTimeoutMs?: number;
+  idleTimeoutMs?: number;
   file: Blob;
   offset: number;
   roundTripMs: number;
@@ -69,7 +70,7 @@ export function uploadPipeline(options: {
           performance.now() - lastActivity > (options.connectTimeoutMs ?? 15000)
         ) {
           fail(new PipelineError("先送り転送の接続確認がタイムアウトしました"));
-        } else if (performance.now() - lastActivity > 180000) {
+        } else if (performance.now() - lastActivity > (options.idleTimeoutMs ?? 180000)) {
           fail(new PipelineError("転送が途切れました"));
         }
       }, 200);

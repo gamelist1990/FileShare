@@ -11,6 +11,7 @@ export interface Config {
   vipQuotaBytes: number;
   proxy: { enabled: boolean; trustedPeers: string[] };
   edgeSpool: { enabled: boolean; trustedIp: string; path: string };
+  directIpv6: { enabled: boolean; host: string; port: number };
   registration: {
     enabled: boolean;
     accountsPerIp: number;
@@ -48,6 +49,7 @@ export const defaults: Config = {
   vipQuotaBytes: 5_000_000_000,
   proxy: { enabled: false, trustedPeers: ["127.0.0.1", "::1"] },
   edgeSpool: { enabled: false, trustedIp: "", path: "/edge-upload" },
+  directIpv6: { enabled: false, host: "upload-v6.pexserver.com", port: 8443 },
   registration: { enabled: true, accountsPerIp: 1, attemptsPerHour: 5 },
   rate: {
     requestsPerMinute: 600,
@@ -78,6 +80,7 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     ...raw,
     proxy: { ...defaults.proxy, ...raw.proxy },
     edgeSpool: { ...defaults.edgeSpool, ...raw.edgeSpool },
+    directIpv6: { ...defaults.directIpv6, ...raw.directIpv6 },
     registration: { ...defaults.registration, ...raw.registration },
     rate: { ...defaults.rate, ...raw.rate },
     preview: { ...defaults.preview, ...raw.preview },
@@ -138,6 +141,13 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
         !c.proxy.trustedPeers.includes(c.edgeSpool.trustedIp)))
   )
     throw new Error("Invalid edge spool configuration");
+  if (typeof c.directIpv6.enabled !== "boolean" ||
+      typeof c.directIpv6.host !== "string" ||
+      !/^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(c.directIpv6.host) ||
+      !Number.isInteger(c.directIpv6.port) ||
+      c.directIpv6.port < 1 || c.directIpv6.port > 65535 ||
+      (c.directIpv6.enabled && !c.origin.startsWith("https://")))
+    throw new Error("Invalid direct IPv6 transport configuration");
   c.dataDir = resolve(c.dataDir);
   return c;
 }

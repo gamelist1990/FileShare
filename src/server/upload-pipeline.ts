@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from "ws-node";
 import type http from "node:http";
 import type { Store } from "./store";
 import { sessionUser } from "./auth";
+import { loadEdgeSecret, verifyDirectUploadTicket } from "./edge-auth";
 import { HttpError } from "./policy";
 import {
   getUpload,
@@ -46,14 +47,33 @@ export function attachUploadPipeline(
     try {
       const config = store.config,
         ip = (req.socket as any).clientIp ?? "";
+      const host = new URL(config.origin).host;
+      const direct =
+        config.directIpv6.enabled &&
+        req.headers.host === config.directIpv6.host + ":" + config.directIpv6.port;
       if (
         !ip ||
-        req.headers.host !== new URL(config.origin).host ||
+        (req.headers.host !== host && !direct) ||
         req.headers.origin !== config.origin ||
         req.headers["sec-fetch-site"] === "cross-site"
       )
         throw new HttpError(403, "送信元を確認できません");
-      const handshakeUser = sessionUser(store, req.headers.cookie);
+      const protocols = String(req.headers["sec-websocket-protocol"] ?? "")
+        .split(",").map(s => s.trim());
+      const directTicket = direct
+        ? verifyDirectUploadTicket(loadEdgeSecret(), protocols[1] ?? "")
+        : null;
+      if (direct && (protocols.length !== 2 || !directTicket))
+        throw new HttpError(403, "IPv6直接転送の認証が無効です");
+      const currentUser = () => {
+        if (!direct) return sessionUser(store, req.headers.cookie);
+        if (!directTicket || !store.db.query(
+          "SELECT 1 FROM sessions WHERE hash=? AND user_id=? AND expires>?"
+        ).get(directTicket.session, directTicket.userId, Date.now()))
+          return null;
+        return store.user(directTicket.userId);
+      };
+      const handshakeUser = currentUser();
       if (
         store.maintenanceUntil &&
         store.maintenanceUntil > Date.now() &&
@@ -79,6 +99,9 @@ export function attachUploadPipeline(
       const id = match[1],
         user = handshakeUser,
         row = getUpload(store, user, id);
+      if (direct && (!directTicket || directTicket.id !== id ||
+          directTicket.userId !== row.user_id || directTicket.size !== row.size))
+        throw new HttpError(403, "IPv6転送予約が一致しません");
       releaseUpload = leaseUpload(id);
       // Validate handshake fields before ws takes ownership; failed upgrades must release leases.
       if (
@@ -141,7 +164,7 @@ export function attachUploadPipeline(
           try {
             const final = getUpload(
               store,
-              sessionUser(store, req.headers.cookie),
+              currentUser(),
               id,
             );
             if (final.offset !== final.size)
@@ -163,7 +186,7 @@ export function attachUploadPipeline(
                 if (
                   store.maintenanceUntil &&
                   store.maintenanceUntil > Date.now() &&
-                  sessionUser(store, req.headers.cookie)?.level !== 4
+                  currentUser()?.level !== 4
                 )
                   throw new HttpError(
                     503,
@@ -175,7 +198,7 @@ export function attachUploadPipeline(
                 if (closing) break;
                 const result = await commitUploadBlock(
                   store,
-                  sessionUser(store, req.headers.cookie),
+                  currentUser(),
                   id,
                   block.offset,
                   Buffer.from(
@@ -218,7 +241,7 @@ export function attachUploadPipeline(
             if (
               store.maintenanceUntil &&
               store.maintenanceUntil > Date.now() &&
-              sessionUser(store, req.headers.cookie)?.level !== 4
+              currentUser()?.level !== 4
             )
               throw new HttpError(
                 503,
@@ -254,7 +277,7 @@ export function attachUploadPipeline(
                 ? raw
                 : Buffer.concat(raw as Buffer[]),
               block = unpackBlock(buffer);
-            getUpload(store, sessionUser(store, req.headers.cookie), id);
+            getUpload(store, currentUser(), id);
             if (
               block.offset !== expected ||
               block.offset + block.logicalBytes > row.size ||

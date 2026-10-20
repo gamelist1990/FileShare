@@ -10,6 +10,7 @@ import {
   uploadEdge,
   waitForEdgeSync,
   publishEdgeUpload,
+  getEdgeStatus,
 } from "./edge-upload";
 import { CopyButton } from "./CopyButton";
 import { PresetField, durationLabel } from "./PresetField";
@@ -567,7 +568,7 @@ export function App() {
         const resumeKey = "fs-upload:" + fingerprint;
         let compressionAllowed = false,
           pipelineAllowed = false;
-        let edge: { path: string; ticket: string; blockBytes: number } | null =
+        let edge: { path: string; ticket: string; blockBytes: number; direct?: { url: string; ticket: string } } | null =
           null;
         let authoritativeReceipt: {
           start: number;
@@ -598,6 +599,7 @@ export function App() {
             sessionStorage.removeItem(resumeKey);
           }
         }
+        const freshReservation = !id;
         if (!id) {
           const d = await api("/api/uploads", "POST", {
             name: file.name,
@@ -631,7 +633,86 @@ export function App() {
         const roundTripMs = Math.max(0, performance.now() - probeStart);
         let tryCompression = compressionAllowed && compressibleName(file.name);
         let completedByEdge = false;
-        if (edge) {
+        let directOrStandard = false;
+        if (!freshReservation && offset > 0 && edge) {
+          // A resumed direct/standard upload has A8 receipts but no A1
+          // spool. Never open a new spool over an active A8 prefix.
+          try {
+            await getEdgeStatus(edge.path, edge.ticket);
+          } catch (error) {
+            if (error instanceof EdgeUploadError && error.status === 404)
+              directOrStandard = true;
+            else throw error;
+          }
+        }
+        // A dedicated IPv6-only WSS hostname receives a signed, short-lived
+        // upload capability, NOT the main site's host-only session cookie.
+        // Try this only on a fresh reservation; existing A1 receipts must
+        // never be shadowed by another writer.
+        if (
+          freshReservation &&
+          edge?.direct &&
+          pipelineAllowed &&
+          file.size >= 2 * 1024 * 1024 &&
+          typeof WebSocket !== "undefined"
+        ) {
+          const url = new URL(edge.direct.url);
+          if (url.protocol !== "wss:") throw new Error("IPv6 direct URL must use WSS");
+          setProgress({
+            name: file.name,
+            percent: 0,
+            speed: 0,
+            phase: "IPv6直接接続を確認中",
+          });
+          try {
+            const received = await uploadPipeline({
+              url: url.href,
+              protocols: [ "fileshare-upload-v2", edge.direct.ticket ],
+              file,
+              offset: 0,
+              roundTripMs,
+              connectTimeoutMs: 3000,
+              idleTimeoutMs: 30000,
+              compress: tryCompression,
+              stopped: () => stop.current !== null,
+              progress: (bytes, speed) =>
+                setProgress({
+                  name: file.name,
+                  percent: file.size ? (bytes / file.size) * 100 : 100,
+                  speed,
+                  phase: "IPv6直接送信中",
+                }),
+            });
+            offset = received.offset;
+            directOrStandard = true;
+            if (received.stopped || stop.current) {
+              await interrupted();
+              return;
+            }
+          } catch (error) {
+            if (stop.current) {
+              await interrupted();
+              return;
+            }
+            // An ACK may have been lost even if the TCP connection failed.
+            // Reconcile A8's durable offset before choosing a fallback.
+            // When A8 has bytes, ALWAYS continue through the standard A8
+            // upload route, not the separate A1 spool (no split writers).
+            const recovered = await api("/api/uploads/" + id);
+            offset = recovered.offset;
+            // A block may be committing on A8 after the WebSocket closes.
+            // The standard A1→A8 route is the safe fallback regardless of
+            // this snapshot; never start an independent A1 spool writer.
+            directOrStandard = true;
+            setProgress({
+              name: file.name,
+              percent: file.size ? (offset / file.size) * 100 : 100,
+              speed: 0,
+              phase: "既存経路へ自動切替中",
+            });
+          }
+        }
+        if (edge && !directOrStandard) {
           const controller = new AbortController();
           activeRequest.current = controller;
           try {

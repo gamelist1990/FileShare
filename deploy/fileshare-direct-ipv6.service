@@ -1,0 +1,25 @@
+[Unit]
+Description=FileShare direct IPv6 WSS gateway (optional; no IPv4 listener)
+After=fileshare.service network-online.target
+Wants=network-online.target
+Requires=fileshare.service
+
+[Service]
+Type=simple
+EnvironmentFile=/home/pexserver-home/.config/pex-fileshare/direct-ipv6.env
+ExecStart=/usr/bin/node /home/pexserver-home/.local/opt/pex-fileshare/direct-ipv6-gateway.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+MemoryMax=128M
+CPUQuota=100%
+TasksMax=32
+
+[Install]
+WantedBy=default.target
