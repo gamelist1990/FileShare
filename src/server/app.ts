@@ -152,6 +152,7 @@ export async function createApp(config: Config) {
       path: config.edgeSpool.path + "/" + row.id,
       ticket,
       blockBytes: Math.min(1024 * 1024, blockBytesForSize(row.size)),
+      ...(config.webrtc.enabled ? { webrtc: true } : {}),
       ...(config.directIpv6.enabled
         ? {
             direct: {
@@ -249,6 +250,7 @@ export async function createApp(config: Config) {
             pipeline: "fileshare-upload-v2",
             edgeSpool: config.edgeSpool.enabled,
             directIpv6: config.directIpv6,
+            webrtc: { enabled: config.webrtc.enabled },
             setupRequired: !store.db
               .query("SELECT 1 FROM users WHERE level=4 LIMIT 1")
               .get(),
@@ -480,6 +482,54 @@ export async function createApp(config: Config) {
               cookieValue(req.headers.cookie, "fs_session"),
             );
           json(res, 201, { ...upload, ...(edge ? { edge } : {}) });
+          return;
+        }
+        const webrtcOffer = /^\/api\/uploads\/([a-f0-9-]{36})\/webrtc\/offer$/.exec(path);
+        if (webrtcOffer && method === "POST") {
+          if (!config.webrtc.enabled || !edgeSecret)
+            throw new HttpError(404, "WebRTC転送は有効ではありません");
+          const account = requireUser(user);
+          const upload = getUpload(store, account, webrtcOffer[1]);
+          if (!store.limit("rtc-signaling:" + account.id, 12, 60_000))
+            throw new HttpError(429, "接続試行が多すぎます");
+          const body = JSON.parse((await readBody(req, 140_000)).toString());
+          const offer = body?.offer;
+          if (!offer || offer.type !== "offer" ||
+              typeof offer.sdp !== "string" || offer.sdp.length > 125_000 ||
+              offer.sdp.length < 100)
+            throw new HttpError(400, "WebRTC接続情報が不正です");
+          if (upload.offset !== 0)
+            throw new HttpError(409, "再開済み転送は既存経路を使用してください");
+          const ticket = createDirectUploadTicket(edgeSecret, {
+            v: 1,
+            scope: "direct-upload",
+            id: upload.id,
+            userId: account.id,
+            session: digestToken(cookieValue(req.headers.cookie, "fs_session")),
+            size: upload.size,
+            expiresAt: Date.now() + 5 * 60_000,
+          });
+          let answer: any;
+          try {
+            const response = await fetch(
+              `http://127.0.0.1:${config.webrtc.signalPort}/offer`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ offer, id: upload.id, ticket, clientIp: ip }),
+                signal: AbortSignal.timeout(14000),
+              },
+            );
+            if (!response.ok) throw new Error("RTC worker returned " + response.status);
+            answer = await response.json();
+          } catch {
+            throw new HttpError(503, "WebRTC直接接続を利用できません");
+          }
+          if (!answer || answer.answer?.type !== "answer" ||
+              typeof answer.answer.sdp !== "string" ||
+              answer.answer.sdp.length > 125_000)
+            throw new HttpError(502, "WebRTC応答が不正です");
+          json(res, 200, { answer: answer.answer });
           return;
         }
         const edgeSync =

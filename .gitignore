@@ -24,3 +24,6 @@ __pycache__/
 *.sqlite-*
 /test-share/
 /実験/
+
+# Pion WebRTC build
+deploy/webrtc/fileshare-webrtc

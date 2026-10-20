@@ -1,0 +1,22 @@
+[Unit]
+Description=PEX FileShare WebRTC P2P ingress (Pion, private signaling)
+After=network-online.target fileshare.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/pexserver-home/.local/opt/pex-fileshare/fileshare-webrtc
+WorkingDirectory=/home/pexserver-home/.local/opt/pex-fileshare
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+MemoryMax=384M
+CPUQuota=150%
+TasksMax=64
+Environment=FILESHARE_RTC_MAX_PEERS=16
+
+[Install]
+WantedBy=default.target

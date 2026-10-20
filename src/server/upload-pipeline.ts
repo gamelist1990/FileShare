@@ -49,7 +49,7 @@ export function attachUploadPipeline(
         ip = (req.socket as any).clientIp ?? "";
       const host = new URL(config.origin).host;
       const direct =
-        config.directIpv6.enabled &&
+        (config.directIpv6.enabled || config.webrtc.enabled) &&
         req.headers.host === config.directIpv6.host + ":" + config.directIpv6.port;
       if (
         !ip ||

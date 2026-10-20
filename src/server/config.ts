@@ -12,6 +12,7 @@ export interface Config {
   proxy: { enabled: boolean; trustedPeers: string[] };
   edgeSpool: { enabled: boolean; trustedIp: string; path: string };
   directIpv6: { enabled: boolean; host: string; port: number };
+  webrtc: { enabled: boolean; signalPort: number };
   registration: {
     enabled: boolean;
     accountsPerIp: number;
@@ -50,6 +51,7 @@ export const defaults: Config = {
   proxy: { enabled: false, trustedPeers: ["127.0.0.1", "::1"] },
   edgeSpool: { enabled: false, trustedIp: "", path: "/edge-upload" },
   directIpv6: { enabled: false, host: "upload-v6.pexserver.com", port: 8443 },
+  webrtc: { enabled: false, signalPort: 19883 },
   registration: { enabled: true, accountsPerIp: 1, attemptsPerHour: 5 },
   rate: {
     requestsPerMinute: 600,
@@ -81,6 +83,7 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
     proxy: { ...defaults.proxy, ...raw.proxy },
     edgeSpool: { ...defaults.edgeSpool, ...raw.edgeSpool },
     directIpv6: { ...defaults.directIpv6, ...raw.directIpv6 },
+    webrtc: { ...defaults.webrtc, ...raw.webrtc },
     registration: { ...defaults.registration, ...raw.registration },
     rate: { ...defaults.rate, ...raw.rate },
     preview: { ...defaults.preview, ...raw.preview },
@@ -148,6 +151,11 @@ export function loadConfig(file = process.env.FILESHARE_CONFIG): Config {
       c.directIpv6.port < 1 || c.directIpv6.port > 65535 ||
       (c.directIpv6.enabled && !c.origin.startsWith("https://")))
     throw new Error("Invalid direct IPv6 transport configuration");
+  if (typeof c.webrtc.enabled !== "boolean" ||
+      !Number.isInteger(c.webrtc.signalPort) || c.webrtc.signalPort < 1024 ||
+      c.webrtc.signalPort > 65535 ||
+      (c.webrtc.enabled && (!c.edgeSpool.enabled || !c.origin.startsWith("https://"))))
+    throw new Error("Invalid WebRTC configuration");
   c.dataDir = resolve(c.dataDir);
   return c;
 }

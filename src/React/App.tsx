@@ -4,6 +4,7 @@ import { PasskeyPage } from "./PasskeyPage";
 import { PreviewContent } from "./PreviewContent";
 import { compactCount } from "./CommunityPages";
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
+import { uploadWebRTC } from "./webrtc-upload";
 import {
   deleteEdgeUpload,
   EdgeUploadError,
@@ -568,7 +569,7 @@ export function App() {
         const resumeKey = "fs-upload:" + fingerprint;
         let compressionAllowed = false,
           pipelineAllowed = false;
-        let edge: { path: string; ticket: string; blockBytes: number; direct?: { url: string; ticket: string } } | null =
+        let edge: { path: string; ticket: string; blockBytes: number; direct?: { url: string; ticket: string }; webrtc?: boolean } | null =
           null;
         let authoritativeReceipt: {
           start: number;
@@ -645,12 +646,68 @@ export function App() {
             else throw error;
           }
         }
+        // Prefer a NAT-traversed WebRTC DataChannel. A1 carries only the
+        // authenticated SDP offer and answer; the file traverses a direct
+        // UDP path to A8 if ICE succeeds. Any failure switches back to the
+        // existing authenticated A1->A8 upload route.
+        if (
+          freshReservation &&
+          edge?.webrtc &&
+          pipelineAllowed &&
+          file.size >= 2 * 1024 * 1024 &&
+          typeof RTCPeerConnection !== "undefined"
+        ) {
+          setProgress({
+            name: file.name, percent: 0, speed: 0,
+            phase: "WebRTC P2P接続を確認中",
+          });
+          try {
+            const received = await uploadWebRTC({
+              id: id!,
+              file,
+              offset: 0,
+              roundTripMs,
+              compress: tryCompression,
+              stopped: () => stop.current !== null,
+              progress: (bytes, speed) =>
+                setProgress({
+                  name: file.name,
+                  percent: file.size ? (bytes / file.size) * 100 : 100,
+                  speed,
+                  phase: "P2P直接送信中",
+                }),
+            });
+            offset = received.offset;
+            directOrStandard = true;
+            if (received.stopped || stop.current) {
+              await interrupted();
+              return;
+            }
+          } catch {
+            if (stop.current) {
+              await interrupted();
+              return;
+            }
+            const resumed = await api("/api/uploads/" + id);
+            offset = resumed.offset;
+            // A late SCTP delivery may still be committing on A8. Do not
+            // open an independent edge-spool writer for this same upload.
+            directOrStandard = true;
+            setProgress({
+              name: file.name,
+              percent: file.size ? (offset / file.size) * 100 : 100,
+              speed: 0,
+              phase: "P2P不成立・既存経路へ自動切替中",
+            });
+          }
+        }
         // A dedicated IPv6-only WSS hostname receives a signed, short-lived
         // upload capability, NOT the main site's host-only session cookie.
         // Try this only on a fresh reservation; existing A1 receipts must
         // never be shadowed by another writer.
         if (
           freshReservation &&
+          !directOrStandard &&
           edge?.direct &&
           pipelineAllowed &&
           file.size >= 2 * 1024 * 1024 &&

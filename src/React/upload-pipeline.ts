@@ -21,6 +21,8 @@ export class PipelineError extends Error {
 export function uploadPipeline(options: {
   url: string;
   protocols?: string[];
+  channel?: WebSocket;
+  startTransport?: () => Promise<void>;
   connectTimeoutMs?: number;
   idleTimeoutMs?: number;
   file: Blob;
@@ -38,7 +40,7 @@ export function uploadPipeline(options: {
 }) {
   return new Promise<{ offset: number; stopped: boolean }>(
     (resolve, reject) => {
-      const ws = new WebSocket(
+      const ws = options.channel ?? new WebSocket(
           options.url,
           options.protocols ?? PIPELINE_PROTOCOL,
         ),
@@ -302,6 +304,13 @@ export function uploadPipeline(options: {
         if (paused) finish();
         else if (!settled) fail(new PipelineError("転送接続が切断されました"));
       };
+      // WebRTC transport negotiates asynchronously after the standard
+      // pipeline handlers are installed, avoiding early "ready" races.
+      if (options.startTransport) {
+        void options.startTransport().catch((error) => {
+          if (!settled) fail(error);
+        });
+      }
     },
   );
 }
