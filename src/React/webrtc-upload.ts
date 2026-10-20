@@ -2,7 +2,10 @@ import { uploadPipeline, PipelineError } from "./upload-pipeline";
 import { PIPELINE_PROTOCOL, MAX_BLOCK_BYTES, FRAME_HEADER } from "../shared/pipeline";
 
 const FRAGMENT_PAYLOAD = 16_000;
-const MAX_BUFFERED = 512 * 1024;
+// Keep a short network queue so SCTP doesn't alternate between a full buffer
+// and an empty one on high-bandwidth mobile connections.
+const MAX_BUFFERED = 2 * 1024 * 1024;
+const LOW_WATER = 512 * 1024;
 const MAX_FRAME = MAX_BLOCK_BYTES + FRAME_HEADER;
 
 /**
@@ -66,14 +69,26 @@ export class RTCUploadSocket {
   private async drain() {
     if (this.dc.bufferedAmount < MAX_BUFFERED) return;
     await new Promise<void>((resolve) => {
+      let finished = false;
       const finish = () => {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
         this.dc.removeEventListener("bufferedamountlow", finish);
         resolve();
       };
-      this.dc.bufferedAmountLowThreshold = MAX_BUFFERED / 2;
+      this.dc.bufferedAmountLowThreshold = LOW_WATER;
       this.dc.addEventListener("bufferedamountlow", finish, { once: true });
-      const timer = setTimeout(finish, 200);
+      // Some mobile browsers don't deliver bufferedamountlow reliably.
+      // Polling is a backup, rather than always waiting a fixed 200 ms.
+      const poll = () => {
+        if (this.dc.readyState !== "open" || this.dc.bufferedAmount <= LOW_WATER) {
+          finish();
+        } else {
+          timer = setTimeout(poll, 20);
+        }
+      };
+      let timer = setTimeout(poll, 20);
     });
   }
   private async pump() {
