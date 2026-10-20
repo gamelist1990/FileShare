@@ -127,7 +127,7 @@ export function uploadPipeline(options: {
             !options.stopped() &&
             next < options.file.size &&
             flight.size < MAX_IN_FLIGHT &&
-            queuedWire < control.window * blockBytes
+            queuedWire < Math.max(4, control.window) * blockBytes
           ) {
             // Never put more than one bounded window into the browser/network send queue.
             if (

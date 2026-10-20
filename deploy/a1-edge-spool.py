@@ -43,7 +43,7 @@ A8_TAILNET_IP = os.environ.get("FILESHARE_EDGE_A8_IP", "100.69.76.52")
 MAX_RESERVED_BYTES = int(os.environ.get("FILESHARE_EDGE_MAX_RESERVED", "24000000000"))
 MIN_FREE_BYTES = int(os.environ.get("FILESHARE_EDGE_MIN_FREE", "8000000000"))
 MAX_BLOCK_BYTES = 8 * 1024 * 1024
-MAX_AHEAD_BLOCKS = 16
+MAX_AHEAD_BLOCKS = 64
 RECLAIM_BATCH_BYTES = 16 * 1024 * 1024
 MAX_CONCURRENT_REQUESTS = 8
 UPLOAD_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
@@ -81,7 +81,7 @@ def connect_db() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA synchronous=FULL")
+    connection.execute("PRAGMA synchronous=NORMAL")
     return connection
 
 
@@ -90,7 +90,7 @@ def init_db() -> None:
         connection = connect_db()
         try:
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("PRAGMA synchronous=NORMAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS edge_uploads (
@@ -404,7 +404,10 @@ def accept_block(ticket: dict, offset: int, encoded: bytes, checksum: str, encod
                 if count <= 0:
                     raise OSError("Short spool write")
                 written += count
-            os.fsync(fd)
+            if hasattr(os, "fdatasync"):
+                os.fdatasync(fd)
+            else:
+                os.fsync(fd)
         finally:
             if fd is not None:
                 os.close(fd)
