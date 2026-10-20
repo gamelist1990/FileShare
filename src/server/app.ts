@@ -21,6 +21,8 @@ import { attachUploadPipeline } from "./upload-pipeline";
 import {
   createEdgeUploadTicket,
   createDirectUploadTicket,
+  createDirectDownloadTicket,
+  verifyDirectDownloadTicket,
   loadEdgeSecret,
   verifyEdgeRequestSignature,
 } from "./edge-auth";
@@ -482,6 +484,68 @@ export async function createApp(config: Config) {
               cookieValue(req.headers.cookie, "fs_session"),
             );
           json(res, 201, { ...upload, ...(edge ? { edge } : {}) });
+          return;
+        }
+        const rtcDownloadOffer = /^\/api\/items\/([a-f0-9-]{36})\/webrtc\/offer$/.exec(path);
+        if (rtcDownloadOffer && method === "POST") {
+          if (!config.webrtc.enabled || !edgeSecret)
+            throw new HttpError(404, "WebRTCダウンロードは無効です");
+          const item = readItem(store, user, rtcDownloadOffer[1]);
+          assertStorageAvailable(store, item);
+          if (item.folder) throw new HttpError(400, "ファイルを選択してください");
+          if (!store.limit("rtc-download:" + ip, 15, 60_000))
+            throw new HttpError(429, "接続試行が多すぎます");
+          const offer = (await data()).offer;
+          if (offer?.type !== "offer" || typeof offer.sdp !== "string" ||
+              offer.sdp.length < 100 || offer.sdp.length > 125000)
+            throw new HttpError(400, "接続情報が不正です");
+          const token = createDirectDownloadTicket(edgeSecret, {
+            v: 1, scope: "direct-download", id: item.id,
+            userId: user?.id ?? null,
+            session: user ? digestToken(cookieValue(req.headers.cookie,"fs_session")) : null,
+            expiresAt: Date.now() + 5 * 60_000,
+          });
+          let answer: any;
+          try {
+            const response = await fetch(`http://127.0.0.1:${config.webrtc.signalPort}/offer`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({offer, id: item.id, ticket: token, clientIp: ip, operation: "download"}),
+              signal: AbortSignal.timeout(14000),
+            });
+            if (!response.ok) throw new Error("Pion returned " + response.status);
+            answer = await response.json();
+          } catch {
+            throw new HttpError(503, "P2P接続を利用できません");
+          }
+          if (answer?.answer?.type !== "answer" || typeof answer.answer.sdp !== "string")
+            throw new HttpError(502, "WebRTC応答が不正です");
+          json(res, 200, {answer: answer.answer});
+          return;
+        }
+        if (path === "/api/internal/webrtc-download" && method === "GET") {
+          if (!config.webrtc.enabled || !edgeSecret || ip !== "127.0.0.1")
+            throw new HttpError(403, "転送要求が許可されていません");
+          const ticket = verifyDirectDownloadTicket(edgeSecret, String(req.headers["x-fileshare-direct-ticket"] ?? ""));
+          if (!ticket) throw new HttpError(403, "転送認証が期限切れです");
+          const session = ticket.session
+            ? store.db.query("SELECT 1 FROM sessions WHERE hash=? AND user_id=? AND expires>?")
+                .get(ticket.session, ticket.userId, Date.now())
+            : true;
+          if (!session) throw new HttpError(401, "ログイン状態が無効です");
+          const account = ticket.userId ? store.user(ticket.userId) : null;
+          if (ticket.userId && !account) throw new HttpError(401, "アカウントが無効です");
+          const item = readItem(store, account, ticket.id);
+          assertStorageAvailable(store, item);
+          if (item.folder) throw new HttpError(400, "ファイルを選択してください");
+          const release = reserveTransfer(ip);
+          try {
+            const sent = await sendFile(req, res, store.blobPath(item.id), item, bandwidth, true);
+            if (sent) {
+              recordDownload(store,item.id,ticket.id + ":" + ticket.session + ":" + ticket.expiresAt);
+              store.audit(ip,account,"download",item.id);
+            }
+          } finally { release(); }
           return;
         }
         const webrtcOffer = /^\/api\/uploads\/([a-f0-9-]{36})\/webrtc\/offer$/.exec(path);

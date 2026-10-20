@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,10 +36,11 @@ type settings struct {
 	maxPeers                                          int32
 }
 type offerRequest struct {
-	Offer    webrtc.SessionDescription `json:"offer"`
-	ID       string                    `json:"id"`
-	Ticket   string                    `json:"ticket"`
-	ClientIP string                    `json:"clientIp"`
+	Offer     webrtc.SessionDescription `json:"offer"`
+	ID        string                    `json:"id"`
+	Ticket    string                    `json:"ticket"`
+	ClientIP  string                    `json:"clientIp"`
+	Operation string                    `json:"operation,omitempty"`
 }
 type offerResponse struct {
 	Answer webrtc.SessionDescription `json:"answer"`
@@ -224,7 +227,8 @@ func (a *app) offer(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "invalid offer", 400)
 		return
 	}
-	if !validID.MatchString(offer.ID) || len(offer.Ticket) > 4096 || len(offer.Ticket) < 20 ||
+	if (offer.Operation != "" && offer.Operation != "download") ||
+		!validID.MatchString(offer.ID) || len(offer.Ticket) > 4096 || len(offer.Ticket) < 20 ||
 		net.ParseIP(offer.ClientIP) == nil || offer.Offer.Type != webrtc.SDPTypeOffer || len(offer.Offer.SDP) > 130000 {
 		http.Error(w, "invalid signaling", 400)
 		return
@@ -267,6 +271,15 @@ func (a *app) offer(w http.ResponseWriter, req *http.Request) {
 		}
 	})
 	peer.OnDataChannel(func(dc *webrtc.DataChannel) {
+		if offer.Operation == "download" {
+			if dc.Label() != "fileshare-download" {
+				_ = dc.Close()
+				return
+			}
+			dc.OnOpen(func() { go a.streamDownload(dc, offer, release) })
+			dc.OnClose(release)
+			return
+		}
 		if dc.Label() != "fileshare" {
 			_ = dc.Close()
 			return
@@ -375,4 +388,92 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func (a *app) streamDownload(dc *webrtc.DataChannel, offer offerRequest, release func()) {
+	defer func() {
+	 for i:=0;i<500 && dc.BufferedAmount()>0;i++ {time.Sleep(10*time.Millisecond)}
+	 release()
+	}()
+	// Never contact an arbitrary URL. The only HTTP upstream is FileShare A8's
+	// private PROXY-v2 listener. The caller cannot change the endpoint.
+	transport := &http.Transport{
+		DisableKeepAlives:  true,
+		DisableCompression: true,
+		MaxConnsPerHost:    1,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 5 * time.Second, LocalAddr: &net.TCPAddr{IP: net.ParseIP(a.conf.source)}}
+			c, e := d.DialContext(ctx, "tcp", a.conf.upstream)
+			if e != nil {
+				return nil, e
+			}
+			hdr, e := proxyHeader("127.0.0.1")
+			if e != nil {
+				c.Close()
+				return nil, e
+			}
+			if _, e = c.Write(hdr); e != nil {
+				c.Close()
+				return nil, e
+			}
+			return c, nil
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Minute}
+	req, _ := http.NewRequest(http.MethodGet, "http://"+a.conf.virtualHost+"/api/internal/webrtc-download", nil)
+	req.Host = a.conf.origin[len("https://"):]
+	req.Header.Set("X-FileShare-Direct-Ticket", offer.Ticket)
+	resp, e := client.Do(req)
+	if e != nil {
+		dc.SendText(`{"type":"error"}`)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("RTC download refused: status=%d", resp.StatusCode)
+		dc.SendText(`{"type":"error"}`)
+		return
+	}
+	size := resp.ContentLength
+	if size < 0 {
+		dc.SendText(`{"type":"error"}`)
+		return
+	}
+	if e = dc.SendText(fmt.Sprintf(`{"type":"start","size":%d}`, size)); e != nil {
+		return
+	}
+	block := make([]byte, 16000)
+	hash := sha256.New()
+	var sent int64
+	for {
+		n, err := resp.Body.Read(block)
+		if n > 0 {
+			hash.Write(block[:n])
+			sent += int64(n)
+			for dc.BufferedAmount() > 512*1024 {
+				time.Sleep(10 * time.Millisecond)
+				if dc.ReadyState() != webrtc.DataChannelStateOpen {
+					return
+				}
+			}
+			if e = dc.Send(block[:n]); e != nil {
+				return
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			dc.SendText(`{"type":"error"}`)
+			return
+		}
+	}
+	if sent != size {
+		dc.SendText(`{"type":"error"}`)
+		return
+	}
+	// A final SHA-256 digest allows browsers to verify the complete download
+	// before publishing it. Avoid sensitive filenames or public IPs in logs.
+	dc.SendText(fmt.Sprintf(`{"type":"done","size":%d,"sha256":"%s"}`, size, hex.EncodeToString(hash.Sum(nil))))
 }

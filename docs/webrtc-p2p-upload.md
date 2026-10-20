@@ -98,3 +98,27 @@ new attempts immediately; ordinary uploads remain unchanged. Then optionally
 `systemctl --user disable --now fileshare-webrtc`. No DNS or router changes
 are needed. Restore the backed-up A8 config and executable if a rollback of
 the application build itself is necessary.
+## WebRTC direct downloads (interactive download action only)
+
+The FileShare Download button tries WebRTC DataChannel over UDP before the
+ordinary short-lived HTTPS download ticket. The authenticated signaling path
+`POST /api/items/:id/webrtc/offer` authorizes the file and gives A8's local
+Pion worker a five-minute HMAC download capability; the browser never sees
+that capability. The worker rechecks the token and live session through a
+PROXY-v2 protected A8 internal endpoint. File bytes flow through ordered
+DataChannel messages with a final SHA-256 digest, and the existing download
+counter is updated only for completed responses.
+
+**Do not use this transport for inline media playback, thumbnails, image
+previews, PDFs, or video transcoding.** Their original HTTP/Range endpoints
+remain untouched. This P2P path is for explicit downloads only.
+
+To avoid exhausting memory on mobile devices, files larger than 128 MiB use
+P2P only when the browser supports native streaming-to-disk
+(`showSaveFilePicker`). On iOS and other unsupported browsers, large files
+continue through regular HTTPS. Smaller P2P downloads verify SHA-256 before
+saving. If the DataChannel fails, the ordinary HTTPS route takes over.
+
+The worker's completion notification is allowed to flush through SCTP before
+closing the peer. Session revocation, ACLs, quotas and rate limits remain
+A8-controlled. No TURN relay or external inbound router port is required.

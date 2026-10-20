@@ -5,6 +5,7 @@ import { PreviewContent } from "./PreviewContent";
 import { compactCount } from "./CommunityPages";
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
 import { uploadWebRTC } from "./webrtc-upload";
+import { downloadWebRTC } from "./webrtc-download";
 import {
   deleteEdgeUpload,
   EdgeUploadError,
@@ -241,6 +242,7 @@ export function App() {
     key: string;
     edge?: { path: string; ticket: string; blockBytes: number };
   } | null>(null);
+  const webrtcDownloadEnabled = useRef(false);
   const activeRequest = useRef<AbortController | null>(null);
   const stop = useRef<"pause" | "cancel" | null>(null),
     fileInput = useRef<HTMLInputElement>(null);
@@ -251,6 +253,7 @@ export function App() {
     setAutoApprove(d.autoApprove);
     setFilePolicy(d.filePolicy);
     setMaintenanceUntil(d.maintenanceUntil ?? null);
+    webrtcDownloadEnabled.current = d.webrtc?.enabled === true;
     if (d.filePolicy)
       setRetentionMinutes((value) =>
         Math.min(value, Math.floor(d.filePolicy.maxRetentionSeconds / 60)),
@@ -968,6 +971,15 @@ export function App() {
   }
   const download = (i: Item) =>
     run(async () => {
+      // Only explicit downloads use P2P. All media previews remain HTTP.
+      // If ICE/NAT traversal fails, use the original short-lived HTTPS ticket.
+      if (webrtcDownloadEnabled.current && i.size > 0) {
+        const completed = await downloadWebRTC(i);
+        if (completed) {
+          setMessage("P2P直接ダウンロードを完了しました");
+          return;
+        }
+      }
       const d = await api("/api/items/" + i.id + "/ticket", "POST", {});
       const a = document.createElement("a");
       a.href = d.url;

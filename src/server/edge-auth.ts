@@ -159,3 +159,31 @@ export function verifyDirectUploadTicket(secret: string, token: string): DirectU
     return ticket;
   } catch { return null; }
 }
+
+export type DirectDownloadTicket = {
+  v: 1; scope: "direct-download"; id: string;
+  userId: string | null; session: string | null; expiresAt: number;
+};
+export function createDirectDownloadTicket(secret: string, item: DirectDownloadTicket) {
+  const payload = Buffer.from(JSON.stringify(item)).toString("base64url");
+  const h = createHmac("sha256", secret).update("direct-download-v1.").update(payload).digest("base64url");
+  return payload + "." + h;
+}
+export function verifyDirectDownloadTicket(secret: string, token: string): DirectDownloadTicket | null {
+  if (!token || token.length > 4096) return null;
+  const [data, sig, extra] = token.split(".");
+  if (!data || !sig || extra !== undefined) return null;
+  const expected = createHmac("sha256", secret).update("direct-download-v1.").update(data).digest();
+  const actual = Buffer.from(sig, "base64url");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
+  try {
+    const obj = JSON.parse(Buffer.from(data, "base64url").toString()) as DirectDownloadTicket;
+    return obj.v === 1 && obj.scope === "direct-download" &&
+      /^[a-f0-9-]{36}$/.test(obj.id) &&
+      (obj.userId === null || (typeof obj.userId === "string" && obj.userId.length <= 100)) &&
+      (obj.session === null || (typeof obj.session === "string" && /^[a-f0-9]{64}$/.test(obj.session))) &&
+      (obj.userId === null ? obj.session === null : obj.session !== null) &&
+      Number.isSafeInteger(obj.expiresAt) && obj.expiresAt > Date.now() &&
+      obj.expiresAt < Date.now() + 6 * 60_000 ? obj : null;
+  } catch { return null; }
+}
