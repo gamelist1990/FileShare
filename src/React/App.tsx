@@ -1053,8 +1053,10 @@ export function App() {
       if (d.key) {
         setKeyResult({ id: settings.id, key: d.key });
         setMessage("招待キーを発行しました");
-      } else setMessage("設定を保存しました");
-      setSettings(null);
+      } else {
+        setMessage("設定を保存しました");
+        setSettings(null);
+      }
       await refresh();
     });
   const maintenance = (action: string) => {
@@ -1770,7 +1772,7 @@ export function App() {
                             )}
                           </td>
                           <td data-label="サイズ" className="muted">
-                            {i.folder ? "—" : size(i.size)}
+                            {size(i.size)}
                           </td>
                           <td data-label="公開範囲">
                             <span className={"badge " + i.visibility}>
@@ -1918,31 +1920,6 @@ export function App() {
                 キャンセルして戻る
               </button>
             </form>
-          </section>
-        </FullScreenPage>
-      )}
-      {keyResult && (
-        <FullScreenPage variant="modal" onClose={() => setKeyResult(null)}>
-          <section className="screen-content">
-            <h2>招待キーを保存してください</h2>
-            <p>
-              このキーは今回だけ表示します。閲覧を許可する相手にファイルIDと一緒に渡してください。
-            </p>
-            <label>
-              招待キー
-              <input
-                readOnly
-                value={keyResult.key}
-                onFocus={(e) => e.target.select()}
-              />
-            </label>
-            <CopyButton text={keyResult.key}>招待キーをコピー</CopyButton>
-            <label>
-              ファイルID
-              <input readOnly value={keyResult.id} />
-            </label>
-            <CopyButton text={keyResult.id}>ファイルIDをコピー</CopyButton>
-            <button onClick={() => setKeyResult(null)}>保存して閉じる</button>
           </section>
         </FullScreenPage>
       )}
@@ -2136,125 +2113,178 @@ export function App() {
         </FullScreenPage>
       )}
       {settings && (
-        <FullScreenPage variant="modal" onClose={() => setSettings(null)}>
+        <FullScreenPage
+          variant="modal"
+          onClose={() => {
+            setKeyResult(null);
+            setSettings(null);
+          }}
+        >
           <section
             className="screen-content"
             role="region"
             aria-labelledby="settings-title"
           >
-            <p className="eyebrow">FILE SETTINGS</p>
-            <h2 id="settings-title">公開範囲と整理</h2>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const d = new FormData(e.currentTarget);
-                update({
-                  name: d.get("name"),
-                  tags: String(d.get("tags") ?? "")
-                    .split(/[,、]/)
-                    .map((t) => t.trim())
-                    .filter(Boolean),
-                  visibility: d.get("visibility"),
-                  min_level: Number(d.get("min_level")),
-                  ...(d.get("retentionMinutes")
-                    ? {
-                        retentionSeconds:
-                          Number(d.get("retentionMinutes")) * 60,
-                      }
-                    : {}),
-                  rotateKey: d.get("rotateKey") === "on",
-                });
-              }}
-            >
-              <label>
-                名前
-                <input
-                  name="name"
-                  defaultValue={settings.name}
-                  required
-                  maxLength={180}
-                />
-              </label>
-              <label>
-                公開範囲
-                <select name="visibility" defaultValue={settings.visibility}>
-                  <option value="private">非公開</option>
-                  <option value="public">公開</option>
-                  <option value="invite">招待キーが必要</option>
-                </select>
-              </label>
-              <label>
-                閲覧に必要な階級
-                <select name="min_level" defaultValue={settings.min_level}>
-                  {levels.map((l, n) => (
-                    <option key={n} value={n}>
-                      Level {n} · {l}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="inline">
-                <input type="checkbox" name="rotateKey" />
-                招待キーを更新（既存の閲覧許可を失効）
-              </label>
-              {!settings.folder && filePolicy && (
-                <div>
-                  <PresetField
-                    key={settings.id}
-                    label="投稿からの保存期間"
-                    name="retentionMinutes"
-                    unlimited={!!user && [1, 3, 4].includes(user.level)}
-                    keepCurrent
-                    max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
+            {keyResult ? (
+              <>
+                <h2 id="settings-title">招待キーを保存してください</h2>
+                <p>
+                  このキーは今回だけ表示します。閲覧を許可する相手にファイルIDと一緒に渡してください。
+                </p>
+                <label>
+                  招待キー
+                  <input
+                    readOnly
+                    value={keyResult.key}
+                    onFocus={(e) => e.target.select()}
                   />
-                  <small>
-                    {settings.expires_at
-                      ? `現在の期限: ${new Date(settings.expires_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}。`
-                      : "現在は期限未設定です。"}
-                    期限後は完全削除します。期限は投稿時刻から計算します。
-                  </small>
-                </div>
-              )}
-              <label>
-                タグ（カンマ区切り）
-                <input
-                  name="tags"
-                  defaultValue={(settings as any).tags?.join(", ")}
-                  maxLength={329}
-                />
-              </label>
-              <button className="primary full" type="submit">
-                設定を保存
-              </button>
-            </form>
-            <hr />
-            <label>
-              移動先フォルダID
-              <input id="move-parent" placeholder="空欄でこの領域のホームへ" />
-            </label>
-            <button
-              onClick={() =>
-                update({
-                  parent:
-                    (document.getElementById("move-parent") as HTMLInputElement)
-                      .value || null,
-                })
-              }
-            >
-              移動する
-            </button>
-            <p className="muted mono">ID: {settings.id}</p>
-            <label>
-              共有リンク
-              <input
-                readOnly
-                value={location.origin + "/?item=" + settings.id}
-                onFocus={(e) => e.target.select()}
-              />
-            </label>
-            <CopyButton text={location.origin + "/?item=" + settings.id}>
-              共有リンクをコピー
-            </CopyButton>
+                </label>
+                <CopyButton text={keyResult.key}>招待キーをコピー</CopyButton>
+                <label>
+                  ファイルID
+                  <input readOnly value={keyResult.id} />
+                </label>
+                <CopyButton text={keyResult.id}>ファイルIDをコピー</CopyButton>
+                <button
+                  onClick={() => {
+                    setKeyResult(null);
+                    setSettings(null);
+                  }}
+                >
+                  保存して閉じる
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">FILE SETTINGS</p>
+                <h2 id="settings-title">公開範囲と整理</h2>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const d = new FormData(e.currentTarget);
+                    update({
+                      name: d.get("name"),
+                      tags: String(d.get("tags") ?? "")
+                        .split(/[,、]/)
+                        .map((t) => t.trim())
+                        .filter(Boolean),
+                      visibility: d.get("visibility"),
+                      min_level: Number(d.get("min_level")),
+                      ...(d.get("retentionMinutes")
+                        ? {
+                            retentionSeconds:
+                              Number(d.get("retentionMinutes")) * 60,
+                          }
+                        : {}),
+                      rotateKey: d.get("rotateKey") === "on",
+                    });
+                  }}
+                >
+                  <label>
+                    名前
+                    <input
+                      name="name"
+                      defaultValue={settings.name}
+                      required
+                      maxLength={180}
+                    />
+                  </label>
+                  <label>
+                    公開範囲
+                    <select
+                      name="visibility"
+                      defaultValue={settings.visibility}
+                    >
+                      <option value="private">非公開</option>
+                      <option value="public">公開</option>
+                      <option value="invite">招待キーが必要</option>
+                    </select>
+                  </label>
+                  {!!settings.folder && (
+                    <p className="muted">
+                      公開にすると、配下のフォルダ・ファイルにも公開範囲と閲覧に必要な階級を適用します。
+                    </p>
+                  )}
+                  <label>
+                    閲覧に必要な階級
+                    <select name="min_level" defaultValue={settings.min_level}>
+                      {levels.map((l, n) => (
+                        <option key={n} value={n}>
+                          Level {n} · {l}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="inline">
+                    <input type="checkbox" name="rotateKey" />
+                    招待キーを更新（既存の閲覧許可を失効）
+                  </label>
+                  {!settings.folder && filePolicy && (
+                    <div>
+                      <PresetField
+                        key={settings.id}
+                        label="投稿からの保存期間"
+                        name="retentionMinutes"
+                        unlimited={!!user && [1, 3, 4].includes(user.level)}
+                        keepCurrent
+                        max={Math.floor(filePolicy.maxRetentionSeconds / 60)}
+                      />
+                      <small>
+                        {settings.expires_at
+                          ? `現在の期限: ${new Date(settings.expires_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}。`
+                          : "現在は期限未設定です。"}
+                        期限後は完全削除します。期限は投稿時刻から計算します。
+                      </small>
+                    </div>
+                  )}
+                  <label>
+                    タグ（カンマ区切り）
+                    <input
+                      name="tags"
+                      defaultValue={(settings as any).tags?.join(", ")}
+                      maxLength={329}
+                    />
+                  </label>
+                  <button className="primary full" type="submit">
+                    設定を保存
+                  </button>
+                </form>
+                <hr />
+                <label>
+                  移動先フォルダID
+                  <input
+                    id="move-parent"
+                    placeholder="空欄でこの領域のホームへ"
+                  />
+                </label>
+                <button
+                  onClick={() =>
+                    update({
+                      parent:
+                        (
+                          document.getElementById(
+                            "move-parent",
+                          ) as HTMLInputElement
+                        ).value || null,
+                    })
+                  }
+                >
+                  移動する
+                </button>
+                <p className="muted mono">ID: {settings.id}</p>
+                <label>
+                  共有リンク
+                  <input
+                    readOnly
+                    value={location.origin + "/?item=" + settings.id}
+                    onFocus={(e) => e.target.select()}
+                  />
+                </label>
+                <CopyButton text={location.origin + "/?item=" + settings.id}>
+                  共有リンクをコピー
+                </CopyButton>
+              </>
+            )}
           </section>
         </FullScreenPage>
       )}

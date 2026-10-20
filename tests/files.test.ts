@@ -335,3 +335,103 @@ test("expiry blocks direct access and tickets immediately, then cleanup frees st
     ).status,
   ).toBe(409);
 });
+
+test("publishing a folder publishes its nested files and clears old invite grants", async () => {
+  const folder = await (
+    await request(
+      "/api/folders",
+      "POST",
+      {
+        name: "publish-tree",
+        space: "private",
+      },
+      "vip",
+    )
+  ).json();
+  const nested = await (
+    await request(
+      "/api/folders",
+      "POST",
+      {
+        name: "nested",
+        parent: folder.id,
+        space: "private",
+      },
+      "vip",
+    )
+  ).json();
+  const child = await create("nested-code.ts", "vip", { parent: nested.id });
+  const other = await create("outside-tree.ts", "vip");
+  const invite = await (
+    await request(
+      `/api/items/${child.id}`,
+      "PATCH",
+      {
+        visibility: "invite",
+      },
+      "vip",
+    )
+  ).json();
+  expect(invite.key).toBeString();
+  expect(
+    (
+      await request(
+        `/api/items/${child.id}/unlock`,
+        "POST",
+        { key: invite.key },
+        "staff",
+      )
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await request(
+        `/api/items/${folder.id}`,
+        "PATCH",
+        {
+          visibility: "public",
+          min_level: 0,
+        },
+        "vip",
+      )
+    ).status,
+  ).toBe(200);
+  for (const id of [folder.id, nested.id, child.id]) {
+    const item = app.store.item(id)!;
+    expect(item.visibility).toBe("public");
+    expect(item.min_level).toBe(0);
+    expect(item.key_hash).toBeNull();
+    expect(
+      (await request(`/api/items/${id}`, "GET", undefined, "")).status,
+    ).toBe(200);
+  }
+  expect(app.store.item(other.id)!.visibility).toBe("private");
+  expect(
+    app.store.db.query("SELECT * FROM grants WHERE item_id=?").all(child.id),
+  ).toHaveLength(0);
+});
+
+test("folder sizes sum nested readable files and update after trashing", async () => {
+  const folder = await (await request("/api/folders", "POST", {
+    name: "folder-total", space: "private",
+  }, "vip")).json();
+  expect(folder.size).toBe(0);
+  const nested = await (await request("/api/folders", "POST", {
+    name: "nested-total", parent: folder.id, space: "private",
+  }, "vip")).json();
+  const direct = await create("direct.txt", "vip", { parent: folder.id });
+  const child = await create("deep.txt", "vip", { parent: nested.id });
+  const sizeOf = async (id: string, user = "vip") =>
+    (await (await request(`/api/items/${id}`, "GET", undefined, user)).json()).size;
+  expect(await sizeOf(folder.id)).toBe(direct.size + child.size);
+  expect(await sizeOf(nested.id)).toBe(child.size);
+  const listing = await (await request(`/api/items?space=private&parent=${folder.id}`, "GET", undefined, "vip")).json();
+  expect(listing.items.find((i: any) => i.id === nested.id).size).toBe(child.size);
+  await request(`/api/items/${folder.id}`, "PATCH", { visibility: "public" }, "vip");
+  expect(await sizeOf(folder.id, "")).toBe(direct.size + child.size);
+  await request(`/api/items/${child.id}`, "PATCH", { visibility: "private" }, "vip");
+  expect(await sizeOf(folder.id, "")).toBe(direct.size);
+  expect(await sizeOf(folder.id)).toBe(direct.size + child.size);
+  expect((await request("/api/trash", "POST", { ids: [nested.id] }, "vip")).status).toBe(200);
+  expect(await sizeOf(folder.id)).toBe(direct.size);
+});

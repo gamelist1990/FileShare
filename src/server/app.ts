@@ -836,7 +836,7 @@ export async function createApp(config: Config) {
           const id = itemRoute[1],
             action = itemRoute[2];
           if (method === "GET" && !action) {
-            json(res, 200, safeItem(store, readItem(store, user, id)));
+            json(res, 200, safeItem(store, readItem(store, user, id), user));
             return;
           }
           if (method === "PATCH" && !action) {

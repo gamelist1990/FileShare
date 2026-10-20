@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import Markdown from "react-markdown";
+import { CodeContent, codeLanguage } from "./CodeContent";
 import { previewKind } from "../shared/preview";
 import { CopyButton } from "./CopyButton";
 export function PreviewContent({
@@ -185,6 +186,13 @@ export function PreviewContent({
           <Markdown
             skipHtml
             components={{
+              code: ({ className, children }) => (
+                <CodeContent
+                  text={String(children)}
+                  className={className}
+                  language={className?.match(/language-([^\s]+)/)?.[1]}
+                />
+              ),
               img: ({ alt }) => (
                 <span>{alt ? `[画像: ${alt}]` : "[画像]"}</span>
               ),
@@ -200,7 +208,7 @@ export function PreviewContent({
         </article>
       ) : kind === "text" ? (
         <pre className="text-preview">
-          <code>{text}</code>
+          <CodeContent text={text} language={codeLanguage(item.name)} />
         </pre>
       ) : (
         <p className="muted">

@@ -250,6 +250,16 @@ try {
   if (!downloadedPath || !(await readFile(downloadedPath)).equals(browserProof))
     throw new Error("Browser gzip download changed the saved file bytes");
   await page.getByRole("button", { name: "browser-proof.txtの設定" }).click();
+  await page.locator('select[name="visibility"]').selectOption("invite");
+  await page.getByRole("button", { name: "設定を保存", exact: true }).click();
+  const generatedKey = page.getByRole("dialog").getByLabel("招待キー", { exact: true });
+  await generatedKey.waitFor();
+  if (!(await generatedKey.inputValue())) throw new Error("Generated invite key missing");
+  // Allow the settings-close popstate event to fire before checking the result.
+  await page.waitForTimeout(300);
+  if (!(await generatedKey.isVisible())) throw new Error("Invite key closed with settings");
+  await page.getByRole("button", { name: "保存して閉じる", exact: true }).click();
+  await page.getByRole("button", { name: "browser-proof.txtの設定" }).click();
   await page
     .locator(".screen-content")
     .locator('select[name="visibility"]')
@@ -926,8 +936,14 @@ try {
   )
     throw new Error("Preview URL clipboard mismatch");
   const fileId = directPreview.split("/").at(-2)!;
+  const code = 'const greeting = "<script>window.previewExecuted=true</script>";';
+  app.store.db.run("UPDATE items SET name='sample.ts',size=? WHERE id=?", [Buffer.byteLength(code), fileId]);
+  await writeFile(join(app.store.blobDir, fileId), code);
+  await page.reload();
+  await page.locator(".text-preview .hljs-keyword").waitFor();
+  if (await page.locator(".text-preview script").count()) throw new Error("Code HTML was not escaped");
   const malicious =
-    "# Safe Markdown\n\n<script>window.previewExecuted=true</script>\n\n[bad](javascript:alert(1))\n\n![tracking](https://example.com/tracking.png)";
+    "# Safe Markdown\n\n```typescript\nconst answer = 42;\n```\n\n<script>window.previewExecuted=true</script>\n\n[bad](javascript:alert(1))\n\n![tracking](https://example.com/tracking.png)";
   app.store.db.run("UPDATE items SET name='safe.md',size=? WHERE id=?", [
     Buffer.byteLength(malicious),
     fileId,
@@ -945,6 +961,7 @@ try {
       .count()
   )
     throw new Error("Markdown allowed active HTML or tracking images");
+  await page.locator(".markdown-preview .hljs-keyword").waitFor();
   if (await page.evaluate(() => !!(window as any).previewExecuted))
     throw new Error("Uploaded script executed");
   await page.screenshot({

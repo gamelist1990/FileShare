@@ -51,7 +51,21 @@ export async function readBody(
   }
   return Buffer.concat(chunks);
 }
-export const safeItem = (store: Store, i: Item) => {
+function folderSize(store: Store, folder: Item, user: User | null) {
+  const files = store.db.query(
+    ITEM_SELECT + ` WHERE i.folder=0 AND i.id IN (
+      WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM items WHERE parent=? AND owner IS ? AND deleted IS NULL
+        UNION
+        SELECT i.id FROM items i JOIN descendants d ON i.parent=d.id
+        WHERE i.owner IS ? AND i.deleted IS NULL
+      ) SELECT id FROM descendants
+    )`,
+  ).all(folder.id, folder.owner, folder.owner) as Item[];
+  return files.reduce((total, file) =>
+    total + (canRead(store, user, file) ? file.size : 0), 0);
+}
+export const safeItem = (store: Store, i: Item, user: User | null = null) => {
   const {
     key_hash,
     deleted,
@@ -63,6 +77,7 @@ export const safeItem = (store: Store, i: Item) => {
   } = i;
   return {
     ...rest,
+    size: i.folder ? folderSize(store, i, user) : i.size,
     tags: itemTags(store, i.id),
     storageState:
       !i.folder && storageUnavailable(store, i.id, i.size)
@@ -100,12 +115,12 @@ export function listItems(
   return {
     items: items
       .filter((i) => canRead(store, user, i))
-      .map((i) => safeItem(store, i)),
+      .map((i) => safeItem(store, i, user)),
     writable: canWrite(user, owner, store),
     uploadable: canUpload(store, user, owner),
     usage: store.usage(owner ?? undefined),
     capacity: owner ? store.user(owner)!.quota : store.config.capacityBytes,
-    parent: parent ? safeItem(store, readItem(store, user, parent)) : null,
+    parent: parent ? safeItem(store, readItem(store, user, parent), user) : null,
   };
 }
 function reserve(store: Store, user: User, owner: string | null, size: number) {
@@ -451,7 +466,7 @@ export async function completeUpload(
       throw e;
     }
     if (!replication) store.audit(ip, user, "upload", id);
-    return safeItem(store, store.item(id)!);
+    return safeItem(store, store.item(id)!, user);
   } finally {
     try {
       await destination?.close();
@@ -503,7 +518,7 @@ export function mkdir(store: Store, user: User | null, data: any, ip: string) {
     ],
   );
   store.audit(ip, user, "mkdir", id);
-  return safeItem(store, store.item(id)!);
+  return safeItem(store, store.item(id)!, user);
 }
 export function updateItem(
   store: Store,
@@ -580,6 +595,23 @@ export function updateItem(
         id,
       ],
     );
+    if (item.folder && data.visibility === "public") {
+      // Apply the audience to the entire existing subtree atomically.
+      const descendants = `WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM items WHERE parent=? AND owner IS ?
+        UNION
+        SELECT i.id FROM items i JOIN descendants d ON i.parent=d.id WHERE i.owner IS ?
+      ) SELECT id FROM descendants`;
+      const params = [id, item.owner, item.owner];
+      store.db.run(
+        `DELETE FROM grants WHERE item_id IN (${descendants})`,
+        params,
+      );
+      store.db.run(
+        `UPDATE items SET visibility='public',min_level=?,key_hash=NULL WHERE id IN (${descendants})`,
+        [level, ...params],
+      );
+    }
     if (key || visibility !== item.visibility)
       store.db.run("DELETE FROM grants WHERE item_id=?", [id]);
     if (expiry !== undefined)
@@ -589,7 +621,7 @@ export function updateItem(
       );
   })();
   store.audit(ip, user, "item.update", id);
-  return { item: safeItem(store, store.item(id)!), ...(key ? { key } : {}) };
+  return { item: safeItem(store, store.item(id)!, user), ...(key ? { key } : {}) };
 }
 export function unlock(
   store: Store,

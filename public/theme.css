@@ -1849,3 +1849,14 @@ main[data-admin-tab=users] #admin-users,main[data-admin-tab=files] #admin-record
 body:has(main.admin-page) .toast{border-radius:12px;padding:11px 12px;gap:9px}body:has(main.admin-page) .toast-text{font-size:12px}body:has(main.admin-page) .toast-icon{width:24px;height:24px;font-size:14px}
 @media(max-width:760px){.admin-site-nav{gap:10px}.admin-site-nav .brand img{width:26px;height:26px}.admin-site-nav .brand strong{font-size:15px}.admin-site-nav .brand small{font-size:9px}.admin-site-nav .account>span{display:none}.admin-site-nav .account{gap:4px;max-width:none}.admin-site-nav .account button{font-size:11px;padding:6px 9px;min-height:36px}}
 @media(max-width:760px){.admin-page input:not([type=checkbox]),.admin-page select,.admin-page textarea{font-size:16px}.admin-page .panel button,.admin-page-header>button{font-size:13px;min-height:44px}.admin-site-nav .account button{min-height:44px}.admin-page .panel label{font-size:13px}.admin-page-header p:last-child{font-size:13px}}
+
+/* Syntax colors for source previews and fenced Markdown code. */
+.text-preview code.hljs, .markdown-preview code.hljs { display: block; background: #171e2c; color: #e2e8f0; padding: 1rem; overflow-x: auto; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #c4a7ff; }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-attribute { color: #98dca5; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: #ffc785; }
+.hljs-title, .hljs-section, .hljs-selector-class { color: #8acbff; }
+.hljs-comment, .hljs-quote { color: #a4afbf; font-style: italic; }
+.hljs-type, .hljs-built_in, .hljs-tag, .hljs-name { color: #79ded4; }
+.hljs-attr, .hljs-variable, .hljs-template-variable { color: #ffd79d; }
+.hljs-meta, .hljs-deletion { color: #ff9fae; }
