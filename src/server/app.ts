@@ -1035,6 +1035,10 @@ export async function createApp(config: Config) {
               usage: store.usage(),
               capacity: config.capacityBytes,
               cacheBytes,
+              trashRetention: JSON.parse(
+                (store.db.query("SELECT value FROM admin_settings WHERE key='trash-retention'").get() as {value:string}|null)?.value ??
+                '{"enabled":false,"days":30}'
+              ),
               trashStats: store.db.query(
                 `SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN i.folder=0 THEN i.size ELSE 0 END),0) AS bytes
                  FROM items i WHERE i.deleted IS NOT NULL AND

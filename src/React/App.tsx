@@ -71,6 +71,8 @@ async function api(path: string, method = "GET", body?: unknown) {
   return d;
 }
 export function App() {
+  const [trashAutoEnabled, setTrashAutoEnabled] = useState(false);
+  const [trashAutoDays, setTrashAutoDays] = useState(30);
   const [purgeAllConfirm, setPurgeAllConfirm] = useState("");
   const [trashFilter, setTrashFilter] = useState("");
   const [dropFiles, setDropFiles] = useState<File[] | null>(null),
@@ -288,7 +290,10 @@ export function App() {
     if (!keepSelection) setSelected([]);
   };
   const loadAdmin = async () => {
-    setOverview(await api("/api/admin/overview"));
+    const data = await api("/api/admin/overview");
+    setOverview(data);
+    setTrashAutoEnabled(data.trashRetention?.enabled === true);
+    setTrashAutoDays(data.trashRetention?.days ?? 30);
   };
   const run = async (fn: () => Promise<unknown>) => {
     setError("");
@@ -1218,6 +1223,45 @@ export function App() {
                       期限切れ・一時データを今すぐ整理
                     </button>
                   </div>
+                  <div className="section-title">
+                    <div>
+                      <h3>ごみ箱の自動完全削除</h3>
+                      <p className="muted">
+                        ごみ箱へ移動してから設定日数が経過したファイルを定期的に完全削除します。
+                        無効の場合は、手動で完全削除するまで保持します。
+                      </p>
+                    </div>
+                  </div>
+                  <div className="actions" style={{flexWrap:"wrap",alignItems:"center",marginBottom:20}}>
+                    <label style={{display:"inline-flex",alignItems:"center",gap:8}}>
+                      <input type="checkbox" checked={trashAutoEnabled}
+                        onChange={e=>setTrashAutoEnabled(e.target.checked)}/>
+                      自動完全削除を有効にする
+                    </label>
+                    <label style={{display:"inline-flex",alignItems:"center",gap:8}}>
+                      ごみ箱に入れてから
+                      <input type="number" min={1} max={3650} step={1}
+                        style={{width:88}} value={trashAutoDays}
+                        onChange={e=>setTrashAutoDays(Number(e.target.value))}/>
+                      日後
+                    </label>
+                    <button className="primary"
+                      disabled={busy || !Number.isInteger(trashAutoDays) || trashAutoDays<1 || trashAutoDays>3650}
+                      onClick={()=>run(async()=>{
+                        await api("/api/admin/maintenance","POST",{
+                          action:"trash-retention",
+                          ids:{enabled:trashAutoEnabled,days:trashAutoDays}
+                        });
+                        await loadAdmin();
+                        setMessage(trashAutoEnabled
+                          ? `ごみ箱の自動完全削除を${trashAutoDays}日後に設定しました`
+                          : "ごみ箱の自動完全削除を無効にしました");
+                      })}>設定を保存</button>
+                  </div>
+                  <p className="muted">
+                    既存のごみ箱も設定対象です。有効化後、削除期限を過ぎた項目は
+                    約1分ごとの整理で完全削除されます。保存前に設定内容を確認してください。
+                  </p>
                   <div className="section-title">
                     <div>
                       <h3>ごみ箱</h3>

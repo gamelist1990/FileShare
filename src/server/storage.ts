@@ -679,7 +679,22 @@ async function performMaintenance(
   ids: unknown,
   ip: string,
 ) {
-  requireAdmin(user);
+  if (user !== null) requireAdmin(user);
+  else if (ip !== "local" || action !== "purge") throw new HttpError(403, "管理者のみ操作できます");
+  if (action === "trash-retention") {
+    const options = ids as { enabled?: unknown; days?: unknown };
+    if (!options || typeof options.enabled !== "boolean" ||
+      !Number.isSafeInteger(options.days) ||
+      Number(options.days) < 1 || Number(options.days) > 3650)
+      throw new HttpError(400, "自動完全削除は1〜3650日で設定してください");
+    const value = { enabled: options.enabled, days: options.days };
+    store.db.run(
+      "INSERT INTO admin_settings(key,value) VALUES('trash-retention',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      [JSON.stringify(value)],
+    );
+    store.audit(ip, user, "trash.retention", JSON.stringify(value));
+    return value;
+  }
   if (action === "purge-all") {
     // Select top-level deleted roots only. A subtree is recursively removed
     // by the existing purge operation, so descendants must not be repeated.
@@ -830,7 +845,45 @@ export async function cleanup(store: Store, full = true) {
       uploads++;
     }
     await reconcileVolumeDeletes(store);
-    if (!full) return { uploads, orphans, expired };
+    // Retention is opt-in. Delete only complete trash trees past the deadline;
+    // partially restored descendants must never be destroyed by a timer.
+    const saved = store.db.query(
+      "SELECT value FROM admin_settings WHERE key='trash-retention'"
+    ).get() as { value: string } | null;
+    let trashPurged = 0;
+    if (saved) {
+      let policy: {enabled: boolean;days: number}|null = null;
+      try { policy = JSON.parse(saved.value); } catch {}
+      if (policy?.enabled && Number.isSafeInteger(policy.days) &&
+        policy.days >= 1 && policy.days <= 3650) {
+        const threshold = now - policy.days * 86400000;
+        const roots = store.db.query(
+          `SELECT i.id FROM items i WHERE i.deleted IS NOT NULL AND i.deleted <= ?
+           AND NOT EXISTS(SELECT 1 FROM items parent WHERE parent.id=i.parent AND parent.deleted IS NOT NULL)
+           AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id AND m.purged=1)
+           AND NOT EXISTS(
+             WITH RECURSIVE descendants(id) AS (
+               SELECT id FROM items WHERE id=i.id
+               UNION ALL SELECT c.id FROM items c JOIN descendants d ON c.parent=d.id
+             )
+             SELECT 1 FROM items child JOIN descendants d ON child.id=d.id
+             WHERE child.deleted IS NULL OR child.deleted > ?
+           )
+           ORDER BY i.deleted ASC LIMIT 100`
+        ).all(threshold, threshold) as {id:string}[];
+        for (const root of roots) {
+          try {
+            await performMaintenance(store, null, "purge", [root.id], "local");
+            trashPurged++;
+            store.audit("local", null, "trash.auto-purge", root.id);
+          } catch (e) {
+            // A busy disk/volume must be retried in a later janitor cycle.
+            console.error("Trash retention purge deferred:", e);
+          }
+        }
+      }
+    }
+    if (!full) return { uploads, orphans, expired, trashPurged };
     for (const file of await readdir(store.tempDir)) {
       if (!/^[a-f0-9-]{36}$/.test(file) || busy.has(file)) continue;
       if (!store.db.query("SELECT 1 FROM uploads WHERE id=?").get(file)) {
