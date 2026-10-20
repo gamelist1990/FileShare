@@ -940,8 +940,17 @@ try {
   app.store.db.run("UPDATE items SET name='sample.ts',size=? WHERE id=?", [Buffer.byteLength(code), fileId]);
   await writeFile(join(app.store.blobDir, fileId), code);
   await page.reload();
-  await page.locator(".text-preview .hljs-keyword").waitFor();
+  await page.locator(".text-preview .syntax-code span").first().waitFor();
   if (await page.locator(".text-preview script").count()) throw new Error("Code HTML was not escaped");
+  const csharp = 'using UnityEngine;\n\npublic class Movecamera : MonoBehaviour\n{\n    Vector3 cameraVec;\n    GameObject playerOb;\n\n    void Start()\n    {\n        cameraVec = new Vector3(0.0f, 0.0f, 0.0f);\n        playerOb = GameObject.Find("Player");\n    }\n\n    void Update()\n    {\n        cameraVec.y = playerOb.transform.position.y + 1.0f;\n        transform.position = cameraVec;\n        transform.LookAt(playerOb.transform.position);\n    }\n}';
+  app.store.db.run("UPDATE items SET name='Movecamera.cs',size=? WHERE id=?", [Buffer.byteLength(csharp), fileId]);
+  await writeFile(join(app.store.blobDir, fileId), csharp);
+  await page.reload();
+  await page.locator('.text-preview .syntax-code[data-language="cs"] span').first().waitFor();
+  const typeColor = await page.locator('.syntax-code span').filter({ hasText: /^Vector3$/ }).first().evaluate(e => getComputedStyle(e).color);
+  const callColor = await page.locator('.syntax-code span').filter({ hasText: /^Find$/ }).evaluate(e => getComputedStyle(e).color);
+  if (typeColor === callColor) throw new Error("C# types and method calls have identical styles");
+  await page.screenshot({ path: ".artifacts/csharp-preview.png", fullPage: true });
   const malicious =
     "# Safe Markdown\n\n```typescript\nconst answer = 42;\n```\n\n<script>window.previewExecuted=true</script>\n\n[bad](javascript:alert(1))\n\n![tracking](https://example.com/tracking.png)";
   app.store.db.run("UPDATE items SET name='safe.md',size=? WHERE id=?", [
@@ -961,7 +970,7 @@ try {
       .count()
   )
     throw new Error("Markdown allowed active HTML or tracking images");
-  await page.locator(".markdown-preview .hljs-keyword").waitFor();
+  await page.locator(".markdown-preview .syntax-code span").first().waitFor();
   if (await page.evaluate(() => !!(window as any).previewExecuted))
     throw new Error("Uploaded script executed");
   await page.screenshot({

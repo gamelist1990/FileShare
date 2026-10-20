@@ -1860,3 +1860,9 @@ body:has(main.admin-page) .toast{border-radius:12px;padding:11px 12px;gap:9px}bo
 .hljs-type, .hljs-built_in, .hljs-tag, .hljs-name { color: #79ded4; }
 .hljs-attr, .hljs-variable, .hljs-template-variable { color: #ffd79d; }
 .hljs-meta, .hljs-deletion { color: #ff9fae; }
+
+.text-preview code.syntax-code, .markdown-preview code.syntax-code {
+  display: block; background: #1e1e1e; color: #d4d4d4; padding: 1rem;
+  overflow-x: auto; font-family: Consolas, "Cascadia Code", "Liberation Mono", monospace;
+  font-size: 14px; line-height: 1.65; tab-size: 4; white-space: pre;
+}
