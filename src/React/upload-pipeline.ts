@@ -20,6 +20,8 @@ export class PipelineError extends Error {
 /** One socket, a bounded application window, and only durable ACK offsets count as progress. */
 export function uploadPipeline(options: {
   url: string;
+  protocols?: string[];
+  connectTimeoutMs?: number;
   file: Blob;
   offset: number;
   roundTripMs: number;
@@ -35,7 +37,10 @@ export function uploadPipeline(options: {
 }) {
   return new Promise<{ offset: number; stopped: boolean }>(
     (resolve, reject) => {
-      const ws = new WebSocket(options.url, PIPELINE_PROTOCOL),
+      const ws = new WebSocket(
+          options.url,
+          options.protocols ?? PIPELINE_PROTOCOL,
+        ),
         control = new PipelineWindow(options.roundTripMs);
       let ready = false,
         pumping = false,
@@ -59,6 +64,11 @@ export function uploadPipeline(options: {
         if (options.stopped() || options.signal?.aborted) {
           paused = true;
           finish();
+        } else if (
+          !ready &&
+          performance.now() - lastActivity > (options.connectTimeoutMs ?? 15000)
+        ) {
+          fail(new PipelineError("先送り転送の接続確認がタイムアウトしました"));
         } else if (performance.now() - lastActivity > 180000) {
           fail(new PipelineError("転送が途切れました"));
         }
@@ -193,9 +203,7 @@ export function uploadPipeline(options: {
                 BLOCK_BYTES,
                 2 * 1024 * 1024,
                 MAX_BLOCK_BYTES,
-              ].includes(
-                message.blockBytes,
-              ) ||
+              ].includes(message.blockBytes) ||
               message.maxInFlight !== MAX_IN_FLIGHT ||
               !Number.isSafeInteger(message.offset) ||
               message.offset < 0 ||

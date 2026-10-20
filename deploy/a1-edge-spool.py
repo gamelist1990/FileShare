@@ -16,6 +16,7 @@ import socket
 import socketserver
 import sqlite3
 import struct
+import sys
 import threading
 import time
 import zlib
@@ -43,6 +44,7 @@ MAX_RESERVED_BYTES = int(os.environ.get("FILESHARE_EDGE_MAX_RESERVED", "24000000
 MIN_FREE_BYTES = int(os.environ.get("FILESHARE_EDGE_MIN_FREE", "8000000000"))
 MAX_BLOCK_BYTES = 8 * 1024 * 1024
 MAX_AHEAD_BLOCKS = 16
+RECLAIM_BATCH_BYTES = 16 * 1024 * 1024
 MAX_CONCURRENT_REQUESTS = 8
 UPLOAD_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
 PROXY_V2_SIGNATURE = b"\r\n\r\n\x00\r\nQUIT\n"
@@ -58,6 +60,7 @@ if len(SECRET) != 64 or not re.fullmatch(rb"[a-f0-9]{64}", SECRET):
 _db_init_lock = threading.Lock()
 _upload_locks: dict[str, threading.RLock] = {}
 _upload_locks_guard = threading.Lock()
+_content_locks = [threading.RLock() for _ in range(64)]
 _block_write_locks = [threading.Lock() for _ in range(64)]
 _work_event = threading.Event()
 _stop_event = threading.Event()
@@ -133,6 +136,11 @@ def upload_lock(upload_id: str) -> threading.RLock:
         return _upload_locks.setdefault(upload_id, threading.RLock())
 
 
+def content_lock(upload_id: str) -> threading.RLock:
+    # Hole punching and pending reads share this lock; ingress receipts never do.
+    return _content_locks[hash(upload_id) % len(_content_locks)]
+
+
 def block_write_lock(upload_id: str, offset: int, block_bytes: int) -> threading.Lock:
     index = (hash(upload_id) ^ (offset // block_bytes)) % len(_block_write_locks)
     return _block_write_locks[index]
@@ -195,6 +203,7 @@ def status_for(upload_id: str) -> dict:
         return {
             "size": row["size"],
             "blockBytes": row["block_bytes"],
+            "pipeline": "fileshare-upload-v2",
             "offset": row["offset"],
             "receivedBytes": row["received_bytes"],
             "replicatedOffset": row["replicated_offset"],
@@ -526,18 +535,23 @@ def release_confirmed_prefix(upload_id: str, confirmed: int) -> None:
     A crash before/after fallocate always routes this prefix to A8. Unsupported
     filesystems retain the bytes safely; actual reclaimed blocks govern admission.
     """
-    with upload_lock(upload_id):
+    with content_lock(upload_id):
         db = connect_db()
         try:
-            row = db.execute("SELECT * FROM edge_uploads WHERE id=?", (upload_id,)).fetchone()
-            if not row or confirmed > row["replicated_offset"] or confirmed > row["offset"]:
-                raise OSError("Unconfirmed reclamation boundary")
-            if confirmed <= row["released_offset"]:
-                return
-            start = row["released_offset"]
-            db.execute("UPDATE edge_uploads SET released_offset=? WHERE id=?", (confirmed, upload_id))
-            path = DATA_DIR / (upload_id + ".part")
-            fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+            with upload_lock(upload_id):
+                row = db.execute("SELECT * FROM edge_uploads WHERE id=?", (upload_id,)).fetchone()
+                if not row or confirmed > row["replicated_offset"] or confirmed > row["offset"]:
+                    raise OSError("Unconfirmed reclamation boundary")
+                if confirmed <= row["released_offset"]:
+                    return
+                start = row["released_offset"]
+                # Batch metadata/flush work while ingress is active; queued bytes
+                # stay reserved until a batch has actually been reclaimed.
+                if confirmed-start < RECLAIM_BATCH_BYTES and row["offset"] < row["size"]:
+                    return
+                db.execute("UPDATE edge_uploads SET released_offset=? WHERE id=?", (confirmed, upload_id))
+                fd = os.open(DATA_DIR / (upload_id + ".part"), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+            # Storage reclamation I/O must never hold the client receipt lock.
             try:
                 before = os.fstat(fd).st_blocks * 512
                 libc = ctypes.CDLL(None, use_errno=True)
@@ -546,7 +560,6 @@ def release_confirmed_prefix(upload_id: str, confirmed: int) -> None:
                     return
                 punch.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
                 punch.restype = ctypes.c_int
-                # KEEP_SIZE | PUNCH_HOLE: logical offsets stay stable for receipts.
                 if punch(fd, 0x03, start, confirmed-start) != 0:
                     error = ctypes.get_errno()
                     if error in (errno.EOPNOTSUPP, errno.ENOSYS, errno.EINVAL):
@@ -578,7 +591,7 @@ def read_origin_chunk(upload_id: str, offset: int, length: int) -> bytes:
 
 
 def read_pending_chunk(upload_id: str, offset: int, length: int) -> bytes:
-    with upload_lock(upload_id):
+    with content_lock(upload_id):
         db=connect_db()
         try: row=db.execute("SELECT * FROM edge_uploads WHERE id=?",(upload_id,)).fetchone()
         finally: db.close()
@@ -619,7 +632,7 @@ def read_spool_block(upload_id: str, offset: int, length: int) -> bytes:
 
 
 def delete_upload(upload_id: str, state="cancelled") -> None:
-    with upload_lock(upload_id):
+    with content_lock(upload_id), upload_lock(upload_id):
         path = DATA_DIR / (upload_id + ".part")
         try:
             path.unlink()
@@ -780,6 +793,12 @@ def replicate_one(upload_id: str) -> bool:
 
 
 def replication_loop() -> None:
+    if sys.platform.startswith("linux"):
+        try:
+            tid = threading.get_native_id()
+            os.setpriority(os.PRIO_PROCESS, tid, min(19, os.getpriority(os.PRIO_PROCESS, tid)+5))
+        except (AttributeError, OSError):
+            pass
     while not _stop_event.is_set():
         progressed = False
         for row in active_uploads():
@@ -841,7 +860,8 @@ class EdgeHandler(BaseHTTPRequestHandler):
         # HTTP/1 clients can next visit an A8 path on the same public hostname.
         # The current edge router binds an origin per TCP connection, so finish
         # this connection after its response. HTTP/3 keeps independent streams.
-        self.send_header("Connection", "close")
+        if not getattr(self, "websocket", False):
+            self.send_header("Connection", "close")
         self.close_connection = True
         super().end_headers()
 
@@ -892,6 +912,119 @@ class EdgeHandler(BaseHTTPRequestHandler):
             raise SpoolError(404, "見つかりません")
         return parts[0], parts[1:]
 
+    def websocket_read(self):
+        def exact(n):
+            value = self.rfile.read(n)
+            if len(value) != n:
+                raise EOFError("WebSocket interrupted")
+            return value
+        fragments = bytearray()
+        message_opcode = None
+        while True:
+            first, second = exact(2)
+            opcode = first & 15
+            length = second & 127
+            if first & 0x70 or not second & 0x80:
+                raise SpoolError(400, "WebSocket frame is invalid")
+            if length == 126:
+                length = struct.unpack("!H", exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", exact(8))[0]
+            if length > MAX_BLOCK_BYTES + 56 or (opcode < 8 and len(fragments)+length > MAX_BLOCK_BYTES+56):
+                raise SpoolError(413, "WebSocket frame is too large")
+            if opcode >= 8 and (not first & 0x80 or length > 125):
+                raise SpoolError(400, "WebSocket control frame is invalid")
+            mask = exact(4)
+            encoded = exact(length)
+            # Big-integer XOR runs in C; bytewise Python XOR caps a single CPU.
+            payload = (int.from_bytes(encoded,"little") ^ int.from_bytes((mask*((length+3)//4))[:length],"little")).to_bytes(length,"little")
+            if opcode == 8:
+                self.websocket_write(payload, 8)
+                return None, None
+            if opcode == 9:
+                self.websocket_write(payload, 10)
+                continue
+            if opcode == 10:
+                continue
+            if opcode in (1,2) and message_opcode is None:
+                message_opcode = opcode
+            elif opcode != 0 or message_opcode is None:
+                raise SpoolError(400, "WebSocket continuation is invalid")
+            fragments.extend(payload)
+            if first & 0x80:
+                return message_opcode, bytes(fragments)
+
+    def websocket_write(self, payload, opcode=1):
+        if isinstance(payload,dict):
+            payload=json.dumps(payload,separators=(",",":")).encode()
+        length=len(payload)
+        header=bytes([0x80|opcode])
+        header += bytes([length]) if length<126 else (b"\x7e"+struct.pack("!H",length) if length<65536 else b"\x7f"+struct.pack("!Q",length))
+        self.wfile.write(header+payload)
+
+    def serve_stream(self, upload_id):
+        self.check_origin("POST")
+        protocols=[v.strip() for v in self.headers.get("Sec-WebSocket-Protocol","").split(",")]
+        if len(protocols)!=2 or protocols[0]!="fileshare-upload-v2":
+            raise SpoolError(403,"転送認証を確認できません")
+        ticket=verify_ticket(protocols[1],upload_id,self.client_address[0])
+        key=self.headers.get("Sec-WebSocket-Key","")
+        try:
+            if len(base64.b64decode(key,validate=True))!=16: raise ValueError()
+        except Exception as exc:
+            raise SpoolError(400,"WebSocket key is invalid") from exc
+        if self.headers.get("Upgrade","").lower()!="websocket" or self.headers.get("Sec-WebSocket-Version")!="13" or "upgrade" not in self.headers.get("Connection","").lower():
+            raise SpoolError(400,"WebSocket upgrade is required")
+        if not _request_slots.acquire(timeout=10):
+            raise SpoolError(429,"A1転送サーバーが混雑しています")
+        try:
+            state=status_for(upload_id)
+            self.websocket=True
+            self.send_response(101)
+            self.send_header("Upgrade","websocket")
+            self.send_header("Connection","Upgrade")
+            self.send_header("Sec-WebSocket-Accept",base64.b64encode(hashlib.sha1((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode())
+            self.send_header("Sec-WebSocket-Protocol","fileshare-upload-v2")
+            self.end_headers()
+            self.connection.settimeout(60)
+            self.websocket_write({"type":"ready","protocol":"fileshare-upload-v2","connectionId":"","maxInFlight":16,**state})
+            stream_started=time.monotonic()
+            while True:
+                opcode,payload=self.websocket_read()
+                if opcode is None: return
+                if ticket["expiresAt"]<=int(time.time()*1000): raise SpoolError(403,"転送認証が期限切れです")
+                if opcode==1:
+                    if len(payload)>1024: raise SpoolError(413,"Control message too large")
+                    message=json.loads(payload)
+                    if not isinstance(message,dict): raise SpoolError(400,"転送要求が不正です")
+                    if message.get("type")=="ping":
+                        self.websocket_write({"type":"pong","nonce":message.get("nonce")})
+                        continue
+                    if message.get("type")=="finish" and status_for(upload_id)["offset"]==ticket["size"]:
+                        self.websocket_write({"type":"done","offset":ticket["size"]})
+                        return
+                    raise SpoolError(400,"転送要求が不正です")
+                if opcode!=2 or len(payload)<57:
+                    raise SpoolError(400,"転送フレームが不正です")
+                magic,flag,offset,logical,length=struct.unpack("!IB3xQII",payload[:24])
+                if magic!=0x46535531 or flag>1 or payload[5:8]!=b"\0\0\0" or length!=len(payload)-56 or logical!=min(state["blockBytes"],ticket["size"]-offset) or (not flag and length!=logical):
+                    raise SpoolError(400,"転送フレームが一致しません")
+                started=time.monotonic()
+                state=accept_block(ticket,offset,payload[56:],payload[24:56].hex(),"gzip" if flag else "identity")
+                self.websocket_write({"type":"ack","offset":offset+logical,"bytes":logical,"processingMs":(time.monotonic()-started)*1000})
+                if offset+logical==ticket["size"]:
+                    self.websocket_write({"type":"done","offset":ticket["size"]})
+                    print("edge-spool ingress-complete",upload_id,"received",state["receivedBytes"],"replicated",state["replicatedOffset"],"seconds",round(time.monotonic()-stream_started,3),flush=True)
+                    return
+        except SpoolError as exc:
+            if not getattr(self,"websocket",False): raise
+            self.websocket_write({"type":"error","status":exc.status,"error":str(exc)})
+            self.websocket_write(struct.pack("!H",1008),8)
+        except (EOFError,OSError,ValueError):
+            if not getattr(self,"websocket",False): raise
+        finally:
+            _request_slots.release()
+
     def do_GET(self):
         try:
             self.check_origin("GET")
@@ -899,6 +1032,9 @@ class EdgeHandler(BaseHTTPRequestHandler):
                 self.send_json(200, {"ok": True})
                 return
             upload_id, tail = self.route()
+            if tail == ["stream"]:
+                self.serve_stream(upload_id)
+                return
             if tail in (["content"],["text"]):
                 self.serve_content(upload_id, False,tail==["text"])
                 return
@@ -912,9 +1048,9 @@ class EdgeHandler(BaseHTTPRequestHandler):
             finally:
                 _request_slots.release()
         except SpoolError as exc:
-            self.send_json(exc.status, {"error": str(exc)})
+            if not getattr(self,"websocket",False): self.send_json(exc.status, {"error": str(exc)})
         except Exception:
-            self.send_json(500, {"error": "A1転送状態を取得できません"})
+            if not getattr(self,"websocket",False): self.send_json(500, {"error": "A1転送状態を取得できません"})
 
     def do_HEAD(self):
         try:

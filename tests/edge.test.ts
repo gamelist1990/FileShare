@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import http from "node:http";
+import WS from "ws-node";
+import { packBlock, PIPELINE_PROTOCOL } from "../src/shared/pipeline";
 import net from "node:net";
 import { readDurablePrefix } from "../src/server/edge-files";
 import { Database } from "bun:sqlite";
@@ -157,6 +159,9 @@ test("A1 durable publication is readable before replication, survives restart, r
       Date.now() + 3600000,
     ]);
     await spawn();
+    (child!.stdin as any).write("verify-isolation\n");
+    await (child!.stdin as any).flush();
+    await until("ISOLATED");
     const bytes = Buffer.from("durable file edge ".repeat(45000));
     const reservation = await request(
       port,
@@ -533,6 +538,184 @@ test("A1 durable publication is readable before replication, survives restart, r
     expect(
       (await readFile(app.store.blobPath(largeReservation.id))).equals(large),
     ).toBe(true);
+
+    // One authenticated socket accepts many blocks before any A8 receipt exists.
+    await command("hold", "HELD");
+    const streamBytes = Buffer.alloc(16 * 1024 * 1024 + 17, 0x53);
+    const streamReservation = (
+      await request(
+        port,
+        "/api/uploads",
+        "POST",
+        Buffer.from(
+          JSON.stringify({
+            name: "pipelined-edge.zip",
+            size: streamBytes.length,
+            space: "private",
+          }),
+        ),
+        { ...cookie, "Content-Type": "application/json" },
+      )
+    ).json();
+    const se = streamReservation.edge;
+    await request(edgePort, se.path + "/start", "POST", Buffer.from("{}"), {
+      Authorization: "Bearer " + se.ticket,
+    });
+    for (const bad of [
+      {
+        origin: "https://attacker.invalid",
+        ticket: se.ticket,
+        ip: "192.0.2.42",
+      },
+      {
+        origin: "https://share.pexserver.com",
+        ticket: "invalid.signature",
+        ip: "192.0.2.42",
+      },
+      {
+        origin: "https://share.pexserver.com",
+        ticket: se.ticket,
+        ip: "192.0.2.99",
+      },
+    ]) {
+      expect(
+        (
+          await request(
+            edgePort,
+            se.path + "/stream",
+            "GET",
+            Buffer.alloc(0),
+            {
+              Origin: bad.origin,
+              Upgrade: "websocket",
+              Connection: "Upgrade",
+              "Sec-WebSocket-Version": "13",
+              "Sec-WebSocket-Key": Buffer.alloc(16, 3).toString("base64"),
+              "Sec-WebSocket-Protocol": PIPELINE_PROTOCOL + ", " + bad.ticket,
+            },
+            bad.ip,
+          )
+        ).status,
+      ).toBe(403);
+    }
+    const streamAgent = new http.Agent({ keepAlive: false });
+    streamAgent.createConnection = ((_opts: any, callback: any) => {
+      const socket = net.connect(edgePort, "127.0.0.1", () => {
+        socket.write(preface("192.0.2.42", edgePort));
+        callback(null, socket);
+      });
+      return undefined;
+    }) as any;
+    const corrupt = new WS(
+      `ws://127.0.0.1:${edgePort}${se.path}/stream`,
+      [PIPELINE_PROTOCOL, se.ticket],
+      {
+        agent: streamAgent,
+        headers: {
+          Host: "share.pexserver.com",
+          Origin: "https://share.pexserver.com",
+        },
+      },
+    );
+    await new Promise<void>((resolve, reject) => {
+      corrupt.on("error", reject);
+      corrupt.on("message", (raw) => {
+        const message = JSON.parse(raw.toString());
+        if (message.type === "ready")
+          corrupt.send(
+            packBlock(
+              0,
+              new Uint8Array(se.blockBytes).buffer,
+              se.blockBytes,
+              "0".repeat(64),
+              false,
+            ),
+          );
+        if (message.type === "error") {
+          expect(message.status).toBe(400);
+          resolve();
+        }
+      });
+    });
+    corrupt.close();
+    expect(
+      (
+        await request(edgePort, se.path + "/status", "GET", Buffer.alloc(0), {
+          Authorization: "Bearer " + se.ticket,
+        })
+      ).json().offset,
+    ).toBe(0);
+    const stream = new WS(
+      `ws://127.0.0.1:${edgePort}${se.path}/stream`,
+      [PIPELINE_PROTOCOL, se.ticket],
+      {
+        headers: {
+          Host: "share.pexserver.com",
+          Origin: "https://share.pexserver.com",
+        },
+        agent: streamAgent,
+      },
+    );
+    const messages: any[] = [];
+    const done = new Promise<void>((resolve, reject) => {
+      stream.on("error", reject);
+      stream.on("message", (raw) => {
+        const message = JSON.parse(raw.toString());
+        messages.push(message);
+        if (message.type === "ready") {
+          expect(message.protocol).toBe(PIPELINE_PROTOCOL);
+          expect(message.replicatedOffset).toBe(0);
+          // Queue every block immediately; application ACKs still mean fsync + receipt.
+          for (
+            let offset = 0;
+            offset < streamBytes.length;
+            offset += se.blockBytes
+          ) {
+            const body = streamBytes.subarray(offset, offset + se.blockBytes);
+            const frame = Buffer.from(
+              packBlock(
+                offset,
+                Uint8Array.from(body).buffer,
+                body.length,
+                createHash("sha256").update(body).digest("hex"),
+                false,
+              ),
+            );
+            if (offset === 0) {
+              stream.send(frame.subarray(0, 80), { fin: false });
+              stream.ping("control between fragments");
+              stream.send(frame.subarray(80), { fin: true });
+            } else stream.send(frame);
+          }
+        }
+        if (message.type === "error") reject(Error(message.error));
+        if (message.type === "done") resolve();
+      });
+    });
+    await done;
+    stream.close();
+    streamAgent.destroy();
+    const streamState = (
+      await request(edgePort, se.path + "/status", "GET", Buffer.alloc(0), {
+        Authorization: "Bearer " + se.ticket,
+      })
+    ).json();
+    expect(streamState.offset).toBe(streamBytes.length);
+    expect(streamState.replicatedOffset).toBe(0);
+    expect(
+      messages.filter((m) => m.type === "ack").map((m) => m.offset),
+    ).toEqual(
+      Array.from(
+        { length: Math.ceil(streamBytes.length / se.blockBytes) },
+        (_, i) => Math.min(streamBytes.length, (i + 1) * se.blockBytes),
+      ),
+    );
+    expect(
+      (await readFile(join(dir, "a1", streamReservation.id + ".part"))).equals(
+        streamBytes,
+      ),
+    ).toBe(true);
+    await command("release", "RELEASED");
 
     // A client upgrade negotiates the existing geometry rather than corrupting an old upload.
     const oldBytes = Buffer.alloc(9 * 1024 * 1024 + 17, 0x37);

@@ -1,8 +1,11 @@
 import { prepareChunk } from "./transfer";
+import { uploadPipeline, PipelineError } from "./upload-pipeline";
+import { PIPELINE_PROTOCOL } from "../shared/pipeline";
 
 export type EdgeStatus = {
   size: number;
   blockBytes?: number;
+  pipeline?: string;
   offset: number;
   receivedBytes: number;
   replicatedOffset: number;
@@ -277,6 +280,62 @@ export async function uploadEdge(options: {
     return { offset: status.size, stopped: false, complete: true };
   if (status.replicatedOffset >= options.file.size)
     return { offset: options.file.size, stopped: false, complete: false };
+
+  if (
+    status.pipeline === PIPELINE_PROTOCOL &&
+    typeof WebSocket !== "undefined"
+  ) {
+    const url = new URL(options.path + "/stream", location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    try {
+      const result = await uploadPipeline({
+        url: url.href,
+        protocols: [PIPELINE_PROTOCOL, options.ticket],
+        connectTimeoutMs: 8000,
+        file: options.file,
+        offset: status.offset,
+        roundTripMs: 0,
+        compress: options.compress,
+        stopped: options.stopped,
+        signal: options.signal,
+        progress: options.progress,
+      });
+      if (result.stopped || options.stopped() || options.signal?.aborted)
+        return { offset: result.offset, stopped: true, complete: false };
+      status = await getEdgeStatus(
+        options.path,
+        options.ticket,
+        options.signal,
+      );
+      if (status.offset !== options.file.size)
+        throw new EdgeUploadError("A1の永続受領位置が一致しません", true);
+      return {
+        offset: status.offset,
+        stopped: false,
+        complete: status.state === "complete",
+      };
+    } catch (error) {
+      if (options.stopped() || options.signal?.aborted)
+        return { offset: status.offset, stopped: true, complete: false };
+      if (error instanceof EdgeUploadError && error.fatal) throw error;
+      if (error instanceof PipelineError && error.fatal)
+        throw new EdgeUploadError(error.message, true);
+      // Unsupported/broken WebSockets resume from A1's durable receipts over HTTP.
+      status = await getEdgeStatus(
+        options.path,
+        options.ticket,
+        options.signal,
+      );
+      if (
+        !Number.isSafeInteger(status.offset) ||
+        status.offset < 0 ||
+        status.offset > options.file.size ||
+        (status.offset !== options.file.size &&
+          status.offset % blockBytes !== 0)
+      )
+        throw new EdgeUploadError("A1の再開位置が不正です", true);
+    }
+  }
 
   let contiguous = status.offset;
   const transfers = new AbortController();
