@@ -88,7 +88,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
               />
             </div>
             <p className="muted">
-              既定の保存期間上限は30日（43,200分）です。各投稿者は1分から上限まで設定できます。期間上限は新規投稿と期間の変更に適用し、既存ファイルの期限は維持します。容量上限は転送の開始・再開・確定時に適用します。
+              期限付き保存の既定上限は30日です。スタッフは共有ストレージで無期限を選択でき、管理者はすべての保存先で無期限にできます。プライベートは無期限が初期値です。期間上限は新規投稿と期間の変更に適用し、既存ファイルの期限は維持します。容量上限は転送の開始・再開・確定時に適用します。
             </p>
             {[
               ["trackDownloads", "ダウンロード数を記録する"],
@@ -259,6 +259,7 @@ export function FileAdminTools({ users, request, run, refresh }: Props) {
                 key={editing.id}
                 label="投稿からの保存期間"
                 name="retention"
+                unlimited
                 keepCurrent
                 max={Math.floor((policy?.maxRetentionSeconds ?? 2592000) / 60)}
               />

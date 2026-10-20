@@ -41,17 +41,18 @@ export function UserManager({
             ユーザー管理 <small>{data.total}人</small>
           </h2>
         </div>
+        <button
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              await load(0);
+              await onChange();
+            })
+          }
+        >
+          更新
+        </button>
       </div>
-      <button
-        onClick={() =>
-          void run(async () => {
-            await load(0);
-            await onChange();
-          })
-        }
-      >
-        更新
-      </button>
       <form
         className="manager-filters"
         onSubmit={(e) => {

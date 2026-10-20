@@ -256,8 +256,70 @@ try {
     .selectOption("public");
   await page.getByRole("button", { name: "設定を保存" }).click();
   await page.getByRole("button", { name: "Admin", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "ダッシュボード", exact: true })
+    .waitFor();
+  for (
+    let n = 0;
+    n < 3 &&
+    (await page.locator(".toast:not(.toast-leaving) .toast-dismiss").count());
+    n++
+  )
+    await page
+      .locator(".toast:not(.toast-leaving) .toast-dismiss")
+      .first()
+      .click();
+  await page.locator(".toast").first().waitFor({ state: "detached" });
+  await page.screenshot({
+    path: ".artifacts/admin-dashboard-desktop.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("navigation", { name: "管理メニュー" })
+    .getByRole("button", { name: "ユーザー", exact: true })
+    .click();
   await page.getByRole("heading", { name: /ユーザー管理/ }).waitFor();
+  if (await page.locator("#admin-volumes").isVisible())
+    throw Error(
+      "User management must not mix drive settings into the same view",
+    );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByLabel("管理項目を選択", { exact: true })
+    .selectOption("overview");
+  await page.screenshot({
+    path: ".artifacts/admin-dashboard-mobile.png",
+    fullPage: true,
+  });
+  await page
+    .getByLabel("管理項目を選択", { exact: true })
+    .selectOption("storage");
+  await page.locator("#admin-volumes").waitFor();
+  if (await page.locator("#admin-users").isVisible())
+    throw Error("Mobile storage view did not switch its content");
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "全体", exact: true }).click();
+  await page
+    .locator("#admin-records tbody tr")
+    .filter({ hasText: "browser-proof.txt" })
+    .getByRole("button", { name: "記録を調整" })
+    .click();
+  await page
+    .getByLabel("投稿からの保存期間", { exact: true })
+    .selectOption("0");
+  await page
+    .getByRole("button", { name: "ファイル記録を保存", exact: true })
+    .click();
+  await page.locator(".screen-page").waitFor({ state: "detached" });
+  const changed = app.store.db
+    .query(
+      "SELECT m.expires_at FROM item_meta m JOIN items i ON i.id=m.item_id WHERE i.name='browser-proof.txt'",
+    )
+    .get() as any;
+  if (changed.expires_at !== null)
+    throw Error(
+      "Administrator record editing must support unlimited retention",
+    );
   for (const name of ["review_pending_one", "review_pending_two"])
     app.store.db.run("INSERT INTO users VALUES (?,?,?,?,?,?,?)", [
       name,
@@ -516,6 +578,28 @@ try {
     .getByRole("button", { name: "パスキーでログイン", exact: true })
     .click();
   await staffPage.getByText("Level 3 · スタッフ", { exact: true }).waitFor();
+  await staffPage
+    .getByLabel("投稿からの保存期間", { exact: true })
+    .selectOption("0");
+  await staffPage
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles({
+      name: "staff-unlimited-public.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("staff public unlimited"),
+    });
+  await staffPage
+    .getByRole("button", { name: "staff-unlimited-public.txt", exact: true })
+    .waitFor();
+  const staffUnlimited = app.store.db
+    .query(
+      "SELECT m.expires_at,i.owner FROM items i JOIN item_meta m ON m.item_id=i.id WHERE i.name='staff-unlimited-public.txt'",
+    )
+    .get() as any;
+  if (staffUnlimited.expires_at !== null || staffUnlimited.owner !== null)
+    throw Error("Staff shared upload must accept unlimited retention");
+
   async function expectStaffCapacity(value: string, bytes: number) {
     await staffPage
       .locator(".hero-note strong")

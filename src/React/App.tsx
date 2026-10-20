@@ -1,3 +1,4 @@
+import { AdminWorkspace, initialAdminTab } from "./AdminWorkspace";
 import { UserManager, VolumeManager } from "./ManagerTools";
 import { PasskeyPage } from "./PasskeyPage";
 import { PreviewContent } from "./PreviewContent";
@@ -70,7 +71,7 @@ export function App() {
   const [dropFiles, setDropFiles] = useState<File[] | null>(null),
     [draggingFiles, setDraggingFiles] = useState(false),
     [uploadTags, setUploadTags] = useState("");
-  const [managerTab, setManagerTab] = useState("users");
+  const [managerTab, setManagerTab] = useState(initialAdminTab);
   const [keyResult, setKeyResult] = useState<{
     id: string;
     key: string;
@@ -132,10 +133,16 @@ export function App() {
     [transferPhase, setTransferPhase] = useState<
       "uploading" | "paused" | "cancelling" | null
     >(null);
+  const [destinationOwner, setDestinationOwner] = useState<string | null>(null);
+  const retentionSpace = parent
+    ? destinationOwner
+      ? "private"
+      : "shared"
+    : space;
   useEffect(() => {
     const raw = document.cookie
       .split("; ")
-      .find((x) => x.startsWith("fs-retention-" + space + "="))
+      .find((x) => x.startsWith("fs-retention-" + retentionSpace + "="))
       ?.split("=")[1];
     const saved = raw === undefined ? NaN : Number(raw);
     const privileged = !!user && [1, 3, 4].includes(user.level);
@@ -145,14 +152,14 @@ export function App() {
             saved,
             Math.floor((filePolicy?.maxRetentionSeconds ?? 2592000) / 60),
           )
-        : space === "private" && privileged
+        : retentionSpace === "private" && privileged
           ? 0
           : Math.floor((filePolicy?.maxRetentionSeconds ?? 2592000) / 60),
     );
-  }, [space, user?.id, user?.level, filePolicy?.maxRetentionSeconds]);
+  }, [retentionSpace, user?.id, user?.level, filePolicy?.maxRetentionSeconds]);
   const rememberRetention = (value: number) => {
     setRetentionMinutes(value);
-    document.cookie = `fs-retention-${space}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
+    document.cookie = `fs-retention-${retentionSpace}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
   };
   useEffect(() => {
     let depth = 0;
@@ -264,6 +271,9 @@ export function App() {
     if (request !== listingRequest.current || scope !== listingScope.current)
       return;
     setItems(d.items);
+    setDestinationOwner(
+      d.parent?.owner ?? (space === "private" ? (user?.id ?? null) : null),
+    );
     setWritable(d.writable);
     setUploadable(d.uploadable);
     setUsage(d.usage);
@@ -345,6 +355,7 @@ export function App() {
       setInvite((value) => ({ ...value, id }));
       const item: Item = await api("/api/items/" + encodeURIComponent(id));
       if (item.folder) {
+        setDestinationOwner(item.owner);
         setParent(item.id);
         setCrumbs([{ id: item.id, name: item.name }]);
       } else {
@@ -360,6 +371,7 @@ export function App() {
   useEffect(() => {
     const pop = () => {
       // Closing a task must keep the current folder and breadcrumb intact.
+      if (location.pathname === "/admin") setManagerTab(initialAdminTab());
       if (routePath.current === location.pathname) return;
       routePath.current = location.pathname;
       setAdmin(location.pathname === "/admin");
@@ -432,6 +444,7 @@ export function App() {
     setCrumbs([]);
   };
   const enter = (i: Item) => {
+    setDestinationOwner(i.owner);
     setParent(i.id);
     setCrumbs([...crumbs, { id: i.id, name: i.name }]);
   };
@@ -896,7 +909,7 @@ export function App() {
   useNotice(error, setError, "error");
   return (
     <>
-      <header className="site-nav">
+      <header className={admin ? "site-nav admin-site-nav" : "site-nav"}>
         <a className="brand" href="https://pexserver.com">
           <img src="/server.png" alt="" />
           <span>
@@ -957,7 +970,12 @@ export function App() {
           )}
         </div>
       </header>
-      <main data-admin-tab={admin ? managerTab : undefined}>
+      <main
+        className={
+          admin && user?.level === 4 && overview ? "admin-page" : undefined
+        }
+        data-admin-tab={admin ? managerTab : undefined}
+      >
         <section className="hero">
           <div>
             <p className="eyebrow">
@@ -990,134 +1008,104 @@ export function App() {
         {admin ? (
           user?.level === 4 && overview ? (
             <>
-              <nav
-                className="admin-jumps manager-navigation"
-                aria-label="管理メニュー"
+              <AdminWorkspace
+                tab={managerTab}
+                onTab={(tab) => {
+                  setManagerTab(tab);
+                  history.replaceState({}, "", "/admin?view=" + tab);
+                }}
+                overview={overview}
+                refresh={() =>
+                  run(async () => {
+                    await loadAdmin();
+                    await refreshMe();
+                  })
+                }
               >
-                {[
-                  ["all", "全体"],
-                  ["users", "ユーザー"],
-                  ["storage", "ストレージ"],
-                  ["access", "登録・招待"],
-                  ["ai", "AI監視"],
-                  ["audit", "ログ・審査"],
-                ].map(([value, label]) => (
-                  <button
-                    key={value}
-                    aria-pressed={managerTab === value}
-                    onClick={() => setManagerTab(value)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </nav>
-              <section className="manager-summary">
-                <div>
-                  <small>登録ユーザー</small>
-                  <strong>
-                    {overview.metrics?.users ?? overview.users.length}
-                  </strong>
-                </div>
-                <div>
-                  <small>承認待ち</small>
-                  <strong>
-                    {overview.metrics?.pending ??
-                      overview.users.filter((u: any) => u.status === "pending")
-                        .length}
-                  </strong>
-                </div>
-                <div>
-                  <small>使用容量</small>
-                  <strong>
-                    {size(overview.usage.used)} / {size(overview.capacity)}
-                  </strong>
-                </div>
-                <div>
-                  <small>A8への保存待ち</small>
-                  <strong>{overview.metrics?.replicas ?? 0}</strong>
-                </div>
-              </section>
-              <UserManager
-                request={api}
-                run={run}
-                onChange={async () => {
-                  await loadAdmin();
-                  await refreshMe();
-                }}
-              />
-              <VolumeManager request={api} run={run} onChange={loadAdmin} />
-              <AdminTools
-                users={overview.users}
-                reports={overview.reports}
-                refresh={async () => {
-                  await loadAdmin();
-                  await refreshMe();
-                }}
-                request={api}
-                run={run}
-              />
-              <section className="panel" id="admin-cleanup">
-                <div className="section-title">
-                  <h2>ごみ箱とストレージ整理</h2>
-                  <div className="actions">
-                    <button onClick={() => maintenance("cleanup")}>
-                      期限切れ転送・不要データを整理
-                    </button>
-                    <button
-                      disabled={!trashSelection.length}
-                      onClick={() => maintenance("restore")}
-                    >
-                      復元
-                    </button>
-                    <button
-                      className="danger"
-                      disabled={!trashSelection.length}
-                      onClick={() => maintenance("purge")}
-                    >
-                      完全削除
-                    </button>
+                <UserManager
+                  request={api}
+                  run={run}
+                  onChange={async () => {
+                    await loadAdmin();
+                    await refreshMe();
+                  }}
+                />
+                <VolumeManager request={api} run={run} onChange={loadAdmin} />
+                <AdminTools
+                  users={overview.users}
+                  reports={overview.reports}
+                  refresh={async () => {
+                    await loadAdmin();
+                    await refreshMe();
+                  }}
+                  request={api}
+                  run={run}
+                />
+                <section className="panel" id="admin-cleanup">
+                  <div className="section-title">
+                    <h2>ごみ箱とストレージ整理</h2>
+                    <div className="actions">
+                      <button onClick={() => maintenance("cleanup")}>
+                        期限切れ転送・不要データを整理
+                      </button>
+                      <button
+                        disabled={!trashSelection.length}
+                        onClick={() => maintenance("restore")}
+                      >
+                        復元
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={!trashSelection.length}
+                        onClick={() => maintenance("purge")}
+                      >
+                        完全削除
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <p className="muted">
-                  自動整理は期限切れの転送と未登録データが対象です。ごみ箱のファイルは完全削除するまで容量に含まれます。フォルダは親から順に復元してください。
-                </p>
-                {overview.trash.length ? (
-                  <ul className="trash-list">
-                    {overview.trash.map((i: any) => (
-                      <li key={i.id}>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={trashSelection.includes(i.id)}
-                            onChange={(e) =>
-                              setTrashSelection(
-                                e.target.checked
-                                  ? [...trashSelection, i.id]
-                                  : trashSelection.filter((id) => id !== i.id),
-                              )
-                            }
-                          />
-                          {i.folder ? "▱" : "▤"} {i.name}{" "}
-                          <small>{size(i.size)}</small>
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="empty">ごみ箱は空です</p>
-                )}
-              </section>
-              <section className="panel">
-                <h2>未完了の転送</h2>
-                {overview.uploads.map((u: any) => (
-                  <p key={u.id}>
-                    {u.name} · {size(u.offset)} / {size(u.size)}
+                  <p className="muted">
+                    自動整理は期限切れの転送と未登録データが対象です。ごみ箱のファイルは完全削除するまで容量に含まれます。フォルダは親から順に復元してください。
                   </p>
-                ))}
-                {!overview.uploads.length && (
-                  <p className="muted">未完了の転送はありません</p>
-                )}
-              </section>
+                  {overview.trash.length ? (
+                    <ul className="trash-list">
+                      {overview.trash.map((i: any) => (
+                        <li key={i.id}>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={trashSelection.includes(i.id)}
+                              onChange={(e) =>
+                                setTrashSelection(
+                                  e.target.checked
+                                    ? [...trashSelection, i.id]
+                                    : trashSelection.filter(
+                                        (id) => id !== i.id,
+                                      ),
+                                )
+                              }
+                            />
+                            {i.folder ? "▱" : "▤"} {i.name}{" "}
+                            <small>{size(i.size)}</small>
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="empty">ごみ箱は空です</p>
+                  )}
+                </section>
+                <section className="panel" id="admin-transfers">
+                  <h2>未完了の転送</h2>
+                  {overview.uploads.map((u: any) => (
+                    <p key={u.id}>
+                      {u.name} · {size(u.offset)} / {size(u.size)}
+                    </p>
+                  ))}
+                  {!overview.uploads.length && (
+                    <p className="muted">未完了の転送はありません</p>
+                  )}
+                </section>
+              </AdminWorkspace>
             </>
           ) : (
             <section className="panel">
