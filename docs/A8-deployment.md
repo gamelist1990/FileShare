@@ -216,3 +216,19 @@ fetchだけに依存していたブロック送信をXHRへ変更し、upload pr
 FerrumProxy `8fd865b` のHTTP/3修正も[CI run 39352022074](https://github.com/gamelist1990/FerrumProxy/actions/runs/39352022074)成功後にWebインスタンスのみ反映した。転送が進んでいても90秒で切断していた応答待ちを、originへの送信進行で延長する90秒無通信制限へ変更した。GUIで更新を選択した時点でブラウザの確認画面が操作不能になり、ダイアログAPI・閉じる・Escapeも復旧しなかったため、既存認証によるGUIと同じ管理APIをloopbackから使用してWebのみ更新・起動した。認証情報は出力していない。Webは `2026.10.20-8fd865b` PID571797、ARM64 SHA-256 `409a6e8817c4beea73dc56977d70f16723794484f95fa068936ad1096e9eca73`。サバイバルPID556976・VoiceChat PID556992とバージョンを保持。バックアップはA1 `~/.local/share/fileshare-edge-backups/ferrum-http3-active-20261020T011415Z/`。
 
 本番のFileShare・ai-inference・A1 receiver・FerrumProxyはactive。公開healthzとedge healthzは200。公開IP・証明書検証付きHTTP/3 healthzは200、wget Rangeは1024 bytesを取得した。公開index.js SHA-256 `04fc0d03c82e9ff192f1f0ef6f6f207076ed905aeab53e94785099135c0f1527` はローカル生成物と一致。ユーザー本人の回線での1GB.zip再試行は未実施。
+
+### 2026-10-20: A1エッジ WebSocket パイプライン転送・ストレージ解放バッチング（2.20）反映済み
+
+をpushし、release-2.20 Linux x64をA8へ配置した。実行ファイルSHA-256 。A1 receiverはSHA-256 へ更新した。A8バックアップは 、A1は 。本番の前後ともデータ、ユーザー、設定を完全保持。FileShareとA1 edge-spoolはactive。
+
+A1スプールアップロードにWebSocket（fileshare-upload-v2）による低遅延パイプライン転送を追加。クライアントは複数ブロックを先行送信し、A1でSHA-256検証・永続化されたブロックのACKを受信して進捗を更新する。切断や非対応環境時はHTTP（XHR）フォールバックで耐久ブロックから安全にレジュームする。A1スプール側はcontent_lockの分離とRECLAIM_BATCH_BYTES（16MiB）のバッチ解放により、ディスクI/Oと受領ACKのロック競合を解消した。
+
+58テスト758 assertions、型検査、Playwright実ChromiumによるWebSocket/HTTPフォールバック検証、CPUプレビュー、ブラウザUI検証にすべて成功。本番反映後、https://share.pexserver.com/healthz（200 OK）およびhttps://share.pexserver.com/edge-upload/healthz（200 OK）の正常応答を確認。
+﻿
+### 2026-10-20: A1エッジ WebSocket パイプライン転送・ストレージ解放バッチング（2.20）反映済み
+
+`cf39100`をpushし、release-2.20 Linux x64をA8へ配置した。実行ファイルSHA-256 `e7042f3d7943cdeeba56bdae579a7b70b84b06c48201e4d8f674eac3548991bb`。A1 receiverはSHA-256 `d9fd7a3324b00cd679e8b05c155ce689e82fdb8e7d4a89219f0044622281f9da`へ更新した。A8バックアップは `~/.local/opt/pex-fileshare/backups/edge-pipeline-2.20-20261020T025234Z/`、A1は `~/.local/share/fileshare-edge-backups/edge-pipeline-2.20-20261020T025238Z/`。本番の前後ともデータ、ユーザー、設定を完全保持。FileShareとA1 edge-spoolはactive。
+
+A1スプールアップロードにWebSocket（fileshare-upload-v2）による低遅延パイプライン転送を追加。クライアントは複数ブロックを先行送信し、A1でSHA-256検証・永続化されたブロックのACKを受信して進捗を更新する。切断や非対応環境時はHTTP（XHR）フォールバックで耐久ブロックから安全にレジュームする。A1スプール側はcontent_lockの分離とRECLAIM_BATCH_BYTES（16MiB）のバッチ解放により、ディスクI/Oと受領ACKのロック競合を解消した。
+
+58テスト758 assertions、型検査、Playwright実ChromiumによるWebSocket/HTTPフォールバック検証、CPUプレビュー、ブラウザUI検証にすべて成功。本番反映後、https://share.pexserver.com/healthz（200 OK）およびhttps://share.pexserver.com/edge-upload/healthz（200 OK）の正常応答を確認。
