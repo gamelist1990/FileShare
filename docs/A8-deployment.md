@@ -200,3 +200,19 @@ HTTP/1で同じ接続を再利用したリダイレクトがA8へ誤配送され
 55テスト678 assertions、型検査、依存監査（検出0）、WebAuthnブラウザ、実行ファイル転送、CPU動画検証が成功。ブラウザ試験ではスタッフが共有へ無期限を選んで投稿し、owner=NULL・expires_at=NULLで保存されたこと、管理者用ファイル記録編集で無期限を選びexpires_at=NULLにできることを確認。個人領域の無期限初期値と明示的に選択した60分のCookie復元も継続検証。管理ダッシュボード、PCカテゴリの分離、スマホの項目切替、320/390/700pxでのページ横はみ出し防止を確認。CI fileshare-ui artifactにadmin-dashboard-desktop.png、admin-dashboard-mobile.pngを保存した。本番ユーザーでの試験投稿・期限変更や新規パスキー作成は行っていない。
 
 本番healthz、公開IP・証明書検証付きHTTP/3 healthz 200、wget Range 1024 bytes、匿名の`/admin?view=storage`が401を確認。公開JS SHA-256 `ca0e1dedbb3e50dbd036cf12b263ebff741deae96208d31c3a41f0074a7a857d`、theme.css `d3a42626fc2d47c4214216b4b62b3b8d07928aa7c8a98de1bb1b49ab0899650a` はローカル最終生成物と一致する。
+
+### 2026-10-20: A1受信の停止回復・実送信進捗（2.19）
+
+`7e31605`をpushし、[CI run 39352038268](https://github.com/gamelist1990/FileShare/actions/runs/39352038268)成功後、release-2.19 Linux x64をA8へ配置した。実行ファイルSHA-256 `bc6be827cf6a2abf0255b57b2a91d971c5f7693d20ce1565931c61ea5b99da1a`。A1 receiverはSHA-256 `59710f80a11db6aac6879b97101e61f5255098aca54c1aa5df6005cacf9f0c22`へ更新した。A8バックアップは `~/.local/opt/pex-fileshare/backups/stable-ingress-2.19-20261020T011316Z/`、A1は `~/.local/share/fileshare-edge-backups/stable-ingress-2.19-20261020T011317Z/`。本番の前後とも削除されていない項目11件938,855,259 bytes、承認済みスタッフ3・管理者1、パスキー5、アップロード0。以前の記録からの件数減少を復元せず、配置直前の現状を保持した。
+
+新規のA1転送は大容量ファイルも最大1MiBブロックで4本並列送信する。A1は全体を予約し、A8の転送速度に依存せず受信を継続する。A8へ反映・fsync確認した部分だけを解放する方式、24GBの予約上限と8GBの空き余裕は維持。既存8MiB予約の再開はA1の実ブロックサイズを通知して互換性を保つ。A8内部の署名済みreplication経路は、WebSocket用のサイズ固定を外し、上限8MiB・順序・実ファイルサイズ・SHA-256を検証してedge専用サイズを受け入れる。
+
+fetchだけに依存していたブロック送信をXHRへ変更し、upload progressの実送信量から速度を計算する。パーセントはA1の永続受領量を使い、ネットワーク送信量を保存済みと偽らない。通信の進行で更新される45秒の無通信タイマーと、送信後45秒の受領確認タイマーを設け、停止ブロックだけを同じチェックサムで再送する。先頭ブロックの確認が遅れた場合、後続がA1の16ブロック上限を越えないよう8ブロックの先行窓で抑える。準備済みブロックは再試行時に再読込・再圧縮せず再利用。致命的エラー時は他の送信も中断。A1は途中切断を再試行可能な408で扱い、切断済みソケットへの二重エラー応答を防ぐ。
+
+58テスト747 assertions、型検査、依存監査、WebAuthnを含む既存ブラウザ検証、リリース実行ファイル転送、CPUプレビューが成功。新規試験は、実A8へのPOSTを止めたまま40MiB+37 bytesをA1へ4並列で全受領・公開し、再開後A8の原本一致まで確認した。既存8MiB予約を新しいチケットで再開する互換性も検証。Chromeの512KiB/s制限下で、受領確認前の速度表示、受領済みブロックの応答喪失後の同内容再送、A8位置0のまま全受信、応答停止時の期限処理を検証し、CIへ追加した。
+
+追加のローカル1GiB統合試験は120秒上限で終了しており、成功として扱っていない。続いて実A1上のループバック専用・別DB/秘密鍵/一時保存先の隔離HTTP受信試験を行い、1GiBを1MiBずつ4並列で22.29秒で全受領、SHA-256照合まで26.33秒で成功した。A8への転送位置0の状態でA1が全体を受領できることを確認した。公開ルート・本番ユーザー・本番DB・A8への試験データ書込は使用せず、一時データは終了時に削除済み。この数値はローカル受信・保存性能であり利用者のWAN速度を示さない。
+
+FerrumProxy `8fd865b` のHTTP/3修正も[CI run 39352022074](https://github.com/gamelist1990/FerrumProxy/actions/runs/39352022074)成功後にWebインスタンスのみ反映した。転送が進んでいても90秒で切断していた応答待ちを、originへの送信進行で延長する90秒無通信制限へ変更した。GUIで更新を選択した時点でブラウザの確認画面が操作不能になり、ダイアログAPI・閉じる・Escapeも復旧しなかったため、既存認証によるGUIと同じ管理APIをloopbackから使用してWebのみ更新・起動した。認証情報は出力していない。Webは `2026.10.20-8fd865b` PID571797、ARM64 SHA-256 `409a6e8817c4beea73dc56977d70f16723794484f95fa068936ad1096e9eca73`。サバイバルPID556976・VoiceChat PID556992とバージョンを保持。バックアップはA1 `~/.local/share/fileshare-edge-backups/ferrum-http3-active-20261020T011415Z/`。
+
+本番のFileShare・ai-inference・A1 receiver・FerrumProxyはactive。公開healthzとedge healthzは200。公開IP・証明書検証付きHTTP/3 healthzは200、wget Rangeは1024 bytesを取得した。公開index.js SHA-256 `04fc0d03c82e9ff192f1f0ef6f6f207076ed905aeab53e94785099135c0f1527` はローカル生成物と一致。ユーザー本人の回線での1GB.zip再試行は未実施。
