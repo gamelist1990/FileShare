@@ -162,7 +162,7 @@ test("A1 durable publication is readable before replication, survives restart, r
     (child!.stdin as any).write("verify-isolation\n");
     await (child!.stdin as any).flush();
     await until("ISOLATED");
-    const bytes = Buffer.from("durable file edge ".repeat(45000));
+    const bytes = Buffer.from("durable file edge ".repeat(90000));
     const reservation = await request(
       port,
       "/api/uploads",
@@ -217,16 +217,10 @@ test("A1 durable publication is readable before replication, survives restart, r
           .get(id) as any;
         db.close();
         released = receipt.released_offset;
-        expect(released).toBe(chunk.length);
-        expect(receipt.reclaimed_bytes).toBeGreaterThan(0);
-        expect(
-          (await stat(join(dir, "a1", id + ".part"))).blocks * 512,
-        ).toBeLessThan(chunk.length);
-        expect(
-          (await readFile(join(dir, "a1", id + ".part"))).equals(
-            Buffer.alloc(chunk.length),
-          ),
-        ).toBe(true);
+        // Client ingress owns A1 exclusively until all blocks are durable.
+        expect(released).toBe(0);
+        expect(receipt.reclaimed_bytes).toBe(0);
+        expect((await readFile(join(dir, "a1", id + ".part"))).equals(chunk)).toBe(true);
         await expect(readDurablePrefix(app.store, id, 0, 1)).rejects.toThrow(); // unpublished data has no public identity
       }
     }
@@ -245,7 +239,7 @@ test("A1 durable publication is readable before replication, survives restart, r
           .query("SELECT offset FROM uploads WHERE id=?")
           .get(id) as any
       ).offset,
-    ).toBe(released);
+    ).toBe(0);
     expect(app.store.usage(uid)).toEqual({ used: bytes.length, reserved: 0 });
     const redirect = await request(
       port,
@@ -257,21 +251,13 @@ test("A1 durable publication is readable before replication, survives restart, r
     expect(redirect.status).toBe(307);
     expect(redirect.headers.connection).toBe("close");
     const location = String(redirect.headers.location);
-    await expect(
-      readDurablePrefix(app.store, id, released, 1),
-    ).rejects.toThrow();
-    expect(
-      (await readDurablePrefix(app.store, id, 0, 128)).equals(
-        bytes.subarray(0, 128),
-      ),
-    ).toBe(true);
+    await expect(readDurablePrefix(app.store, id, 0, 1)).rejects.toThrow();
+    // The authorized A1 copy serves full and partial requests before replication.
     const crossing = await request(edgePort, location, "GET", Buffer.alloc(0), {
-      Range: `bytes=${released - 32}-${released + 32}`,
+      Range: "bytes=32-96",
     });
     expect(crossing.status).toBe(206);
-    expect(
-      crossing.body.equals(bytes.subarray(released - 32, released + 33)),
-    ).toBe(true);
+    expect(crossing.body.equals(bytes.subarray(32, 97))).toBe(true);
     const served = await request(edgePort, location);
     expect(served.status).toBe(200);
     expect(served.headers.connection).toBe("close");
@@ -493,7 +479,7 @@ test("A1 durable publication is readable before replication, survives restart, r
       expect(r.status).toBe(200);
     };
     await send(0);
-    await until("BLOCKED");
+    // A8 does not receive data until the last client block is durable.
     for (
       let offset = e.blockBytes;
       offset < large.length;
@@ -525,6 +511,7 @@ test("A1 durable publication is readable before replication, survives restart, r
       ).status,
     ).toBe(200);
     expect(app.store.item(largeReservation.id)).not.toBeNull();
+    await until("BLOCKED");
     await command("release", "RELEASED");
     for (let n = 0; n < 200; n++) {
       if (

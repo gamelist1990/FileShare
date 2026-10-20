@@ -184,8 +184,10 @@ def verify_ticket(value: str, expected_id: str, client_ip: str, allow_expired=Fa
     return ticket
 
 
-def status_for(upload_id: str) -> dict:
-    connection = connect_db()
+def status_for(upload_id: str, connection: sqlite3.Connection | None = None) -> dict:
+    owns_connection = connection is None
+    if owns_connection:
+        connection = connect_db()
     try:
         row = connection.execute(
             "SELECT * FROM edge_uploads WHERE id=?", (upload_id,)
@@ -214,7 +216,8 @@ def status_for(upload_id: str) -> dict:
             **({"error": row["error"]} if row["error"] else {}),
         }
     finally:
-        connection.close()
+        if owns_connection:
+            connection.close()
 
 
 def reserve_spool(ticket: dict) -> dict:
@@ -333,89 +336,27 @@ def contiguous_offset(connection: sqlite3.Connection, upload_id: str, current: i
 
 
 def accept_block(ticket: dict, offset: int, encoded: bytes, checksum: str, encoding: str) -> dict:
-    size, block_bytes, upload_id = ticket["size"], ticket["blockBytes"], ticket["id"]
-    # Resume old 8 MiB reservations with new clients without rewriting receipts.
-    db = connect_db()
+    """Commit each unique block after fdatasync, with O(1) receipt accounting."""
+    size, upload_id = ticket["size"], ticket["id"]
+    connection = connect_db()
     try:
-        reservation = db.execute("SELECT user_id,size,block_bytes FROM edge_uploads WHERE id=?", (upload_id,)).fetchone()
+        reservation = connection.execute(
+            "SELECT user_id,size,block_bytes FROM edge_uploads WHERE id=?", (upload_id,)
+        ).fetchone()
         if not reservation or reservation["user_id"] != ticket["userId"] or reservation["size"] != size:
             raise SpoolError(404, "A1の転送予約が見つかりません")
         block_bytes = reservation["block_bytes"]
-    finally:
-        db.close()
-    if (
-        not isinstance(offset, int)
-        or offset < 0
-        or offset >= size
-        or offset % block_bytes
-    ):
-        raise SpoolError(400, "転送位置が不正です")
-    expected = min(block_bytes, size - offset)
-    if not re.fullmatch(r"[a-f0-9]{64}", checksum):
-        raise SpoolError(400, "チェックサムが不正です")
-    body = decode_block(encoded, encoding, expected)
-    actual_hash = hashlib.sha256(body).hexdigest()
-    if not hmac.compare_digest(actual_hash, checksum):
-        raise SpoolError(400, "チェックサムが一致しません")
+        if not isinstance(offset, int) or offset < 0 or offset >= size or offset % block_bytes:
+            raise SpoolError(400, "転送位置が不正です")
+        expected = min(block_bytes, size - offset)
+        if not re.fullmatch(r"[a-f0-9]{64}", checksum):
+            raise SpoolError(400, "チェックサムが不正です")
+        body = decode_block(encoded, encoding, expected)
+        if not hmac.compare_digest(hashlib.sha256(body).hexdigest(), checksum):
+            raise SpoolError(400, "チェックサムが一致しません")
 
-    with block_write_lock(upload_id, offset, block_bytes):
-        fd = None
-        try:
+        with block_write_lock(upload_id, offset, block_bytes):
             with upload_lock(upload_id):
-                connection = connect_db()
-                try:
-                    row = connection.execute(
-                        "SELECT * FROM edge_uploads WHERE id=?", (upload_id,)
-                    ).fetchone()
-                    if not row or row["state"] in ("cancelled", "error", "complete"):
-                        raise SpoolError(404, "A1の転送予約が見つかりません")
-                    prior = connection.execute(
-                        "SELECT length,hash FROM edge_blocks WHERE upload_id=? AND start=?",
-                        (upload_id, offset),
-                    ).fetchone()
-                    if prior:
-                        if prior["length"] != expected or not hmac.compare_digest(prior["hash"], checksum):
-                            raise SpoolError(409, "再送ブロックが一致しません")
-                        return status_for(upload_id)
-                    if offset > row["offset"] + block_bytes * MAX_AHEAD_BLOCKS:
-                        raise SpoolError(429, "先行ブロックの上限です")
-                    path = DATA_DIR / (upload_id + ".part")
-                    existed = path.exists()
-                    fd = os.open(
-                        path,
-                        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-                        0o600,
-                    )
-                    if not existed:
-                        directory = os.open(
-                            DATA_DIR,
-                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-                        )
-                        try:
-                            os.fsync(directory)
-                        finally:
-                            os.close(directory)
-                finally:
-                    connection.close()
-
-            written = 0
-            while written < len(body):
-                count = os.pwrite(fd, body[written:], offset + written)
-                if count <= 0:
-                    raise OSError("Short spool write")
-                written += count
-            if hasattr(os, "fdatasync"):
-                os.fdatasync(fd)
-            else:
-                os.fsync(fd)
-        finally:
-            if fd is not None:
-                os.close(fd)
-
-        with upload_lock(upload_id):
-            connection = connect_db()
-            try:
-                connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
                     "SELECT * FROM edge_uploads WHERE id=?", (upload_id,)
                 ).fetchone()
@@ -428,36 +369,78 @@ def accept_block(ticket: dict, offset: int, encoded: bytes, checksum: str, encod
                 if prior:
                     if prior["length"] != expected or not hmac.compare_digest(prior["hash"], checksum):
                         raise SpoolError(409, "再送ブロックが一致しません")
-                    connection.execute("ROLLBACK")
-                    return status_for(upload_id)
-                current = row["offset"]
-                if offset > current + block_bytes * MAX_AHEAD_BLOCKS:
+                    return status_for(upload_id, connection)
+                if offset > row["offset"] + block_bytes * MAX_AHEAD_BLOCKS:
                     raise SpoolError(429, "先行ブロックの上限です")
-                connection.execute(
-                    "INSERT INTO edge_blocks(upload_id,start,length,hash) VALUES (?,?,?,?)",
-                    (upload_id, offset, expected, checksum),
-                )
-                new_offset = contiguous_offset(connection, upload_id, current)
-                received = connection.execute(
-                    "SELECT COALESCE(SUM(length),0) FROM edge_blocks WHERE upload_id=?",
-                    (upload_id,),
-                ).fetchone()[0]
-                state = "ready" if row["replicated_offset"] >= size else (
-                    "syncing" if row["replicated_offset"] else "receiving"
-                )
-                connection.execute(
-                    "UPDATE edge_uploads SET offset=?,received_bytes=?,state=?,updated_at=? WHERE id=?",
-                    (new_offset, received, state, int(time.time() * 1000), upload_id),
-                )
-                connection.execute("COMMIT")
-            except Exception:
-                if connection.in_transaction:
-                    connection.execute("ROLLBACK")
-                raise
+                path = DATA_DIR / (upload_id + ".part")
+                existed = path.exists()
+                fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    if not existed:
+                        directory = os.open(DATA_DIR, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                        try:
+                            os.fsync(directory)
+                        finally:
+                            os.close(directory)
+                except Exception:
+                    os.close(fd)
+                    raise
+
+            # Release upload metadata lock during disk I/O; don't start a DB transaction.
+            try:
+                written = 0
+                while written < len(body):
+                    count = os.pwrite(fd, body[written:], offset + written)
+                    if count <= 0:
+                        raise OSError("Short spool write")
+                    written += count
+                if hasattr(os, "fdatasync"):
+                    os.fdatasync(fd)
+                else:
+                    os.fsync(fd)
             finally:
-                connection.close()
-    _work_event.set()
-    return status_for(upload_id)
+                os.close(fd)
+
+            with upload_lock(upload_id):
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    row = connection.execute(
+                        "SELECT * FROM edge_uploads WHERE id=?", (upload_id,)
+                    ).fetchone()
+                    if not row or row["state"] in ("cancelled", "error", "complete"):
+                        raise SpoolError(404, "A1の転送予約が見つかりません")
+                    prior = connection.execute(
+                        "SELECT length,hash FROM edge_blocks WHERE upload_id=? AND start=?",
+                        (upload_id, offset),
+                    ).fetchone()
+                    if prior:
+                        if prior["length"] != expected or not hmac.compare_digest(prior["hash"], checksum):
+                            raise SpoolError(409, "再送ブロックが一致しません")
+                        connection.execute("ROLLBACK")
+                        return status_for(upload_id, connection)
+                    current = row["offset"]
+                    if offset > current + block_bytes * MAX_AHEAD_BLOCKS:
+                        raise SpoolError(429, "先行ブロックの上限です")
+                    connection.execute(
+                        "INSERT INTO edge_blocks(upload_id,start,length,hash) VALUES (?,?,?,?)",
+                        (upload_id, offset, expected, checksum),
+                    )
+                    new_offset = contiguous_offset(connection, upload_id, current) if offset == current else current
+                    received = row["received_bytes"] + expected
+                    state = "ready" if row["replicated_offset"] >= size else ("syncing" if new_offset == size else "receiving")
+                    connection.execute(
+                        "UPDATE edge_uploads SET offset=?,received_bytes=?,state=?,updated_at=? WHERE id=?",
+                        (new_offset, received, state, int(time.time() * 1000), upload_id),
+                    )
+                    connection.execute("COMMIT")
+                except Exception:
+                    if connection.in_transaction:
+                        connection.execute("ROLLBACK")
+                    raise
+        _work_event.set()
+        return status_for(upload_id, connection)
+    finally:
+        connection.close()
 
 
 def internal_signature(method: str, path: str, timestamp: str, body: bytes) -> str:
@@ -663,7 +646,7 @@ def active_uploads():
     connection = connect_db()
     try:
         return connection.execute(
-            "SELECT id FROM edge_uploads WHERE state IN ('receiving','syncing','ready') ORDER BY created_at"
+            "SELECT id FROM edge_uploads WHERE offset>=size AND state IN ('receiving','syncing','ready') ORDER BY created_at"
         ).fetchall()
     finally:
         connection.close()
@@ -1022,7 +1005,7 @@ class EdgeHandler(BaseHTTPRequestHandler):
                 started=time.monotonic()
                 state=accept_block(ticket,offset,payload[56:],payload[24:56].hex(),"gzip" if flag else "identity")
                 self.websocket_write({"type":"ack","offset":offset+logical,"bytes":logical,"processingMs":(time.monotonic()-started)*1000})
-                if offset+logical==ticket["size"]:
+                if state["offset"]==ticket["size"]:
                     self.websocket_write({"type":"done","offset":ticket["size"]})
                     print("edge-spool ingress-complete",upload_id,"received",state["receivedBytes"],"replicated",state["replicatedOffset"],"seconds",round(time.monotonic()-stream_started,3),flush=True)
                     return
