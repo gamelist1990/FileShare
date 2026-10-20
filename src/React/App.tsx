@@ -71,6 +71,8 @@ async function api(path: string, method = "GET", body?: unknown) {
   return d;
 }
 export function App() {
+  const [purgeAllConfirm, setPurgeAllConfirm] = useState("");
+  const [trashFilter, setTrashFilter] = useState("");
   const [dropFiles, setDropFiles] = useState<File[] | null>(null),
     [draggingFiles, setDraggingFiles] = useState(false),
     [uploadTags, setUploadTags] = useState("");
@@ -100,7 +102,7 @@ export function App() {
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [authOpen, setAuthOpen] = useState(false),
-    [task, setTask] = useState<"folder" | "trash" | "purge" | null>(null),
+    [task, setTask] = useState<"folder" | "trash" | "purge" | "purgeAll" | null>(null),
     [folderName, setFolderName] = useState(""),
     [registration, setRegistration] = useState(false),
     [autoApprove, setAutoApprove] = useState(false),
@@ -1015,6 +1017,16 @@ export function App() {
         } else if (task === "trash") {
           await api("/api/trash", "POST", { ids: selected });
           await refresh();
+        } else if (task === "purgeAll") {
+          if (purgeAllConfirm !== "完全削除") return;
+          const result = await api("/api/admin/maintenance", "POST", {
+            action: "purge-all", ids: [],
+          });
+          setTrashSelection([]);
+          setTrashFilter("");
+          setPurgeAllConfirm("");
+          await loadAdmin();
+          setMessage(`ごみ箱を空にしました（${result.removed}件）`);
         } else if (task === "purge") {
           await api("/api/admin/maintenance", "POST", {
             action: "purge",
@@ -1193,56 +1205,93 @@ export function App() {
                 />
                 <section className="panel" id="admin-cleanup">
                   <div className="section-title">
-                    <h2>ごみ箱とストレージ整理</h2>
+                    <div>
+                      <p className="eyebrow">STORAGE / TRASH</p>
+                      <h2>ごみ箱とストレージ整理</h2>
+                      <p className="muted">
+                        期限切れ転送や不要な一時データの整理と、ごみ箱の復元・完全削除を管理します。
+                      </p>
+                    </div>
+                  </div>
+                  <div className="actions" style={{ flexWrap: "wrap", marginBottom: 16 }}>
+                    <button onClick={() => maintenance("cleanup")}>
+                      期限切れ・一時データを今すぐ整理
+                    </button>
+                  </div>
+                  <div className="section-title">
+                    <div>
+                      <h3>ごみ箱</h3>
+                      <p className="muted">
+                        {overview.trashStats?.count ?? overview.trash.length} 件 ·
+                        {size(overview.trashStats?.bytes ?? 0)} 使用中
+                      </p>
+                    </div>
                     <div className="actions">
-                      <button onClick={() => maintenance("cleanup")}>
-                        期限切れ転送・不要データを整理
-                      </button>
                       <button
                         disabled={!trashSelection.length}
                         onClick={() => maintenance("restore")}
-                      >
-                        復元
+                      >選択を復元</button>
+                      <button className="danger" disabled={!trashSelection.length}
+                        onClick={() => maintenance("purge")}>
+                        選択を完全削除
                       </button>
-                      <button
-                        className="danger"
-                        disabled={!trashSelection.length}
-                        onClick={() => maintenance("purge")}
-                      >
-                        完全削除
+                      <button className="danger"
+                        disabled={!overview.trashStats?.count}
+                        onClick={() => { setPurgeAllConfirm(""); setTask("purgeAll"); }}>
+                        ごみ箱を空にする
                       </button>
                     </div>
                   </div>
                   <p className="muted">
-                    自動整理は期限切れの転送と未登録データが対象です。ごみ箱のファイルは完全削除するまで容量に含まれます。フォルダは親から順に復元してください。
+                    完全削除は元に戻せません。フォルダの復元は親から順に行ってください。
+                    ごみ箱内のファイルは完全削除するまで容量に含まれます。
                   </p>
                   {overview.trash.length ? (
-                    <ul className="trash-list">
-                      {overview.trash.map((i: any) => (
-                        <li key={i.id}>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={trashSelection.includes(i.id)}
-                              onChange={(e) =>
-                                setTrashSelection(
-                                  e.target.checked
-                                    ? [...trashSelection, i.id]
-                                    : trashSelection.filter(
-                                        (id) => id !== i.id,
-                                      ),
-                                )
-                              }
-                            />
-                            {i.folder ? "▱" : "▤"} {i.name}{" "}
-                            <small>{size(i.size)}</small>
-                          </label>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="empty">ごみ箱は空です</p>
-                  )}
+                    <>
+                      <div className="actions" style={{ flexWrap: "wrap", marginBottom: 12 }}>
+                        <input
+                          aria-label="ごみ箱の項目を検索"
+                          placeholder="ごみ箱内を検索…"
+                          value={trashFilter}
+                          onChange={e => setTrashFilter(e.target.value)}
+                          style={{ minWidth: 180, flex: 1 }}
+                        />
+                        <button onClick={() => setTrashSelection(
+                          overview.trash
+                            .filter((i: any) => i.name.toLowerCase().includes(trashFilter.toLowerCase()))
+                            .map((i: any) => i.id)
+                        )}>表示中をすべて選択</button>
+                        <button onClick={() => setTrashSelection([])}>選択解除</button>
+                      </div>
+                      <p className="muted">
+                        {trashSelection.length} 件選択中
+                        {(overview.trashStats?.count ?? 0) > overview.trash.length
+                          ? " · 一覧は先頭500件まで表示しています。全削除はすべての項目が対象です。"
+                          : ""}
+                      </p>
+                      <ul className="trash-list">
+                        {overview.trash
+                          .filter((i: any) => i.name.toLowerCase().includes(trashFilter.toLowerCase()))
+                          .map((i: any) => (
+                            <li key={i.id}>
+                              <label>
+                                <input
+                                  type="checkbox"
+                                  checked={trashSelection.includes(i.id)}
+                                  onChange={(e) => setTrashSelection(
+                                    e.target.checked
+                                      ? [...trashSelection, i.id]
+                                      : trashSelection.filter((id) => id !== i.id)
+                                  )}
+                                />
+                                {i.folder ? "▱" : "▤"} {i.name}{" "}
+                                <small>{size(i.size)}</small>
+                              </label>
+                            </li>
+                          ))}
+                      </ul>
+                    </>
+                  ) : <p className="empty">ごみ箱は空です</p>}
                 </section>
                 <section className="panel" id="admin-transfers">
                   <h2>未完了の転送</h2>
@@ -1762,7 +1811,7 @@ export function App() {
                 ? "フォルダを作成"
                 : task === "trash"
                   ? "ごみ箱へ移動"
-                  : "ファイルを完全削除"}
+                  : task === "purgeAll" ? "ごみ箱を空にする" : "ファイルを完全削除"}
             </h2>
             <form
               onSubmit={(e) => {
@@ -1780,6 +1829,23 @@ export function App() {
                     onChange={(e) => setFolderName(e.target.value)}
                   />
                 </label>
+              ) : task === "purgeAll" ? (
+                <div>
+                  <p>
+                    ごみ箱内の {overview?.trashStats?.count ?? 0} 件（
+                    {size(overview?.trashStats?.bytes ?? 0)}）を完全削除します。
+                    この操作は取り消せません。
+                  </p>
+                  <label>
+                    確認のため「完全削除」と入力してください
+                    <input
+                      value={purgeAllConfirm}
+                      onChange={e => setPurgeAllConfirm(e.target.value)}
+                      autoComplete="off"
+                      placeholder="完全削除"
+                    />
+                  </label>
+                </div>
               ) : (
                 <p>
                   {task === "trash"
@@ -1789,14 +1855,15 @@ export function App() {
               )}
               <button
                 type="submit"
-                className={task === "purge" ? "danger full" : "primary full"}
-                disabled={busy || (task === "folder" && !folderName.trim())}
+                className={task === "purge" || task === "purgeAll" ? "danger full" : "primary full"}
+                disabled={busy || (task === "folder" && !folderName.trim()) ||
+                  (task === "purgeAll" && purgeAllConfirm !== "完全削除")}
               >
                 {task === "folder"
                   ? "作成する"
                   : task === "trash"
                     ? "ごみ箱へ移動する"
-                    : "完全削除する"}
+                    : task === "purgeAll" ? "ごみ箱の中身をすべて完全削除" : "完全削除する"}
               </button>
               <button
                 type="button"

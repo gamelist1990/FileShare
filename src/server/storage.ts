@@ -680,6 +680,25 @@ async function performMaintenance(
   ip: string,
 ) {
   requireAdmin(user);
+  if (action === "purge-all") {
+    // Select top-level deleted roots only. A subtree is recursively removed
+    // by the existing purge operation, so descendants must not be repeated.
+    // Never touch non-trashed items or partially restored children.
+    const roots = store.db.query(
+      `SELECT i.id FROM items i WHERE i.deleted IS NOT NULL
+       AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id AND m.purged=1)
+       AND NOT EXISTS(SELECT 1 FROM items p WHERE p.id=i.parent AND p.deleted IS NOT NULL)
+       ORDER BY i.deleted ASC`
+    ).all() as { id: string }[];
+    let removed = 0;
+    for (let index = 0; index < roots.length; index += 100) {
+      const ids = roots.slice(index, index + 100).map(r => r.id);
+      await performMaintenance(store, user, "purge", ids, ip);
+      removed += ids.length;
+    }
+    store.audit(ip, user, "purge-all", String(removed));
+    return { ok: true, removed };
+  }
   if (action === "cleanup") {
     const result = await cleanup(store);
     store.audit(ip, user, "cleanup", JSON.stringify(result));

@@ -1035,6 +1035,11 @@ export async function createApp(config: Config) {
               usage: store.usage(),
               capacity: config.capacityBytes,
               cacheBytes,
+              trashStats: store.db.query(
+                `SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN i.folder=0 THEN i.size ELSE 0 END),0) AS bytes
+                 FROM items i WHERE i.deleted IS NOT NULL AND
+                 NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=i.id AND m.purged=1)`
+              ).get(),
               trash: store.db
                 .query(
                   "SELECT id,parent,name,folder,size,owner,deleted FROM items WHERE deleted IS NOT NULL AND NOT EXISTS(SELECT 1 FROM item_meta m WHERE m.item_id=items.id AND m.purged=1) ORDER BY deleted DESC LIMIT 500",
