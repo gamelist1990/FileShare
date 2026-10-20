@@ -650,7 +650,7 @@ export function App() {
                   name: file.name,
                   percent: file.size ? (bytes / file.size) * 100 : 100,
                   speed,
-                  phase: "A1で受信中",
+                  phase: "A1へ送信中",
                 }),
             });
             if (received.stopped || stop.current) {

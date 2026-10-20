@@ -194,6 +194,7 @@ def status_for(upload_id: str) -> dict:
                 receipt = dict(last)
         return {
             "size": row["size"],
+            "blockBytes": row["block_bytes"],
             "offset": row["offset"],
             "receivedBytes": row["received_bytes"],
             "replicatedOffset": row["replicated_offset"],
@@ -220,7 +221,6 @@ def reserve_spool(ticket: dict) -> dict:
             if (
                 existing["user_id"] != ticket["userId"]
                 or existing["size"] != ticket["size"]
-                or existing["block_bytes"] != ticket["blockBytes"]
             ):
                 raise SpoolError(409, "A1の予約内容が一致しません")
             if existing["state"] in ("cancelled", "error"):
@@ -277,10 +277,16 @@ def read_content_length(handler: BaseHTTPRequestHandler, maximum: int) -> bytes:
         raise SpoolError(400, "転送サイズが不正です") from exc
     if length < 0 or length > maximum:
         raise SpoolError(413, "転送ブロックが大きすぎます")
-    body = handler.rfile.read(length)
-    if len(body) != length:
-        raise SpoolError(400, "転送データが途中で切れました")
-    return body
+    handler.connection.settimeout(60)
+    try:
+        body = handler.rfile.read(length)
+        if len(body) != length:
+            raise SpoolError(408, "転送データが途中で切れました。未受領部分を再送してください")
+        return body
+    except TimeoutError as exc:
+        raise SpoolError(408, "転送が停止しました。未受領部分を再送してください") from exc
+    finally:
+        handler.connection.settimeout(None)
 
 
 def decode_block(encoded: bytes, encoding: str, expected_length: int) -> bytes:
@@ -319,6 +325,15 @@ def contiguous_offset(connection: sqlite3.Connection, upload_id: str, current: i
 
 def accept_block(ticket: dict, offset: int, encoded: bytes, checksum: str, encoding: str) -> dict:
     size, block_bytes, upload_id = ticket["size"], ticket["blockBytes"], ticket["id"]
+    # Resume old 8 MiB reservations with new clients without rewriting receipts.
+    db = connect_db()
+    try:
+        reservation = db.execute("SELECT user_id,size,block_bytes FROM edge_uploads WHERE id=?", (upload_id,)).fetchone()
+        if not reservation or reservation["user_id"] != ticket["userId"] or reservation["size"] != size:
+            raise SpoolError(404, "A1の転送予約が見つかりません")
+        block_bytes = reservation["block_bytes"]
+    finally:
+        db.close()
     if (
         not isinstance(offset, int)
         or offset < 0
@@ -843,8 +858,12 @@ class EdgeHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         if status >= 400:
             self.close_connection = True
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # A timed-out client retries from durable receipts; do not send a second response.
+            self.close_connection = True
 
     def check_origin(self, method: str):
         if self.headers.get("Host", "").split(":", 1)[0].lower() != PUBLIC_HOST.lower():

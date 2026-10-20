@@ -2,6 +2,7 @@ import { prepareChunk } from "./transfer";
 
 export type EdgeStatus = {
   size: number;
+  blockBytes?: number;
   offset: number;
   receivedBytes: number;
   replicatedOffset: number;
@@ -38,7 +39,9 @@ async function edgeRequest(
       ...(options.headers ?? {}),
     },
     body: options.body,
-    signal: options.signal,
+    signal: options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(45_000)])
+      : AbortSignal.timeout(45_000),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok)
@@ -60,37 +63,128 @@ export function getEdgeStatus(
   }) as Promise<EdgeStatus>;
 }
 
-function createProgressReporter(
+/** Track actual network progress separately from durable A1 receipts. */
+export function createProgressReporter(
   initialBytes: number,
   progress: (bytes: number, speed: number) => void,
 ) {
-  let bytes = initialBytes;
-  const samples = [{ at: performance.now(), bytes }];
+  let bytes = initialBytes,
+    sent = 0;
+  const samples = [{ at: performance.now(), sent }];
   const report = () => {
     const now = performance.now(),
       cutoff = now - 1500;
-    while (samples.length > 1 && samples[1].at <= cutoff) samples.shift();
+    samples.push({ at: now, sent });
+    while (samples.length > 2 && samples[1].at <= cutoff) samples.shift();
     const first = samples[0]!,
-      elapsed = now - first.at,
-      speed =
-        elapsed >= 250
-          ? (Math.max(0, bytes - first.bytes) / elapsed) * 1000
-          : 0;
-    progress(bytes, speed);
+      elapsed = now - first.at;
+    progress(
+      bytes,
+      elapsed >= 250 ? (Math.max(0, sent - first.sent) / elapsed) * 1000 : 0,
+    );
   };
-  const timer = window.setInterval(report, 250);
+  const timer = globalThis.setInterval(report, 250);
   return {
+    sent(delta: number) {
+      sent += Math.max(0, delta);
+      report();
+    },
     update(nextBytes: number) {
-      if (nextBytes > bytes) {
-        bytes = nextBytes;
-        samples.push({ at: performance.now(), bytes });
-      }
+      bytes = Math.max(bytes, nextBytes);
       report();
     },
     dispose() {
-      window.clearInterval(timer);
+      globalThis.clearInterval(timer);
     },
   };
+}
+
+/** Idle deadlines restart on upload activity; slow but advancing uploads stay alive. */
+export function sendEdgeBlock(options: {
+  path: string;
+  ticket: string;
+  body: ArrayBuffer;
+  headers: Record<string, string>;
+  signal?: AbortSignal;
+  sent: (delta: number) => void;
+  idleMs?: number;
+  receiptMs?: number;
+}): Promise<EdgeStatus> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false,
+      loaded = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (error?: unknown, data?: EdgeStatus) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(data!);
+    };
+    const abort = () => {
+      finish(
+        options.signal?.reason ?? new DOMException("Aborted", "AbortError"),
+      );
+      xhr.abort();
+    };
+    const arm = (ms: number) => {
+      if (settled) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        finish(
+          new EdgeUploadError(
+            "A1への送信が停止したため、未確認ブロックを再送します",
+          ),
+        );
+        xhr.abort();
+      }, ms);
+    };
+    xhr.open("PATCH", options.path);
+    xhr.setRequestHeader("Authorization", "Bearer " + options.ticket);
+    for (const [name, value] of Object.entries(options.headers))
+      xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (event) => {
+      options.sent(Math.max(0, event.loaded - loaded));
+      loaded = Math.max(loaded, event.loaded);
+      arm(options.idleMs ?? 45_000);
+    };
+    xhr.upload.onload = () => arm(options.receiptMs ?? 45_000);
+    xhr.onload = () => {
+      let data: any;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        finish(new EdgeUploadError("A1の応答を確認できません"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300)
+        finish(
+          new EdgeUploadError(
+            data.error ?? "A1への送信に失敗しました",
+            [400, 401, 403, 404, 409, 413, 507].includes(xhr.status),
+            xhr.status,
+          ),
+        );
+      else finish(undefined, data);
+    };
+    xhr.onerror = () =>
+      finish(new EdgeUploadError("A1との接続が中断されました"));
+    xhr.onabort = () =>
+      finish(new EdgeUploadError("A1への送信が中断されました"));
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    arm(options.idleMs ?? 45_000);
+    try {
+      xhr.send(options.body);
+    } catch (error) {
+      finish(error);
+    }
+  });
 }
 
 export async function uploadEdge(options: {
@@ -137,12 +231,20 @@ export async function uploadEdge(options: {
       signal: options.signal,
     },
   )) as EdgeStatus;
+  // Existing reservations retain their block geometry across an upgrade.
+  const blockBytes = status.blockBytes ?? options.blockBytes;
+  if (
+    ![256 * 1024, 1024 * 1024, 2 * 1024 * 1024, 8 * 1024 * 1024].includes(
+      blockBytes,
+    )
+  )
+    throw new EdgeUploadError("A1のブロックサイズが不正です", true);
   if (
     status.size !== options.file.size ||
     !Number.isSafeInteger(status.offset) ||
     status.offset < 0 ||
     status.offset > status.size ||
-    (status.offset !== status.size && status.offset % options.blockBytes !== 0)
+    (status.offset !== status.size && status.offset % blockBytes !== 0)
   )
     throw new EdgeUploadError("A1の再開位置が一致しません", true);
   if (status.state === "error")
@@ -176,40 +278,48 @@ export async function uploadEdge(options: {
   if (status.replicatedOffset >= options.file.size)
     return { offset: options.file.size, stopped: false, complete: false };
 
+  let contiguous = status.offset;
+  const transfers = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, transfers.signal])
+    : transfers.signal;
   let next = status.offset,
     compression = options.compress,
     failed: unknown,
     lastBytes = status.receivedBytes;
   const reporter = createProgressReporter(lastBytes, options.progress);
   const pump = async () => {
-    while (!failed && !options.stopped() && !options.signal?.aborted) {
+    while (!failed && !options.stopped() && !signal.aborted) {
+      // A lost early receipt must not let other pumps run past A1's receive window.
+      if (next > contiguous + blockBytes * 8) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
       const offset = next;
       if (offset >= options.file.size) return;
-      next += options.blockBytes;
+      next += blockBytes;
+      const prepared = await prepareChunk(
+        options.file.slice(offset, offset + blockBytes),
+        compression,
+      );
+      if (prepared.logicalBytes >= 32768 && !prepared.compressed)
+        compression = false;
       let retries = 0;
-      while (!failed && !options.stopped() && !options.signal?.aborted) {
+      while (!failed && !options.stopped() && !signal.aborted) {
         try {
-          const prepared = await prepareChunk(
-            options.file.slice(offset, offset + options.blockBytes),
-            compression,
-          );
-          if (prepared.logicalBytes >= 32768 && !prepared.compressed)
-            compression = false;
-          const result = (await edgeRequest(
-            options.path + "/chunk",
-            options.ticket,
-            "PATCH",
-            {
-              body: prepared.body,
-              signal: options.signal,
-              headers: {
-                "Content-Type": "application/octet-stream",
-                "Upload-Offset": String(offset),
-                "Upload-Checksum": prepared.checksum,
-                ...(prepared.compressed ? { "Upload-Encoding": "gzip" } : {}),
-              },
+          const result = await sendEdgeBlock({
+            path: options.path + "/chunk",
+            ticket: options.ticket,
+            body: prepared.body,
+            signal,
+            sent: reporter.sent,
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "Upload-Offset": String(offset),
+              "Upload-Checksum": prepared.checksum,
+              ...(prepared.compressed ? { "Upload-Encoding": "gzip" } : {}),
             },
-          )) as EdgeStatus;
+          });
           if (result.state === "error")
             throw new EdgeUploadError(
               result.error ?? "A1からA8への反映に失敗しました",
@@ -218,20 +328,27 @@ export async function uploadEdge(options: {
           if (
             result.size !== options.file.size ||
             !Number.isSafeInteger(result.receivedBytes) ||
+            result.receivedBytes < 0 ||
+            !Number.isSafeInteger(result.offset) ||
+            result.offset < 0 ||
+            result.offset > result.size ||
             result.receivedBytes > result.size
           )
             throw new EdgeUploadError("A1の受領位置が一致しません", true);
+          contiguous = Math.max(contiguous, result.offset);
           lastBytes = Math.max(lastBytes, result.receivedBytes);
           reporter.update(lastBytes);
           break;
         } catch (error) {
-          if (options.stopped() || options.signal?.aborted) return;
+          if (options.stopped() || signal.aborted) return;
           if (error instanceof EdgeUploadError && error.fatal) {
             failed = error;
+            transfers.abort();
             return;
           }
           if (++retries > 6) {
             failed = error;
+            transfers.abort();
             return;
           }
           await new Promise((resolve) =>
@@ -257,6 +374,7 @@ export async function uploadEdge(options: {
       complete: status.state === "complete",
     };
   } finally {
+    transfers.abort();
     reporter.dispose();
   }
 }

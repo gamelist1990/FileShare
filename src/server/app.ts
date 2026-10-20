@@ -144,13 +144,13 @@ export async function createApp(config: Config) {
       session: digestToken(session),
       clientIp: ip,
       size: row.size,
-      blockBytes: blockBytesForSize(row.size),
+      blockBytes: Math.min(1024 * 1024, blockBytesForSize(row.size)),
       expiresAt: Date.now() + 24 * 60 * 60 * 1000,
     });
     return {
       path: config.edgeSpool.path + "/" + row.id,
       ticket,
-      blockBytes: blockBytesForSize(row.size),
+      blockBytes: Math.min(1024 * 1024, blockBytesForSize(row.size)),
     };
   };
   const server = http.createServer(
@@ -608,10 +608,7 @@ export async function createApp(config: Config) {
                 checksum,
                 "identity",
                 MAX_BLOCK_BYTES,
-                Math.min(
-                  blockBytesForSize(current.size),
-                  current.size - offset,
-                ),
+                undefined, // Edge blocks have their own geometry; hash, size and sequential offset are checked by commitUploadBlock.
                 true,
               );
               json(res, 200, result);

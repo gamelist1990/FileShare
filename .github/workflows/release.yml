@@ -53,6 +53,7 @@ jobs:
         run: |
           bunx playwright install --with-deps chromium
           bun run verify:browser
+          bun scripts/verify-edge-client.ts
 
       - name: Verify native WebSocket pipeline
         run: |

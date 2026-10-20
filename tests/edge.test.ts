@@ -445,6 +445,164 @@ test("A1 durable publication is readable before replication, survives restart, r
       (await request(edgePort, String(emptyRedirect.headers.location))).body
         .length,
     ).toBe(0);
+    // A blocked A8 POST must not occupy a client receive slot or stop full ingress.
+    const large = Buffer.alloc(40 * 1024 * 1024 + 37, 0x6d);
+    const largeReservation = (
+      await request(
+        port,
+        "/api/uploads",
+        "POST",
+        Buffer.from(
+          JSON.stringify({
+            name: "slow-backend.zip",
+            size: large.length,
+            space: "private",
+          }),
+        ),
+        { ...cookie, "Content-Type": "application/json" },
+      )
+    ).json();
+    const e = largeReservation.edge;
+    expect(e.blockBytes).toBe(1024 * 1024);
+    const command = async (value: string, ack: string) => {
+      (child!.stdin as any).write(value + "\n");
+      await (child!.stdin as any).flush();
+      await until(ack);
+    };
+    await command("hold", "HELD");
+    await command("background", "BACKGROUND");
+    expect(
+      (
+        await request(edgePort, e.path + "/start", "POST", Buffer.from("{}"), {
+          Authorization: "Bearer " + e.ticket,
+        })
+      ).status,
+    ).toBe(200);
+    const send = async (offset: number) => {
+      const chunk = large.subarray(offset, offset + e.blockBytes);
+      const r = await request(edgePort, e.path + "/chunk", "PATCH", chunk, {
+        Authorization: "Bearer " + e.ticket,
+        "Upload-Offset": String(offset),
+        "Upload-Checksum": createHash("sha256").update(chunk).digest("hex"),
+      });
+      expect(r.status).toBe(200);
+    };
+    await send(0);
+    await until("BLOCKED");
+    for (
+      let offset = e.blockBytes;
+      offset < large.length;
+      offset += e.blockBytes * 4
+    )
+      await Promise.all(
+        Array.from({ length: 4 }, (_, i) => offset + i * e.blockBytes)
+          .filter((n) => n < large.length)
+          .map(send),
+      );
+    const held = (
+      await request(edgePort, e.path + "/status", "GET", Buffer.alloc(0), {
+        Authorization: "Bearer " + e.ticket,
+      })
+    ).json();
+    expect(held.offset).toBe(large.length);
+    expect(held.receivedBytes).toBe(large.length);
+    expect(held.replicatedOffset).toBe(0);
+    expect(
+      (await readFile(join(dir, "a1", largeReservation.id + ".part"))).equals(
+        large,
+      ),
+    ).toBe(true);
+    expect(
+      (
+        await request(edgePort, e.path + "/finish", "POST", Buffer.from("{}"), {
+          Authorization: "Bearer " + e.ticket,
+        })
+      ).status,
+    ).toBe(200);
+    expect(app.store.item(largeReservation.id)).not.toBeNull();
+    await command("release", "RELEASED");
+    for (let n = 0; n < 200; n++) {
+      if (
+        !app.store.db
+          .query("SELECT 1 FROM uploads WHERE id=?")
+          .get(largeReservation.id)
+      )
+        break;
+      await Bun.sleep(25);
+    }
+    expect(
+      (await readFile(app.store.blobPath(largeReservation.id))).equals(large),
+    ).toBe(true);
+
+    // A client upgrade negotiates the existing geometry rather than corrupting an old upload.
+    const oldBytes = Buffer.alloc(9 * 1024 * 1024 + 17, 0x37);
+    const oldReservation = (
+      await request(
+        port,
+        "/api/uploads",
+        "POST",
+        Buffer.from(
+          JSON.stringify({
+            name: "legacy-blocks.zip",
+            size: oldBytes.length,
+            space: "private",
+          }),
+        ),
+        { ...cookie, "Content-Type": "application/json" },
+      )
+    ).json();
+    const oldTicket = createEdgeUploadTicket(secret, {
+      v: 1,
+      scope: "edge-upload",
+      id: oldReservation.id,
+      userId: uid,
+      clientIp: "192.0.2.42",
+      size: oldBytes.length,
+      blockBytes: 8 * 1024 * 1024,
+      expiresAt: Date.now() + 3600000,
+    });
+    expect(
+      (
+        await request(
+          edgePort,
+          oldReservation.edge.path + "/start",
+          "POST",
+          Buffer.from("{}"),
+          { Authorization: "Bearer " + oldTicket },
+        )
+      ).json().blockBytes,
+    ).toBe(8 * 1024 * 1024);
+    expect(
+      (
+        await request(
+          edgePort,
+          oldReservation.edge.path + "/start",
+          "POST",
+          Buffer.from("{}"),
+          { Authorization: "Bearer " + oldReservation.edge.ticket },
+        )
+      ).json().blockBytes,
+    ).toBe(8 * 1024 * 1024);
+    for (let offset = 0; offset < oldBytes.length; offset += 8 * 1024 * 1024) {
+      const chunk = oldBytes.subarray(offset, offset + 8 * 1024 * 1024);
+      expect(
+        (
+          await request(
+            edgePort,
+            oldReservation.edge.path + "/chunk",
+            "PATCH",
+            chunk,
+            {
+              Authorization: "Bearer " + oldReservation.edge.ticket,
+              "Upload-Offset": String(offset),
+              "Upload-Checksum": createHash("sha256")
+                .update(chunk)
+                .digest("hex"),
+            },
+          )
+        ).status,
+      ).toBe(200);
+    }
     app.store.db.run("DELETE FROM sessions WHERE user_id=?", [uid]);
     expect((await request(edgePort, location)).status).toBe(403);
     expect(
