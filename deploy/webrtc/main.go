@@ -243,6 +243,18 @@ func (a *app) offer(w http.ResponseWriter, req *http.Request) {
 	// Bound peer lifetime even after browsers disappear.
 	time.AfterFunc(10*time.Minute, release)
 	peer.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		if s == webrtc.PeerConnectionStateConnected {
+			ice := peer.SCTP().Transport().ICETransport()
+			selected, err := ice.GetSelectedCandidatePair()
+			if err != nil || selected == nil {
+				log.Printf("ICE connected: selected pair unavailable")
+			} else {
+				log.Printf("ICE selected pair: local_type=%s remote_type=%s local_proto=%s remote_proto=%s relay=%t",
+					selected.Local.Typ, selected.Remote.Typ,
+					selected.Local.Protocol, selected.Remote.Protocol,
+					selected.Local.Typ == webrtc.ICECandidateTypeRelay || selected.Remote.Typ == webrtc.ICECandidateTypeRelay)
+			}
+		}
 		if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateClosed {
 			go release()
 		}
