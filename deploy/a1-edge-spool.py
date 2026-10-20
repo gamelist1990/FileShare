@@ -679,6 +679,13 @@ def replicate_one(upload_id: str) -> bool:
         connection.close()
     if not row or row["state"] in ("complete", "cancelled", "error"):
         return False
+    now = int(time.time() * 1000)
+    # Give 100% I/O and CPU to client upload while streaming actively.
+    # Start replication as soon as client finishes, or if client pauses for >10s, or disk is low.
+    if row["state"] == "receiving" and row["offset"] < row["size"] and (now - row["updated_at"] < 10000):
+        disk = os.statvfs(DATA_DIR)
+        if disk.f_bavail * disk.f_frsize > MIN_FREE_BYTES:
+            return False
     if row["state"] == "ready":
         if not row["published"]: return False
         try:

@@ -127,12 +127,12 @@ export function uploadPipeline(options: {
             !options.stopped() &&
             next < options.file.size &&
             flight.size < MAX_IN_FLIGHT &&
-            queuedWire < Math.max(8, control.window) * blockBytes
+            queuedWire < Math.max(16, control.window) * blockBytes
           ) {
             // Keep the browser network pipe saturated without unbounded memory growth.
             if (
               ws.bufferedAmount >
-              blockBytes * Math.max(8, control.window)
+              blockBytes * Math.max(16, control.window)
             ) {
               schedule();
               break;
