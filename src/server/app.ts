@@ -71,9 +71,15 @@ import {
   digestToken,
   open as openEnvelope,
 } from "@pexserver/secure-envelope";
-import { ASSETS } from "../generated/v2assets";
+import {
+  ASSETS,
+  BROWSER_ASSET_CONTEXT,
+  BROWSER_ASSET_KEY,
+} from "../generated/v2assets";
 import { adminAction } from "./admin";
 import { ranking, recordDownload } from "./files";
+import { TrafficSessions } from "./traffic-sessions";
+import type { TrafficKeys } from "@pexserver/secure-envelope/traffic";
 // Public assets contain no session data. Encode once, then reuse bounded buffers.
 const assetCache = Object.fromEntries(
   Object.entries(ASSETS).map(([path, asset]) => {
@@ -98,7 +104,12 @@ export async function createApp(config: Config) {
     previews = new Previews(store),
     bandwidth = new Bandwidth(config.rate.maxBytesPerSecond),
     edgeSecret = config.edgeSpool.enabled ? loadEdgeSecret() : null,
-    active = new Map<string, number>();
+    active = new Map<string, number>(),
+    traffic = new TrafficSessions(),
+    channelResponses = new WeakMap<
+      ServerResponse,
+      { keys: TrafficKeys; requestId: string }
+    >();
   let totalTransfers = 0,
     globalWindow = Date.now(),
     globalRequests = 0;
@@ -127,6 +138,26 @@ export async function createApp(config: Config) {
     cookie?: string,
   ) => {
     if (cookie) res.setHeader("Set-Cookie", cookie);
+    const channel = channelResponses.get(res);
+    if (channel) {
+      void traffic
+        .encode(channel.keys, channel.requestId, status, data)
+        .then((packet) => {
+          if (res.headersSent || res.destroyed) return;
+          res.writeHead(200, {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": Buffer.byteLength(packet),
+          });
+          res.end(packet);
+        })
+        .catch(() => {
+          if (!res.headersSent && !res.destroyed) {
+            res.writeHead(500, { "Content-Length": "0" });
+            res.end();
+          }
+        });
+      return;
+    }
     res.writeHead(status, {
       "Content-Type": "application/json; charset=utf-8",
     });
@@ -195,7 +226,7 @@ export async function createApp(config: Config) {
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cache-Control": "no-store",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}${config.directIpv6.enabled ? ` wss://${config.directIpv6.host}:${config.directIpv6.port}` : ""}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self' blob:; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}${config.directIpv6.enabled ? ` wss://${config.directIpv6.host}:${config.directIpv6.port}` : ""}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       };
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";
@@ -223,9 +254,10 @@ export async function createApp(config: Config) {
             throw new HttpError(429, "リクエストが多すぎます");
           }
         }
-        const url = new URL(req.url ?? "/", config.origin),
+        let url = new URL(req.url ?? "/", config.origin),
           path = url.pathname,
-          method = req.method ?? "GET";
+          method = req.method ?? "GET",
+          channelBody: unknown = undefined;
         const expectedHost = new URL(config.origin).host;
         if (req.headers.host !== expectedHost)
           throw new HttpError(421, "公開URLからアクセスしてください");
@@ -240,7 +272,43 @@ export async function createApp(config: Config) {
           req.headers.origin !== config.origin
         )
           throw new HttpError(403, "送信元を確認できません");
+        if (path === "/api/transport/open" && method === "POST") {
+          const hello = JSON.parse((await readBody(req, 4096)).toString());
+          try {
+            json(res, 200, await traffic.open(hello, ip));
+          } catch {
+            throw new HttpError(429, "安全な通信の開始回数が多すぎます");
+          }
+          return;
+        }
+        if (path === "/api/channel" && method === "POST") {
+          const sessionId = String(req.headers["x-pex-session"] ?? "");
+          const packet = (await readBody(req, 3 * 1024 * 1024)).toString("ascii");
+          let decoded;
+          try {
+            decoded = await traffic.decode(sessionId, packet, ip);
+          } catch {
+            throw new HttpError(409, "安全な通信セッションを更新してください");
+          }
+          channelResponses.set(res, {
+            keys: decoded.keys,
+            requestId: decoded.request.requestId,
+          });
+          method = decoded.request.method;
+          url = new URL(decoded.request.path, config.origin);
+          path = url.pathname;
+          channelBody = decoded.request.body;
+        }
         user = sessionUser(store, req.headers.cookie);
+        if (path === "/api/bootstrap" && method === "GET") {
+          if (!channelResponses.has(res))
+            throw new HttpError(404, "ページが見つかりません");
+          json(res, 200, {
+            key: BROWSER_ASSET_KEY,
+            context: BROWSER_ASSET_CONTEXT,
+          });
+          return;
+        }
         if (path === "/api/me" && method === "GET") {
           json(res, 200, {
             user: publicUser(user),
@@ -297,7 +365,7 @@ export async function createApp(config: Config) {
             saveProfile(
               store,
               user,
-              JSON.parse((await readBody(req, 1600000)).toString()),
+              channelBody ?? JSON.parse((await readBody(req, 1600000)).toString()),
               ip,
             ),
           );
@@ -409,7 +477,7 @@ export async function createApp(config: Config) {
             store.audit(ip, user, "auth.rate");
             throw new HttpError(429, "認証の試行回数が多すぎます");
           }
-          const data = JSON.parse((await readBody(req)).toString() || "{}");
+          const data = channelBody ?? JSON.parse((await readBody(req)).toString() || "{}");
           try {
             const result = await authRoute(
               store,
@@ -444,7 +512,7 @@ export async function createApp(config: Config) {
           return;
         }
         const data = async () =>
-          JSON.parse((await readBody(req)).toString() || "{}");
+          channelBody ?? JSON.parse((await readBody(req)).toString() || "{}");
         if (path === "/api/items/move" && method === "POST") {
           const body = await data();
           if (
@@ -556,7 +624,7 @@ export async function createApp(config: Config) {
           const upload = getUpload(store, account, webrtcOffer[1]);
           if (!store.limit("rtc-signaling:" + account.id, 12, 60_000))
             throw new HttpError(429, "接続試行が多すぎます");
-          const body = JSON.parse((await readBody(req, 140_000)).toString());
+          const body = channelBody ?? JSON.parse((await readBody(req, 140_000)).toString());
           const offer = body?.offer;
           if (!offer || offer.type !== "offer" ||
               typeof offer.sdp !== "string" || offer.sdp.length > 125_000 ||
@@ -753,7 +821,7 @@ export async function createApp(config: Config) {
         const streamStop =
           /^\/api\/uploads\/([a-f0-9-]{36})\/stream\/stop$/.exec(path);
         if (streamStop && method === "POST") {
-          const data = JSON.parse((await readBody(req)).toString());
+          const data = channelBody ?? JSON.parse((await readBody(req)).toString());
           if (
             typeof data.connectionId !== "string" ||
             data.connectionId.length > 64

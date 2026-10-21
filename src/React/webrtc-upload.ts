@@ -1,5 +1,6 @@
 import { uploadPipeline, PipelineError } from "./upload-pipeline";
 import { PIPELINE_PROTOCOL, MAX_BLOCK_BYTES, FRAME_HEADER } from "../shared/pipeline";
+import { secureApi } from "./secure-api";
 
 const FRAGMENT_PAYLOAD = 16_000;
 // Keep a short network queue so SCTP doesn't alternate between a full buffer
@@ -193,18 +194,11 @@ export async function uploadWebRTC(options: {
         await waitIceGathering(pc);
         if (options.stopped() || options.signal?.aborted)
           throw new PipelineError("転送を中断しました");
-        const response = await fetch(
+        const data = await secureApi(
           "/api/uploads/" + options.id + "/webrtc/offer",
-          {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ offer: pc.localDescription }),
-            signal: AbortSignal.timeout(16000),
-          },
+          "POST",
+          { offer: pc.localDescription },
         );
-        if (!response.ok) throw new PipelineError("P2P接続を確立できません");
-        const data = await response.json();
         if (data.answer?.type !== "answer" || typeof data.answer.sdp !== "string")
           throw new PipelineError("P2P接続情報が不正です");
         await pc.setRemoteDescription(data.answer);

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
+import { secureApi } from "./secure-api";
 export function SiteNav() {
   const [user, setUser] = useState<any>(null);
   useEffect(() => {
     const c = new AbortController();
-    fetch("/api/me", { signal: c.signal })
-      .then((r) => r.json())
+    secureApi("/api/me")
       .then((d) => setUser(d.user))
       .catch(() => {});
     return () => c.abort();

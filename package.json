@@ -1,6 +1,6 @@
 {
   "name": "fileshare",
-  "version": "2.22.0",
+  "version": "2.23.0",
   "description": "FileShare APP - Bun + React file sharing service",
   "main": "src/index.ts",
   "scripts": {
@@ -17,7 +17,7 @@
   "author": "koukunn",
   "license": "MIT",
   "dependencies": {
-    "@pexserver/secure-envelope": "https://github.com/gamelist1990/PEXSecureEnvelope/archive/22744fe1b23918367798f74a1efdd0f6e861f1ec.tar.gz",
+    "@pexserver/secure-envelope": "https://github.com/gamelist1990/PEXSecureEnvelope/archive/7261bbb19e71c58ad66e211f65cef9ccb75a1671.tar.gz",
     "@simplewebauthn/browser": "^13.2.2",
     "@simplewebauthn/server": "^13.2.2",
     "highlight.js": "^11.12.0",

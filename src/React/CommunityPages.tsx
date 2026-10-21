@@ -6,22 +6,13 @@ import { UserDirectory } from "./UserDirectory";
 import React, { useEffect, useState } from "react";
 import { FileIcon } from "./FileIcon";
 import { PreviewContent } from "./PreviewContent";
+import { secureApi as api } from "./secure-api";
 export const compactCount = (count: number) =>
   count >= 1e6
     ? `${+(count / 1e6).toFixed(1)}m`
     : count >= 1e3
       ? `${+(count / 1e3).toFixed(1)}k`
       : String(count);
-async function api(path: string, method = "GET", body?: unknown) {
-  const response = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "処理できませんでした");
-  return data;
-}
 function FileList({ items }: { items: any[] }) {
   return (
     <ul className="community-files">

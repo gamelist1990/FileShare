@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import { secureApi } from "./secure-api";
 export function UserDirectory() {
   const moreAbort = useRef<AbortController | null>(null);
   const [query, setQuery] = useState(
@@ -27,10 +28,8 @@ export function UserDirectory() {
       "",
       "/users" + (params.size ? "?" + params.toString() : ""),
     );
-    fetch("/api/users?" + params, { signal: controller.signal })
-      .then(async (r) => {
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error);
+    secureApi("/api/users?" + params)
+      .then((data) => {
         setUsers(data.users);
         setNext(data.next);
         setEnabled(data.enabled);
@@ -54,11 +53,7 @@ export function UserDirectory() {
     setError("");
     try {
       const params = new URLSearchParams({ q: search, after: next });
-      const r = await fetch("/api/users?" + params, {
-        signal: controller.signal,
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error);
+      const data = await secureApi("/api/users?" + params);
       setUsers((current) => [...current, ...data.users]);
       setNext(data.next);
     } catch (e) {

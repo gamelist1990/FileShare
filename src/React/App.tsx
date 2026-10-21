@@ -26,6 +26,7 @@ import { nextChunk, prepareChunk, compressibleName } from "./transfer";
 import { AdminTools } from "./AdminTools";
 import { FullScreenPage } from "./FullScreenPage";
 import { FileIcon } from "./FileIcon";
+import { secureApi as api } from "./secure-api";
 type User = {
   id: string;
   name: string;
@@ -59,17 +60,6 @@ const size = (n: number) =>
       : n >= 1e3
         ? (n / 1e3).toFixed(1) + " KB"
         : n + " B";
-async function api(path: string, method = "GET", body?: unknown) {
-  const r = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error ?? "処理できませんでした");
-  return d;
-}
 export function App() {
   const [trashAutoEnabled, setTrashAutoEnabled] = useState(false);
   const [trashAutoDays, setTrashAutoDays] = useState(30);

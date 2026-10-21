@@ -1,6 +1,8 @@
 /** P2P download for Fileshare's interactive download button only.
  * Inline video, audio, PDFs and preview URLs remain normal HTTP Range.
  */
+import { secureApi } from "./secure-api";
+
 const MAX_MEMORY_BYTES = 128 * 1024 * 1024;
 const MAX_PENDING = 16 * 1024 * 1024;
 function awaitICE(peer: RTCPeerConnection) {
@@ -96,14 +98,11 @@ export async function downloadWebRTC(
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await awaitICE(pc);
-      const response = await fetch("/api/items/" + item.id + "/webrtc/offer", {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ offer: pc.localDescription }),
-        signal: AbortSignal.timeout(16000),
-      });
-      if (!response.ok) throw new Error("P2P経路を利用できません");
-      const data = await response.json();
+      const data = await secureApi(
+        "/api/items/" + item.id + "/webrtc/offer",
+        "POST",
+        { offer: pc.localDescription },
+      );
       await pc.setRemoteDescription(data.answer);
       // The file picker is only used on browsers supporting streaming saves.
       // No picker is requested for small downloads: they use Blob.

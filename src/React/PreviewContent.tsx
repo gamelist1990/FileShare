@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import { CodeContent, codeLanguage } from "./CodeContent";
 import { previewKind } from "../shared/preview";
 import { CopyButton } from "./CopyButton";
+import { secureApi } from "./secure-api";
 export function PreviewContent({
   item,
   source,
@@ -19,10 +20,8 @@ export function PreviewContent({
     setText("");
     setNotice("");
     if (kind === "text" || kind === "markdown")
-      fetch(`/api/items/${item.id}/text`, { signal: abort.signal })
-        .then(async (r) => {
-          const data = await r.json();
-          if (!r.ok) throw new Error(data.error);
+      secureApi(`/api/items/${item.id}/text`)
+        .then((data) => {
           setText(data.text);
           if (data.truncated)
             setNotice(
@@ -45,10 +44,8 @@ export function PreviewContent({
     setVideoInfo(null);
     setVideoBusy(false);
     if (kind === "video")
-      fetch(`/api/items/${item.id}/preview`, { signal: controller.signal })
-        .then(async (r) => {
-          const data = await r.json();
-          if (!r.ok) throw new Error(data.error);
+      secureApi(`/api/items/${item.id}/preview`)
+        .then((data) => {
           if (controller.signal.aborted) return;
           setVideoInfo(data);
           if (data.state === "ready") setVideoSource(direct + "/preview");
@@ -63,11 +60,8 @@ export function PreviewContent({
     const controller = new AbortController();
     setStorageState(item.storageState);
     const check = () =>
-      fetch(`/api/items/${item.id}`, { signal: controller.signal })
-        .then(async (r) => {
-          const d = await r.json();
-          if (r.ok) setStorageState(d.storageState);
-        })
+      secureApi(`/api/items/${item.id}`)
+        .then((d) => setStorageState(d.storageState))
         .catch(() => {});
     void check();
     const timer = setInterval(() => {
@@ -86,15 +80,8 @@ export function PreviewContent({
       "CPUで軽量プレビューを準備しています。元の動画はそのまま再生できます。",
     );
     try {
-      let r = await fetch(`/api/items/${item.id}/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-        signal,
-      });
+      let data = await secureApi(`/api/items/${item.id}/preview`, "POST", {});
       for (let attempt = 0; attempt < 100; attempt++) {
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error);
         if (data.state === "ready") {
           setVideoSource(direct + "/preview");
           setVideoInfo({ ...videoInfo, state: "ready" });
@@ -115,7 +102,7 @@ export function PreviewContent({
           signal.addEventListener("abort", abort, { once: true });
           if (signal.aborted) abort();
         });
-        r = await fetch(`/api/items/${item.id}/preview`, { signal });
+        data = await secureApi(`/api/items/${item.id}/preview`);
       }
       throw new Error("変換中です。しばらくしてから再度開いてください。");
     } catch (e) {

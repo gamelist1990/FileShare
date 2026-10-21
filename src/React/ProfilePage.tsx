@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { FileIcon } from "./FileIcon";
 import { CopyButton } from "./CopyButton";
 import { useNotify } from "./Toast";
+import { secureApi as api } from "./secure-api";
 
 type Profile = {
   id: string;
@@ -15,16 +16,6 @@ type Profile = {
   cover: string | null;
   coverPosition: number;
 };
-async function api(path: string, method = "GET", body?: unknown) {
-  const r = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || "処理できませんでした");
-  return data;
-}
 const count = (n: number) =>
   new Intl.NumberFormat("en", {
     notation: "compact",

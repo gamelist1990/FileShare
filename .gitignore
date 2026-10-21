@@ -15,6 +15,7 @@ config.local.json
 # Generated bundles and local experiments
 public/index.js
 public/index.html
+public/app.bin
 __pycache__/
 *.pyc
 .env

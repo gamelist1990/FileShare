@@ -559,7 +559,7 @@ try {
     fullPage: true,
   });
   const staffVerification = staffPage.waitForResponse(
-    (r) => r.url().endsWith("/api/auth/register/verify"),
+    (r) => r.url().endsWith("/api/channel"),
     { timeout: 10000 },
   );
   await staffPage
@@ -572,7 +572,7 @@ try {
   console.log(
     "Staff registration response:",
     registrationResult.status(),
-    await registrationResult.json(),
+    registrationResult.headers()["content-type"],
   );
   await staffPage
     .getByRole("status")
@@ -657,7 +657,13 @@ try {
   let releaseShared!: () => void, sharedArrived!: () => void;
   const held = new Promise<void>((r) => (releaseShared = r)),
     arrived = new Promise<void>((r) => (sharedArrived = r));
-  await staffPage.route("**/api/items?space=shared", async (route) => {
+  let sharedHeld = false;
+  await staffPage.route("**/api/channel", async (route) => {
+    if (sharedHeld) {
+      await route.fallback();
+      return;
+    }
+    sharedHeld = true;
     const response = await route.fetch();
     sharedArrived();
     await held;
@@ -679,12 +685,12 @@ try {
     .click();
   await expectStaffCapacity("8.00 GB", 8e9);
   const staleDelivered = staffPage.waitForResponse((r) =>
-    r.url().endsWith("/api/items?space=shared"),
+    r.url().endsWith("/api/channel"),
   );
   releaseShared();
   await staleDelivered;
   await staffPage.waitForLoadState("networkidle");
-  await staffPage.unroute("**/api/items?space=shared");
+  await staffPage.unroute("**/api/channel");
   await expectStaffCapacity("8.00 GB", 8e9);
   if (
     (await staffPage

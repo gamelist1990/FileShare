@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { FileIcon } from "./FileIcon";
+import { secureApi } from "./secure-api";
 export function SearchPage() {
   const params = new URLSearchParams(location.search),
     [q, setQ] = useState(params.get("q") ?? ""),
@@ -13,9 +14,7 @@ export function SearchPage() {
     setError("");
     try {
       const p = new URLSearchParams({ q, tag, offset: String(offset) });
-      const r = await fetch("/api/search?" + p),
-        d = await r.json();
-      if (!r.ok) throw Error(d.error);
+      const d = await secureApi("/api/search?" + p);
       setItems((old) => (offset ? [...old, ...d.items] : d.items));
       setNext(d.next);
       history.replaceState(

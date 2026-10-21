@@ -3,15 +3,9 @@ import React, { useEffect, useState } from "react";
 import { startRegistration } from "@simplewebauthn/browser";
 import { FullScreenPage } from "./FullScreenPage";
 import { CopyButton } from "./CopyButton";
+import { secureApi } from "./secure-api";
 async function request(route: string, body: unknown = {}) {
-  const r = await fetch("/api/auth/" + route, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || "処理できませんでした");
-  return data;
+  return secureApi("/api/auth/" + route, "POST", body);
 }
 export function PasskeyPage({
   token,
