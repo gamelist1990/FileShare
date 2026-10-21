@@ -226,7 +226,7 @@ export async function createApp(config: Config) {
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cache-Control": "no-store",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self' blob:; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}${config.directIpv6.enabled ? ` wss://${config.directIpv6.host}:${config.directIpv6.port}` : ""}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self' blob:; style-src 'self' blob:; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' ${new URL(config.origin).origin.replace(/^http/, "ws")}${config.directIpv6.enabled ? ` wss://${config.directIpv6.host}:${config.directIpv6.port}` : ""}; font-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       };
       if (config.origin.startsWith("https:"))
         security["Strict-Transport-Security"] = "max-age=31536000";

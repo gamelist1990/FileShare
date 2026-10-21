@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { appActiveElement, appMount, portalMount } from "./dom-root";
 
 let nextScreen = 0;
 
@@ -52,8 +53,8 @@ export function FullScreenPage({
     };
   }, [variant]);
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const app = document.getElementById("root");
+    const previous = appActiveElement();
+    const app = appMount();
     const overflow = document.body.style.overflow;
     const wasInert = app?.inert ?? false;
     const marker = `${Date.now()}:${++nextScreen}`;
@@ -110,6 +111,6 @@ export function FullScreenPage({
       )}
       {children}
     </div>,
-    document.body,
+    portalMount(),
   );
 }

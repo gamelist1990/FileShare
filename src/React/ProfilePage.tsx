@@ -4,6 +4,7 @@ import { FileIcon } from "./FileIcon";
 import { CopyButton } from "./CopyButton";
 import { useNotify } from "./Toast";
 import { secureApi as api } from "./secure-api";
+import { appElementById, appQuery } from "./dom-root";
 
 type Profile = {
   id: string;
@@ -208,7 +209,7 @@ export function ProfilePage({ id }: { id?: string }) {
           onClose={() => {
             setCropFile(null);
             setImageNames((n) => ({ ...n, avatar: "" }));
-            const input = document.querySelector<HTMLInputElement>(
+            const input = appQuery<HTMLInputElement>(
               'input[name="avatar-image"]',
             );
             if (input) input.value = "";
@@ -303,7 +304,7 @@ export function ProfilePage({ id }: { id?: string }) {
                                 ? "media"
                                 : "files";
                         setTab(next);
-                        document.getElementById(`profile-tab-${next}`)?.focus();
+                        appElementById(`profile-tab-${next}`)?.focus();
                       }
                     }}
                     aria-controls="profile-file-panel"

@@ -7,6 +7,7 @@ import React, {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { portalMount } from "./dom-root";
 type Tone = "success" | "error";
 type Toast = { id: number; text: string; tone: Tone };
 const ToastContext = createContext<(text: string, tone?: Tone) => void>(
@@ -49,7 +50,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             <ToastCard key={toast.id} toast={toast} dismiss={dismiss} />
           ))}
         </aside>,
-        document.body,
+        portalMount(),
       )}
     </ToastContext.Provider>
   );

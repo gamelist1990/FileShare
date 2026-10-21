@@ -16,6 +16,7 @@ config.local.json
 public/index.js
 public/index.html
 public/app.bin
+public/style.bin
 __pycache__/
 *.pyc
 .env

@@ -89,6 +89,8 @@ CPU変換の実機確認: `FFMPEG=/path/to/ffmpeg bun scripts/verify-preview.ts`
 
 ブラウザ本体はビルドごとに新しい鍵とcontextで暗号化した `app.bin` として埋め込みます。公開ローダーは短命通信チャネルから鍵を取得し、メモリ内で復号したBlob moduleを実行します。大容量ファイル、Rangeメディア、WebRTC DataChannel、A1 edge spoolは性能と再開性を保つため既存のTLS保護されたバイナリ経路を使います。
 
+画面用CSSも `style.bin` として別contextで暗号化し、復号したBlob stylesheetを本番ではclosed Shadow DOMへ適用します。初期HTMLにはアプリの要素ツリー、CSSクラス、root IDを置きません。Elementsで通常表示される文書はローダーとShadow hostだけになります。ブラウザは描画時の文字と要素を保持するため、DevToolsや実行中コードを操作できる利用者から最終DOMを完全に秘匿するものではありません。
+
 この層はTLSを置き換えません。静的なJavaScript収集、Network欄からのAPI推測、単純な自動解析のコストを上げますが、利用者が自分のブラウザで暗号化直前・復号直後の値を観測することまでは防ぎません。秘密鍵、認可判断、保存データの制御は引き続きサーバー側だけに置きます。
 
 ## 管理ページ：審査・AI・スタッフ招待

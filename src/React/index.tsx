@@ -3,8 +3,9 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { CommunityPage } from "./CommunityPages";
 import { App } from "./App";
+import { appMount } from "./dom-root";
 
-const root = createRoot(document.getElementById("root")!);
+const root = createRoot(appMount());
 root.render(
   <React.StrictMode>
     <ToastProvider>

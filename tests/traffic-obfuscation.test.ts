@@ -123,8 +123,22 @@ test("the application bundle is encrypted and its key is channel-only", async ()
   expect(await openAsset(encrypted, metadata.key, metadata.context)).toContain(
     "共有ストレージ",
   );
+  const encryptedStyle = await (await fetch(origin + "/style.bin")).text();
+  expect(encryptedStyle).toStartWith("a1.");
+  expect(encryptedStyle).not.toContain(".site-nav");
+  expect(
+    await openAsset(
+      encryptedStyle,
+      metadata.key,
+      metadata.context + ":style",
+    ),
+  ).toContain(".site-nav");
   const loader = await (await fetch(origin + "/index.js")).text();
   expect(loader).not.toContain(metadata.key);
+  const html = await (await fetch(origin + "/")).text();
+  expect(html).not.toContain('id="root"');
+  expect(html).not.toContain("theme.css");
+  expect(html).not.toContain("site-nav");
   expect((await readFile(join(process.cwd(), "public/app.bin"), "utf8"))).toBe(
     encrypted,
   );

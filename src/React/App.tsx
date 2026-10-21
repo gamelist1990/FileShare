@@ -27,6 +27,7 @@ import { AdminTools } from "./AdminTools";
 import { FullScreenPage } from "./FullScreenPage";
 import { FileIcon } from "./FileIcon";
 import { secureApi as api } from "./secure-api";
+import { appElementById } from "./dom-root";
 type User = {
   id: string;
   name: string;
@@ -2252,9 +2253,7 @@ export function App() {
                     update({
                       parent:
                         (
-                          document.getElementById(
-                            "move-parent",
-                          ) as HTMLInputElement
+                          appElementById<HTMLInputElement>("move-parent")!
                         ).value || null,
                     })
                   }

@@ -182,8 +182,9 @@ try {
   });
   await page.waitForFunction(
     () => {
-      const progress =
-        document.querySelector<HTMLProgressElement>(".transfer progress");
+      const progress = document
+        .querySelector("body > div")
+        ?.shadowRoot?.querySelector<HTMLProgressElement>(".transfer progress");
       return !!progress && progress.value > 0 && progress.value < 100;
     },
     undefined,
@@ -206,8 +207,9 @@ try {
   await page.getByRole("button", { name: /再開/ }).click();
   await page.waitForFunction(
     (previous) => {
-      const progress =
-        document.querySelector<HTMLProgressElement>(".transfer progress");
+      const progress = document
+        .querySelector("body > div")
+        ?.shadowRoot?.querySelector<HTMLProgressElement>(".transfer progress");
       return !!progress && progress.value > previous && progress.value < 100;
     },
     (pausedOffset / (12 * 1024 * 1024)) * 100,
@@ -787,7 +789,8 @@ try {
   if (
     await page.evaluate(
       () =>
-        document.getElementById("root")?.inert ||
+        document.querySelector("body > div")?.shadowRoot?.querySelector("div")
+          ?.inert ||
         document.body.style.overflow === "hidden",
     )
   )
@@ -1032,7 +1035,9 @@ try {
   )
     throw new Error("Native inline/metadata video settings missing");
   await page.waitForFunction(() => {
-    const video = document.querySelector("video");
+    const video = document
+      .querySelector("body > div")
+      ?.shadowRoot?.querySelector("video");
     return !!video && video.readyState >= 1 && video.videoWidth === 320;
   });
   await page

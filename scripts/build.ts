@@ -23,6 +23,9 @@ if (!bootstrap.success) {
 }
 const applicationJs = await application.outputs.find((o) => o.path.endsWith(".js"))!.text();
 const bootstrapJs = await bootstrap.outputs.find((o) => o.path.endsWith(".js"))!.text();
+const shadowCss = (await readFile("public/theme.css", "utf8"))
+  .replace(/:root/g, ":host")
+  .replace(/\bbody\b/g, ":host");
 const browserAssetKey = generateAssetKey();
 const browserAssetContext = `fileshare-browser:${crypto.randomUUID()}`;
 const encryptedApplication = await sealAsset(
@@ -30,15 +33,22 @@ const encryptedApplication = await sealAsset(
   browserAssetKey,
   browserAssetContext,
 );
+const encryptedStyle = await sealAsset(
+  shadowCss,
+  browserAssetKey,
+  browserAssetContext + ":style",
+);
 const html =
-  '<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="description" content="PEXserverの共有ストレージ。パスキーで安全にファイルを共有。"><title>FileShare | PEXserver</title><link rel="icon" href="/server.png"><link rel="stylesheet" href="/theme.css"></head><body><div id="root"></div><script type="module" src="/index.js"></script></body></html>';
+  '<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="description" content="PEXserverの共有ストレージ。パスキーで安全にファイルを共有。"><title>FileShare | PEXserver</title><link rel="icon" href="/server.png"></head><body><script type="module" src="/index.js"></script></body></html>';
 await writeFile("public/index.html", html);
 await writeFile("public/index.js", bootstrapJs);
 await writeFile("public/app.bin", encryptedApplication);
+await writeFile("public/style.bin", encryptedStyle);
 const files = [
   ["/index.html", "text/html; charset=utf-8"],
   ["/index.js", "application/javascript; charset=utf-8"],
   ["/app.bin", "application/octet-stream"],
+  ["/style.bin", "application/octet-stream"],
   ["/theme.css", "text/css; charset=utf-8"],
   ["/server.png", "image/png"],
   ["/fonts/plus-jakarta-sans-latin-v12.woff2", "font/woff2"],
