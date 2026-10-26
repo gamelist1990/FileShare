@@ -2265,11 +2265,11 @@ export function App() {
                   共有リンク
                   <input
                     readOnly
-                    value={location.origin + "/?item=" + settings.id}
+                    value={location.origin + "/?item=" + settings.id + "&og=2"}
                     onFocus={(e) => e.target.select()}
                   />
                 </label>
-                <CopyButton text={location.origin + "/?item=" + settings.id}>
+                <CopyButton text={location.origin + "/?item=" + settings.id + "&og=2"}>
                   共有リンクをコピー
                 </CopyButton>
               </>

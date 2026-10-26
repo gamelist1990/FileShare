@@ -1010,6 +1010,35 @@ export async function createApp(config: Config) {
           }
           return;
         }
+        // Public, crawler-friendly OG thumbnails. Never redirect bots to the
+        // per-IP signed A1 content ticket; it is not a stable image asset.
+        const ogImage = /^\/og\/image\/([a-f0-9-]{36})$/.exec(path);
+        if (ogImage && ["GET", "HEAD"].includes(method)) {
+          const item = readItem(store, null, ogImage[1]);
+          if (item.folder) throw new HttpError(404, "ファイルが見つかりません");
+          const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
+          const supported = ["png", "jpg", "jpeg", "webp", "gif"].includes(ext);
+          res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+          res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+          // Large, remote-only and missing assets use the small, predictable
+          // bundled site image. The fallback is intentionally per-file URL.
+          if (supported && item.size <= 8 * 1024 * 1024 && !pendingEdge(store, item.id)) {
+            const blob = store.blobPath(item.id);
+            const local = await stat(blob).catch(() => null);
+            if (local?.isFile() && local.size === item.size) {
+              enterTransfer();
+              await sendFile(req, res, blob, item, bandwidth, false);
+              return;
+            }
+          }
+          const fallback = assetCache["/server.png"]!;
+          res.writeHead(200, {
+            "Content-Type": fallback.type,
+            "Content-Length": String(fallback.identity.length),
+          });
+          res.end(method === "HEAD" ? undefined : fallback.identity);
+          return;
+        }
         const raw = /^\/api\/content\/([a-f0-9-]{36})(?:\/(preview))?$/.exec(
           path,
         );

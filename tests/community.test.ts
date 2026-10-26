@@ -421,21 +421,59 @@ test("share HTML contains escaped SSR Open Graph tags and never exposes protecte
     'property="og:title" content="動画 &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot; &#39;$&amp;.mp4 | FileShare"',
   );
   expect(html).toContain(`property="og:url" content="${origin}/?item=${id}"`);
+  expect(html).not.toContain('property="og:video"');
   expect(html).toContain(
-    `property="og:video" content="${origin}/api/content/${id}"`,
+    `property="og:image" content="${origin}/og/image/${id}"`,
   );
   expect(html).toContain('name="twitter:title"');
   expect(html).not.toContain("<script>alert(1)</script>");
   expect((html.match(/<title>/g) || []).length).toBe(1);
   expect((html.match(/name="description"/g) || []).length).toBe(1);
   expect(html).toContain("投稿者: vip");
+  const refreshed = await (await request(`/?item=${id}&og=2`)).text();
+  expect(refreshed).toContain(
+    `property="og:url" content="${origin}/?item=${id}&amp;og=2"`,
+  );
   const preview = await (await request(`/files/${id}/preview`)).text();
   expect(preview).toContain(
     `property="og:url" content="${origin}/files/${id}/preview"`,
   );
   const image = await item("public-photo.png");
   expect(await (await request(`/?item=${image}`)).text()).toContain(
-    `property="og:image" content="${origin}/api/content/${image}"`,
+    `property="og:image" content="${origin}/og/image/${image}"`,
+  );
+  // OG images must be anonymously fetchable without signed A1 redirects,
+  // even for videos and non-image attachments.
+  const fallback = await request(`/og/image/${id}`);
+  expect(fallback.status).toBe(200);
+  expect(fallback.redirected).toBe(false);
+  expect(fallback.headers.get("content-type")).toBe("image/png");
+  expect(fallback.headers.get("content-disposition")).toBeNull();
+  expect((await fallback.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+  const pngData = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+cLz8AAAAASUVORK5CYII=",
+    "base64",
+  );
+  await writeFile(join(app.store.blobDir, image), pngData);
+  app.store.db.run("UPDATE items SET size=? WHERE id=?", [pngData.length, image]);
+  const inline = await request(`/og/image/${image}`);
+  expect(inline.status).toBe(200);
+  expect(inline.redirected).toBe(false);
+  expect(inline.headers.get("content-type")).toBe("image/png");
+  expect(inline.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+  expect(inline.headers.get("content-disposition")).toContain("inline");
+  expect(Buffer.from(await inline.arrayBuffer())).toEqual(pngData);
+  const ogHead = await request(`/og/image/${image}`, undefined, "HEAD");
+  expect(ogHead.status).toBe(200);
+  expect(await ogHead.text()).toBe("");
+  const publicFolder = randomUUID();
+  app.store.db.run(
+    "INSERT INTO items(id,name,folder,visibility,created) VALUES (?,?,1,?,?)",
+    [publicFolder, "Photos", "public", Date.now()],
+  );
+  const folderHtml = await (await request(`/?item=${publicFolder}`)).text();
+  expect(folderHtml).toContain(
+    `property="og:image" content="${origin}/server.png"`,
   );
   const encoded = await fetch(origin + url, {
     headers: { "Accept-Encoding": "gzip" },
@@ -475,6 +513,7 @@ test("share HTML contains escaped SSR Open Graph tags and never exposes protecte
       expect(page).toContain(
         'property="og:title" content="FileShare | PEXserver"',
       );
+      expect((await request(`/og/image/${protectedId}`, user)).status).toBe(404);
     }
   }
   app.store.db.run("UPDATE items SET visibility='private' WHERE id=?", [id]);

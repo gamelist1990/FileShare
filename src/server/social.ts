@@ -30,10 +30,7 @@ export function socialHtml(store: Store, url: URL, template: string) {
         ? url.pathname
         : "/"),
     image = origin + "/server.png",
-    imageAlt = "PEXserver FileShare",
-    imageType = "image/png",
-    type = "website",
-    video: { url: string; type: string } | null = null;
+    imageAlt = "PEXserver FileShare";
   const preview = /^\/files\/([a-f0-9-]{36})\/preview$/.exec(url.pathname);
   const id =
     preview?.[1] ??
@@ -55,50 +52,31 @@ export function socialHtml(store: Store, url: URL, template: string) {
     if (author) description += ` 投稿者: ${author}`;
     canonical = preview
       ? `${origin}/files/${item.id}/preview`
-      : `${origin}/?item=${item.id}`;
-    const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
-    const imageTypes: Record<string, string> = {
-      png: "image/png",
-      jpg: "image/jpeg",
-      jpeg: "image/jpeg",
-      webp: "image/webp",
-      gif: "image/gif",
-      avif: "image/avif",
-    };
-    if (!item.folder && imageTypes[ext] && item.size <= 8 * 1024 * 1024) {
-      image = `${origin}/api/content/${item.id}`;
+      : `${origin}/?item=${item.id}${url.searchParams.get("og") === "2" ? "&og=2" : ""}`;
+    // OG media must be anonymous, fast and fetched without redirecting through
+    // the signed edge-download URL. Non-images receive a branded PNG fallback.
+    if (!item.folder) {
+      image = `${origin}/og/image/${item.id}`;
       imageAlt = item.name;
-      imageType = imageTypes[ext];
     }
-    if (!item.folder && ["mp4", "webm"].includes(ext)) {
-      type = "video.other";
-      video = {
-        url: `${origin}/api/content/${item.id}`,
-        type: ext === "mp4" ? "video/mp4" : "video/webm",
-      };
-    }
+    // No MIME hint: a pending replica may return a branded PNG fallback.
   }
   const properties: Record<string, string> = {
     "og:site_name": "PEXserver FileShare",
     "og:locale": "ja_JP",
-    "og:type": type,
+    "og:type": "website",
     "og:title": title,
     "og:description": description,
     "og:url": canonical,
     "og:image": image,
+    "og:image:secure_url": image,
     "og:image:alt": imageAlt,
-    "og:image:type": imageType,
   };
-  if (video) {
-    properties["og:video"] = video.url;
-    properties["og:video:secure_url"] = video.url;
-    properties["og:video:type"] = video.type;
-  }
   const names: Record<string, string> = {
     description,
-    "twitter:card": image.endsWith("/server.png")
-      ? "summary"
-      : "summary_large_image",
+    "twitter:card": item && canRead(store, null, item)
+      ? "summary_large_image"
+      : "summary",
     "twitter:title": title,
     "twitter:description": description,
     "twitter:image": image,
