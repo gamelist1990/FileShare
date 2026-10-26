@@ -1047,6 +1047,29 @@ export async function createApp(config: Config) {
           assertStorageAvailable(store, item);
           if (item.folder)
             throw new HttpError(400, "ファイルを選択してください");
+          // Direct file URLs normally stream bytes (including browser embeds,
+          // downloads, Range requests and the existing signed A1 redirect).
+          // Discord's link crawler needs HTML metadata instead: otherwise it
+          // follows an IP-bound, expiring edge ticket and gets no OG tags.
+          // Never expose private/invite/VIP-only metadata to crawlers.
+          if (
+            !raw[2] &&
+            !req.headers.range &&
+            /\bDiscordbot\b/i.test(String(req.headers["user-agent"] ?? "")) &&
+            canRead(store, null, item)
+          ) {
+            const template = assetCache["/index.html"]!;
+            const body = Buffer.from(
+              socialHtml(store, url, template.identity.toString("utf8")),
+            );
+            res.writeHead(200, {
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Length": String(body.length),
+              Vary: "User-Agent",
+            });
+            res.end(method === "HEAD" ? undefined : body);
+            return;
+          }
           if (!raw[2] && edgeSecret && config.edgeSpool.enabled) {
             res.writeHead(307, {
               Location: contentLocation(

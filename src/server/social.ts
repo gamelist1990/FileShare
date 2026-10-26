@@ -32,8 +32,12 @@ export function socialHtml(store: Store, url: URL, template: string) {
     image = origin + "/server.png",
     imageAlt = "PEXserver FileShare";
   const preview = /^\/files\/([a-f0-9-]{36})\/preview$/.exec(url.pathname);
+  // Discord also requests direct /api/content/:id links. Serve social metadata
+  // only to the crawler; human visitors still receive the file as usual.
+  const direct = /^\/api\/content\/([a-f0-9-]{36})$/.exec(url.pathname);
   const id =
     preview?.[1] ??
+    direct?.[1] ??
     (["/", "/index.html"].includes(url.pathname)
       ? url.searchParams.get("item")
       : null);
@@ -52,7 +56,9 @@ export function socialHtml(store: Store, url: URL, template: string) {
     if (author) description += ` 投稿者: ${author}`;
     canonical = preview
       ? `${origin}/files/${item.id}/preview`
-      : `${origin}/?item=${item.id}${url.searchParams.get("og") === "2" ? "&og=2" : ""}`;
+      : direct
+        ? `${origin}/api/content/${item.id}${url.searchParams.get("og") === "3" ? "?og=3" : ""}`
+        : `${origin}/?item=${item.id}${url.searchParams.get("og") === "2" ? "&og=2" : ""}`;
     // OG media must be anonymous, fast and fetched without redirecting through
     // the signed edge-download URL. Non-images receive a branded PNG fallback.
     if (!item.folder) {

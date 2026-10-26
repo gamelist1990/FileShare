@@ -456,6 +456,46 @@ test("share HTML contains escaped SSR Open Graph tags and never exposes protecte
   );
   await writeFile(join(app.store.blobDir, image), pngData);
   app.store.db.run("UPDATE items SET size=? WHERE id=?", [pngData.length, image]);
+  // A direct file URL must advertise the same file-specific OG tags to
+  // Discord's link-preview crawler, without changing normal raw image bytes.
+  const contentPath = `/api/content/${image}`;
+  const crawlerHeaders = {
+    "User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+  };
+  const crawler = await request(contentPath, "", "GET", undefined, crawlerHeaders);
+  expect(crawler.status).toBe(200);
+  expect(crawler.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(crawler.headers.get("vary")).toContain("User-Agent");
+  expect(crawler.redirected).toBe(false);
+  const crawlerHtml = await crawler.text();
+  expect(crawlerHtml).toContain(
+    `property="og:url" content="${origin}${contentPath}"`,
+  );
+  expect(crawlerHtml).toContain(
+    `property="og:image" content="${origin}/og/image/${image}"`,
+  );
+  expect(crawlerHtml).toContain('name="twitter:card" content="summary_large_image"');
+  const cacheBusted = await request(`${contentPath}?og=3`, "", "GET", undefined, crawlerHeaders);
+  expect(await cacheBusted.text()).toContain(
+    `property="og:url" content="${origin}${contentPath}?og=3"`,
+  );
+  const crawlerHead = await request(contentPath, "", "HEAD", undefined, crawlerHeaders);
+  expect(crawlerHead.status).toBe(200);
+  expect(crawlerHead.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(await crawlerHead.text()).toBe("");
+  const directBytes = await request(contentPath);
+  expect(directBytes.headers.get("content-type")).toBe("image/png");
+  expect(Buffer.from(await directBytes.arrayBuffer())).toEqual(pngData);
+  const rangedCrawler = await request(
+    contentPath,
+    "",
+    "GET",
+    undefined,
+    { ...crawlerHeaders, Range: "bytes=0-7" },
+  );
+  expect(rangedCrawler.status).toBe(206);
+  expect(rangedCrawler.headers.get("content-type")).toBe("image/png");
+  expect((await rangedCrawler.arrayBuffer()).byteLength).toBe(8);
   const inline = await request(`/og/image/${image}`);
   expect(inline.status).toBe(200);
   expect(inline.redirected).toBe(false);
@@ -514,6 +554,14 @@ test("share HTML contains escaped SSR Open Graph tags and never exposes protecte
         'property="og:title" content="FileShare | PEXserver"',
       );
       expect((await request(`/og/image/${protectedId}`, user)).status).toBe(404);
+      const protectedCrawler = await request(
+        `/api/content/${protectedId}`,
+        user ?? "",
+        "GET",
+        undefined,
+        crawlerHeaders,
+      );
+      expect(protectedCrawler.headers.get("content-type")).not.toContain("text/html");
     }
   }
   app.store.db.run("UPDATE items SET visibility='private' WHERE id=?", [id]);
